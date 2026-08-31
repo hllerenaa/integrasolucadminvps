@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block body_class %}login-body{% endblock %}
+{% block contenido %}
+<div class="login-caja">
+  <h1>{{ titulo }}</h1>
+  <p class="login-sub">Panel de monitoreo de instancias pryinventario / pryrestaurante</p>
+  {% if error %}<div class="alerta">{{ error }}</div>{% endif %}
+  <form method="post">
+    <label>Usuario
+      <input type="text" name="usuario" autocomplete="username" autofocus required>
+    </label>
+    <label>Contraseña
+      <input type="password" name="password" autocomplete="current-password" required>
+    </label>
+    <button type="submit">Ingresar</button>
+  </form>
+  <p class="login-pie">v{{ version }}</p>
+</div>
+{% endblock %}

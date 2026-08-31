@@ -1,0 +1,12 @@
+# Configuración local (contiene credenciales del panel)
+config.json
+
+# Entorno virtual e instalación
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Cache de datos del panel
+var/
+*.log

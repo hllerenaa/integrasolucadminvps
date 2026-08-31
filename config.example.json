@@ -1,0 +1,53 @@
+{
+  "host": "0.0.0.0",
+  "port": 8600,
+  "titulo": "Panel VPS - Integrasoluc",
+  "base_dirs": [
+    "/home"
+  ],
+  "profundidad": 2,
+  "proyectos": {
+    "inventario": "pryinventario",
+    "restaurante": "pryrestaurante"
+  },
+  "excluir_clientes": [
+    "old",
+    "template",
+    "template_restaurante",
+    "db_repository"
+  ],
+  "servicio_patron": "{cliente}",
+  "overrides": {
+    "_ejemplo_cliente": {
+      "servicio": "nombre_del_servicio_systemd",
+      "dominio": "cliente.integrasoluc.net",
+      "ignorar": false
+    }
+  },
+  "consultar_bd": true,
+  "medir_media": true,
+  "verificar_url": true,
+  "intervalo_refresco": 300,
+  "ttl_datos": 300,
+  "ttl_media": 21600,
+  "workers": 8,
+  "db_connect_timeout": 6,
+  "db_statement_timeout": 15000,
+  "timeout_systemctl": 10,
+  "timeout_du": 120,
+  "timeout_url": 6,
+  "timeout_accion": 60,
+  "acciones": {
+    "enabled": true,
+    "servicios": true,
+    "apache": true
+  },
+  "auth": {
+    "enabled": true,
+    "username": "admin",
+    "password_hash": "",
+    "password": "",
+    "api_token": ""
+  },
+  "secret_key": ""
+}

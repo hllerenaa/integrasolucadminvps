@@ -1,0 +1,17 @@
+[Unit]
+Description=Panel de administracion VPS Integrasoluc (pryinventario / pryrestaurante)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=__DIR__
+Environment=PYTHONUNBUFFERED=1
+ExecStart=__DIR__/venv/bin/python __DIR__/run.py
+Restart=always
+RestartSec=5
+StandardOutput=append:__DIR__/var/panel.log
+StandardError=append:__DIR__/var/panel.log
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,179 @@
+# -*- coding: utf-8 -*-
+"""Exportación del listado de instancias a Excel (.xlsx) y CSV."""
+from __future__ import annotations
+
+import csv
+import io
+
+# Columnas: (clave, titulo, ancho)
+COLUMNAS = [
+    ('cliente', 'Cliente', 16),
+    ('tipo', 'Sistema', 12),
+    ('empresa', 'Empresa', 30),
+    ('url', 'URL', 34),
+    ('url_estado', 'URL responde', 14),
+    ('servicio', 'Servicio systemd', 20),
+    ('servicio_estado', 'Estado servicio', 15),
+    ('servicio_uptime', 'Uptime', 12),
+    ('servicio_desde', 'Activo desde', 18),
+    ('servicio_creado', 'Servicio creado', 17),
+    ('fecha_instalacion', 'Instalado el', 17),
+    ('ruta', 'Ruta de instalación', 38),
+    ('apache_archivo', 'Vhost Apache', 42),
+    ('apache_habilitado', 'Sitio habilitado', 16),
+    ('ssl_estado', 'SSL', 12),
+    ('ssl_hasta', 'SSL vence', 13),
+    ('ssl_dias', 'SSL días', 10),
+    ('db_nombre', 'Base de datos', 20),
+    ('db_host', 'Host BD', 16),
+    ('db_estado', 'Estado BD', 12),
+    ('db_tamano', 'Tamaño BD', 13),
+    ('media_tamano', 'Tamaño media', 13),
+    ('auditoria_fecha', 'Última auditoría', 17),
+    ('auditoria_usuario', 'Usuario auditoría', 18),
+    ('ultima_sesion', 'Última sesión', 19),
+    ('ultima_sesion_usuario', 'Usuario última sesión', 20),
+    ('primera_venta', 'Primera venta', 14),
+    ('ultima_venta', 'Última venta', 14),
+    ('ventas_total', 'Total ventas', 13),
+]
+
+
+def fila(inst):
+    """Aplana una instancia a las columnas de exportación."""
+    r = inst.get('resumen') or {}
+    db = inst.get('db') or {}
+    return {
+        'cliente': inst.get('cliente'),
+        'tipo': inst.get('tipo'),
+        'empresa': r.get('empresa'),
+        'url': inst.get('url'),
+        'url_estado': ('SI (HTTP %s)' % r.get('url_codigo')) if r.get('url_responde')
+                      else ('NO' if r.get('url_responde') is False else '-'),
+        'servicio': inst.get('servicio'),
+        'servicio_estado': r.get('servicio_estado'),
+        'servicio_uptime': r.get('servicio_uptime'),
+        'servicio_desde': r.get('servicio_desde'),
+        'servicio_creado': r.get('servicio_creado'),
+        'fecha_instalacion': r.get('fecha_instalacion'),
+        'ruta': inst.get('ruta'),
+        'apache_archivo': r.get('apache_archivo'),
+        'apache_habilitado': ('SI' if r.get('apache_habilitado')
+                              else ('NO' if r.get('apache_archivo') else '-')),
+        'ssl_estado': r.get('ssl_estado'),
+        'ssl_hasta': r.get('ssl_hasta'),
+        'ssl_dias': r.get('ssl_dias'),
+        'db_nombre': db.get('dbname'),
+        'db_host': db.get('host'),
+        'db_estado': ('-' if db.get('desactivado') else ('activa' if db.get('ok') else 'CAIDA')),
+        'db_tamano': r.get('db_tamano'),
+        'media_tamano': r.get('media_tamano'),
+        'auditoria_fecha': r.get('auditoria_fecha'),
+        'auditoria_usuario': r.get('auditoria_usuario'),
+        'ultima_sesion': r.get('ultima_sesion'),
+        'ultima_sesion_usuario': r.get('ultima_sesion_usuario'),
+        'primera_venta': r.get('primera_venta'),
+        'ultima_venta': r.get('ultima_venta'),
+        'ventas_total': r.get('ventas_total'),
+    }
+
+
+def a_csv(instancias):
+    """CSV con separador ';' y BOM, listo para abrirse en Excel."""
+    buffer = io.StringIO()
+    escritor = csv.writer(buffer, delimiter=';')
+    escritor.writerow([titulo for _, titulo, _ in COLUMNAS])
+    for inst in instancias:
+        datos = fila(inst)
+        escritor.writerow([datos.get(clave, '') for clave, _, _ in COLUMNAS])
+    return '\ufeff' + buffer.getvalue()
+
+
+def a_xlsx(instancias, resumen=None, titulo='Instancias'):
+    """Genera el .xlsx en memoria. Devuelve (bytes, None) o (None, error)."""
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font, PatternFill
+        from openpyxl.utils import get_column_letter
+    except ImportError as ex:
+        return None, ('openpyxl no está instalado (%s). Ejecuta: '
+                      'venv/bin/pip install openpyxl' % ex)
+
+    libro = Workbook()
+    hoja = libro.active
+    hoja.title = 'Instancias'
+
+    relleno_cabecera = PatternFill('solid', fgColor='12325F')
+    fuente_cabecera = Font(color='FFFFFF', bold=True, size=10)
+    verde = PatternFill('solid', fgColor='E2F6ED')
+    rojo = PatternFill('solid', fgColor='FDECEB')
+    ambar = PatternFill('solid', fgColor='FDF3E0')
+
+    hoja.append([t for _, t, _ in COLUMNAS])
+    for celda in hoja[1]:
+        celda.fill = relleno_cabecera
+        celda.font = fuente_cabecera
+        celda.alignment = Alignment(vertical='center', horizontal='center', wrap_text=True)
+    hoja.row_dimensions[1].height = 28
+
+    indices = {clave: i + 1 for i, (clave, _, _) in enumerate(COLUMNAS)}
+    for inst in instancias:
+        datos = fila(inst)
+        hoja.append([datos.get(clave) for clave, _, _ in COLUMNAS])
+        n = hoja.max_row
+
+        estado_servicio = (datos.get('servicio_estado') or '')
+        hoja.cell(row=n, column=indices['servicio_estado']).fill = (
+            verde if estado_servicio in ('active', 'activating') else rojo)
+
+        hoja.cell(row=n, column=indices['url_estado']).fill = (
+            verde if str(datos.get('url_estado', '')).startswith('SI') else
+            (rojo if datos.get('url_estado') == 'NO' else ambar))
+
+        ssl_estado = datos.get('ssl_estado')
+        hoja.cell(row=n, column=indices['ssl_estado']).fill = (
+            verde if ssl_estado == 'vigente' else
+            (ambar if ssl_estado == 'por-vencer' else rojo))
+
+        hoja.cell(row=n, column=indices['apache_habilitado']).fill = (
+            verde if datos.get('apache_habilitado') == 'SI' else
+            (rojo if datos.get('apache_habilitado') == 'NO' else ambar))
+
+        estado_db = datos.get('db_estado')
+        if estado_db and estado_db != '-':
+            hoja.cell(row=n, column=indices['db_estado']).fill = (
+                verde if estado_db == 'activa' else rojo)
+
+    for i, (_, _, ancho) in enumerate(COLUMNAS, start=1):
+        hoja.column_dimensions[get_column_letter(i)].width = ancho
+    hoja.freeze_panes = 'C2'
+    hoja.auto_filter.ref = 'A1:%s%s' % (get_column_letter(len(COLUMNAS)), hoja.max_row)
+
+    if resumen:
+        hoja2 = libro.create_sheet('Resumen')
+        hoja2.append(['Indicador', 'Valor'])
+        for celda in hoja2[1]:
+            celda.fill = relleno_cabecera
+            celda.font = fuente_cabecera
+        etiquetas = [
+            ('Instancias totales', resumen.get('total')),
+            ('Servicios activos', resumen.get('servicios_activos')),
+            ('Servicios inactivos', resumen.get('servicios_inactivos')),
+            ('Sitios Apache habilitados', resumen.get('sitios_habilitados')),
+            ('Certificados vigentes', resumen.get('ssl_vigentes')),
+            ('Certificados vencidos o por vencer', resumen.get('ssl_alerta')),
+            ('URLs que responden', resumen.get('urls_ok')),
+            ('Bases accesibles', resumen.get('db_activas')),
+            ('Tamaño total de bases', resumen.get('db_tamano')),
+            ('Tamaño total de media', resumen.get('media_tamano')),
+        ]
+        for tipo, cantidad in (resumen.get('por_tipo') or {}).items():
+            etiquetas.append(('Instancias de %s' % tipo, cantidad))
+        for etiqueta, valor in etiquetas:
+            hoja2.append([etiqueta, valor])
+        hoja2.column_dimensions['A'].width = 38
+        hoja2.column_dimensions['B'].width = 18
+
+    flujo = io.BytesIO()
+    libro.save(flujo)
+    return flujo.getvalue(), None
