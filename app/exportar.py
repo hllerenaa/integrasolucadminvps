@@ -31,6 +31,8 @@ COLUMNAS = [
     ('db_estado', 'Estado BD', 12),
     ('db_tamano', 'Tamaño BD', 13),
     ('media_tamano', 'Tamaño media', 13),
+    ('logs_tamano', 'Tamaño logs', 13),
+    ('logs_archivos', 'Archivos de log', 15),
     ('auditoria_fecha', 'Última auditoría', 17),
     ('auditoria_usuario', 'Usuario auditoría', 18),
     ('auditoria_accion', 'Acción auditoría', 16),
@@ -77,6 +79,8 @@ def fila(inst):
         'db_estado': ('-' if db.get('desactivado') else ('activa' if db.get('ok') else 'CAIDA')),
         'db_tamano': r.get('db_tamano'),
         'media_tamano': r.get('media_tamano'),
+        'logs_tamano': r.get('logs_tamano'),
+        'logs_archivos': r.get('logs_archivos'),
         'auditoria_fecha': r.get('auditoria_fecha'),
         'auditoria_usuario': r.get('auditoria_usuario'),
         'auditoria_accion': {'A': 'Adición', 'M': 'Modificación', 'E': 'Eliminación'}
@@ -199,6 +203,7 @@ def a_xlsx(instancias, resumen=None, titulo='Instancias'):
             ('Bases accesibles', resumen.get('db_activas')),
             ('Tamaño total de bases', resumen.get('db_tamano')),
             ('Tamaño total de media', resumen.get('media_tamano')),
+            ('Tamaño total de logs', resumen.get('logs_tamano')),
         ]
         for tipo, cantidad in (resumen.get('por_tipo') or {}).items():
             etiquetas.append(('Instancias de %s' % tipo, cantidad))

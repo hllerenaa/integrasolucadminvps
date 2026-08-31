@@ -162,6 +162,15 @@
     { id: 'media', titulo: 'Media', grupo: 'datos', requiere: 'media', num: true,
       valor: function (i) { return (i.resumen || {}).media_bytes || 0; },
       render: function (i) { return guion((i.resumen || {}).media_tamano); } },
+    { id: 'logs', titulo: 'Logs', grupo: 'datos', requiere: 'logs', num: true,
+      valor: function (i) { return (i.resumen || {}).logs_bytes || 0; },
+      render: function (i) {
+        var r = i.resumen || {};
+        if (!r.logs_archivos) return '<span class="tenue">—</span>';
+        var clase = (r.logs_bytes > 524288000) ? ' class="viejo"' : '';   // > 500 MB
+        return '<span' + clase + '>' + esc(r.logs_tamano) + '</span>' +
+          '<div class="sub">' + esc(r.logs_archivos) + ' archivo(s)</div>';
+      } },
 
     { id: 'auditoria', titulo: 'Última auditoría', grupo: 'actividad', requiere: 'bd', ancho: 'ancho',
       valor: function (i) { return (i.resumen || {}).auditoria_fecha || ''; },
@@ -322,6 +331,7 @@
       t.push({ rotulo: 'Tamaño total BD', valor: r.db_tamano || '-' });
     }
     if (cap.media) t.push({ rotulo: 'Tamaño total media', valor: r.media_tamano || '-' });
+    if (cap.logs) t.push({ rotulo: 'Tamaño total logs', valor: r.logs_tamano || '-' });
     t.push({ rotulo: 'Disco del servidor',
       valor: (d.porcentaje === undefined || d.porcentaje === null) ? '-' : d.porcentaje + '%',
       extra: d.usado ? (d.usado + ' de ' + d.total + ' · libre ' + d.libre) : '' });
@@ -468,6 +478,22 @@
       ]) + '</div>';
     }
 
+    if (cap.logs) {
+      var lg = inst.logs || {};
+      var filasLogs = (lg.archivos || []).map(function (a) {
+        return '<tr><td><code class="ruta" title="' + esc(a.archivo) + '">' + esc(a.archivo) +
+          '</code><div class="sub">' + esc(a.origen) + (a.rotado ? ' · rotado' : '') + '</div></td>' +
+          '<td class="num">' + esc(a.tamano) + '</td><td>' + esc(a.modificado) + '</td></tr>';
+      }).join('');
+      b += '<div class="bloque"><h3>Archivos de log</h3>' + dl([
+        ['Total', lg.tamano], ['Archivos', lg.total_archivos],
+        ['Por origen', Object.keys(lg.por_origen_legible || {}).map(function (k) {
+          return k + ': ' + lg.por_origen_legible[k]; }).join(' · ')],
+        ['Error', lg.error]
+      ]) + (filasLogs ? '<table class="tabla-mini"><thead><tr><th>Archivo</th><th>Tamaño</th>' +
+        '<th>Modificado</th></tr></thead><tbody>' + filasLogs + '</tbody></table>' : '') + '</div>';
+    }
+
     var ventas = '';
     if (cap.bd) {
       var filas = (db.ventas || []).map(function (v) {
@@ -486,7 +512,10 @@
       '<div class="acciones" data-id="' + esc(inst.id) + '">' + botonesAccion(inst) +
         '<div id="resultado-accion"></div></div>' +
       '<div class="grid-detalle">' + b + '</div>' + ventas +
+      '<div id="caja-credenciales"></div>' +
       '<div style="margin-top:14px;text-align:right">' +
+        (cap.credenciales ? '<button class="boton mini" type="button" id="btn-credenciales" data-id="' +
+          esc(inst.id) + '">Ver credenciales.json</button> ' : '') +
         '<button class="boton mini" type="button" id="btn-refrescar-uno" data-id="' + esc(inst.id) + '">Refrescar esta instancia</button> ' +
         '<a class="boton mini" href="/api/instancia/' + encodeURIComponent(inst.id) + '" target="_blank" rel="noopener">Ver JSON</a>' +
       '</div>';
@@ -594,6 +623,68 @@
       });
   }
 
+  function verCredenciales(id, conSecretos) {
+    var caja = $('#caja-credenciales');
+    caja.innerHTML = '<p class="tenue">Leyendo credenciales.json…</p>';
+    fetch('/api/credenciales/' + encodeURIComponent(id) + (conSecretos ? '?secretos=1' : ''),
+          { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) {
+          caja.innerHTML = '<div class="aviso-error">' + esc(d.error || 'No se pudo leer') +
+            '</div>' + (d.contenido_crudo ? '<pre class="codigo">' + esc(d.contenido_crudo) + '</pre>' : '');
+          return;
+        }
+        var cap = estado.capacidades || {};
+        caja.innerHTML =
+          '<div class="bloque" style="margin-top:14px" data-id="' + esc(id) + '">' +
+            '<h3>credenciales.json</h3>' +
+            '<div class="sub">' + esc(d.archivo) + ' · modificado ' + esc(d.modificado || '?') +
+              ' · permisos ' + esc(d.permisos || '?') +
+              (d.respaldos && d.respaldos.length ? ' · ' + d.respaldos.length + ' respaldo(s)' : '') + '</div>' +
+            (d.con_secretos ? '<div class="aviso-error" style="margin:8px 0">Las contraseñas están visibles en pantalla</div>'
+                            : '<div class="sub" style="margin:6px 0">Las claves aparecen ocultas (••••). ' +
+                              'Si editas sin revelarlas, se conservan tal cual.</div>') +
+            '<textarea id="editor-credenciales" spellcheck="false" rows="16"' +
+              (d.editable ? '' : ' readonly') + '>' + esc(d.texto) + '</textarea>' +
+            '<div style="margin-top:8px;text-align:right">' +
+              (cap.credenciales_secretos && !d.con_secretos
+                ? '<button class="boton mini" type="button" id="btn-credenciales-secretos" data-id="' +
+                  esc(id) + '">Mostrar contraseñas</button> ' : '') +
+              (d.editable ? '<button class="boton" type="button" id="btn-credenciales-guardar" data-id="' +
+                esc(id) + '">Guardar cambios</button>' : '') +
+            '</div>' +
+            '<div id="resultado-credenciales"></div>' +
+          '</div>';
+      })
+      .catch(function (e) { caja.innerHTML = '<div class="aviso-error">' + esc(e.message) + '</div>'; });
+  }
+
+  function guardarCredenciales(id) {
+    if (!window.confirm('Se va a sobrescribir credenciales.json (se guarda un respaldo). ' +
+                        'Recuerda reiniciar el servicio para que tome los cambios. ¿Continuar?')) return;
+    var texto = $('#editor-credenciales').value;
+    $('#resultado-credenciales').innerHTML = '<p class="tenue">Guardando…</p>';
+    fetch('/api/credenciales/' + encodeURIComponent(id), {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ texto: texto })
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) {
+          $('#resultado-credenciales').innerHTML = '<div class="aviso-error">' + esc(d.error) + '</div>';
+          return;
+        }
+        $('#resultado-credenciales').innerHTML = '<div class="aviso-ok">Guardado. Cambios: ' +
+          esc((d.claves_modificadas || []).join(', ') || 'ninguno') + '. Respaldo: ' +
+          esc(d.respaldo) + '. ' + esc(d.aviso) + '</div>';
+        cargar();
+      })
+      .catch(function (e) {
+        $('#resultado-credenciales').innerHTML = '<div class="aviso-error">' + esc(e.message) + '</div>';
+      });
+  }
+
   function verHistorial() {
     var caja = $('#caja-historial');
     if (!caja.hidden) { caja.hidden = true; return; }
@@ -635,6 +726,9 @@
         if (el.id === 'modal-cerrar' || el.id === 'modal') return $('#modal').classList.add('oculto');
         if (el.classList.contains('cerrar-aviso')) return ($('#avisos').innerHTML = '');
         if (el.id === 'btn-refrescar-uno') return refrescar({ solo: el.getAttribute('data-id') }, el);
+        if (el.id === 'btn-credenciales') return verCredenciales(el.getAttribute('data-id'), false);
+        if (el.id === 'btn-credenciales-secretos') return verCredenciales(el.getAttribute('data-id'), true);
+        if (el.id === 'btn-credenciales-guardar') return guardarCredenciales(el.getAttribute('data-id'));
         if (el.classList.contains('accion')) {
           return ejecutarAccion(el.closest('.acciones').getAttribute('data-id'),
                                 el.getAttribute('data-accion'), el);

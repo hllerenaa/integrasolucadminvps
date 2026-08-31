@@ -22,6 +22,8 @@ los certificados y (opcionalmente) la base PostgreSQL de cada cliente.
 | Fecha de creación de la instancia y del archivo `.service` | `stat` de la carpeta y del unit file |
 | Base de datos: activa/caída, tamaño, versión, tablas más grandes | PostgreSQL de la instancia (`credenciales.json`) |
 | Tamaño de la carpeta `media` | `du -sb` con caché |
+| Tamaño de los archivos de log (proyecto, Apache y gunicorn, con sus rotaciones) | `*.log` de la instalación, `ErrorLog`/`CustomLog` del vhost y `--access-logfile`/`--error-logfile` del `.service` |
+| Contenido de `credenciales.json` | Lectura directa del archivo, con las claves enmascaradas |
 | Última auditoría (fecha, hora, usuario, tabla y acción) | `seguridad_audiusuariotabla` |
 | Facturas emitidas: total, del mes actual, del mes anterior, último mes facturado y meses sin facturar | `facturacion_facturareal` |
 | Última sesión y sesiones vigentes | `auth_user.last_login`, `django_session`, `seguridad_usuarioconectado` |
@@ -52,6 +54,13 @@ eso funciona aunque el esquema varíe entre inventario y restaurante.
 
 ## Qué permite hacer
 
+- **Abrir y editar el `credenciales.json`** de cada instancia desde el detalle
+  (botón "Ver credenciales.json"): se muestra con las contraseñas ocultas,
+  hay un botón para revelarlas y se puede guardar. Cada guardado deja un
+  respaldo `credenciales.json.bak-<fecha>` (se conservan los 8 últimos),
+  valida el JSON, conserva los permisos del archivo y queda registrado en el
+  historial. Si editas sin revelar las claves, los valores enmascarados se
+  conservan tal cual.
 - Iniciar, detener, reiniciar, habilitar o deshabilitar el **servicio systemd**.
 - Activar o desactivar el **sitio de Apache** (`a2ensite` / `a2dissite` + reload).
 - Buscar por cliente, empresa, dominio, ruta, servicio o base de datos.
@@ -127,7 +136,9 @@ sudo ./uninstall.sh
 | `verificar_url` | `false` no golpea las URLs públicas |
 | `apache_dirs` | Directorios de vhosts si no son los de Debian/Ubuntu |
 | `intervalo_refresco` | Segundos entre refrescos automáticos en segundo plano |
+| `medir_logs` | `false` no busca ni suma los archivos de log |
 | `acciones` | `enabled`, `servicios`, `apache`: permite o bloquea cada tipo de acción |
+| `credenciales` | `ver`, `editar`, `mostrar_secretos`: controla el acceso a `credenciales.json` |
 | `auth` | `username` + `password_hash` (o `password`) y `api_token` opcional |
 
 > Si sólo quieres consulta de servicios, Apache, SSL y URL —sin nada de base de
@@ -155,6 +166,8 @@ inaccesibles o certificados vencidos: sirve para cron o alertas.
 | `GET /api/instancia/<cliente\|tipo>` | Detalle de una instancia |
 | `POST /api/refrescar` | Fuerza un refresco (`{"solo": "id", "media": true}`) |
 | `POST /api/accion` | `{"id": "...", "accion": "reiniciar"}` |
+| `GET /api/credenciales/<cliente\|tipo>` | `credenciales.json` con las claves ocultas (`?secretos=1` las revela) |
+| `POST /api/credenciales/<cliente\|tipo>` | Guarda el archivo (`{"texto": "{...}"}`) dejando respaldo |
 | `GET /api/acciones` | Historial de acciones |
 | `GET /export.xlsx`, `GET /export.csv` | Exportaciones (aceptan `?tipo=` y `?q=`) |
 | `GET /healthz` | Chequeo de salud (sin autenticación) |
@@ -180,3 +193,9 @@ curl -H "X-API-Token: TU_TOKEN" http://IP:8600/api/estado
   `media`, la clave de sesión y el log de acciones.
 - Recomendado: exponer el puerto sólo a IPs conocidas
   (`ufw allow from <tu-ip> to any port 8600`) o publicarlo detrás de Apache con SSL.
+- El visor de `credenciales.json` puede mostrar contraseñas de base de datos y
+  de correo. Si accedes por `http://IP:8600` esos datos viajan sin cifrar: usa
+  el panel detrás de Apache con SSL, o desactiva la función con
+  `"credenciales": {"ver": false}` (o al menos `"mostrar_secretos": false`).
+  Cada vez que alguien revela las claves o guarda el archivo queda registrado
+  en `var/acciones.log`.

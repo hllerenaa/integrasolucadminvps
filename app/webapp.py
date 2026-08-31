@@ -9,7 +9,8 @@ import threading
 from flask import (Flask, Response, jsonify, redirect, render_template,
                    request, session, url_for)
 
-from . import __version__, acciones as mod_acciones, exportar
+from . import (__version__, acciones as mod_acciones,
+               credenciales as mod_credenciales, exportar)
 from .collector import Colector
 from .config import cargar
 
@@ -95,6 +96,10 @@ def crear_app(config=None):
             'acciones': bool((config.get('acciones') or {}).get('enabled', True)),
             'acciones_servicios': bool((config.get('acciones') or {}).get('servicios', True)),
             'acciones_apache': bool((config.get('acciones') or {}).get('apache', True)),
+            'logs': bool(config.get('medir_logs', True)),
+            'credenciales': bool((config.get('credenciales') or {}).get('ver', True)),
+            'credenciales_editar': bool((config.get('credenciales') or {}).get('editar', True)),
+            'credenciales_secretos': bool((config.get('credenciales') or {}).get('mostrar_secretos', True)),
         }
         return jsonify(datos)
 
@@ -135,6 +140,50 @@ def crear_app(config=None):
             return jsonify(resultado), 400
 
         # Se refresca sólo esa instancia para devolver el estado ya actualizado.
+        colector.refrescar(forzar=True, solo=ident)
+        resultado['instancia'] = colector.instancia(ident)
+        return jsonify(resultado)
+
+    @app.route('/api/credenciales/<path:ident>')
+    @requiere_login
+    def api_credenciales(ident):
+        cfg = config.get('credenciales') or {}
+        if not cfg.get('ver', True):
+            return jsonify({'ok': False, 'error': 'La lectura de credenciales está desactivada'}), 403
+        datos = colector.instancia(ident)
+        if not datos:
+            return jsonify({'ok': False, 'error': 'instancia no encontrada'}), 404
+
+        con_secretos = request.args.get('secretos') in ('1', 'true', 'si')
+        if con_secretos and not cfg.get('mostrar_secretos', True):
+            return jsonify({'ok': False, 'error': 'Mostrar contraseñas está desactivado'}), 403
+
+        resultado = mod_credenciales.leer(datos, con_secretos=con_secretos)
+        resultado['editable'] = bool(cfg.get('editar', True))
+        if con_secretos:
+            mod_acciones.registrar_evento(
+                config, session.get('usuario') or 'api', 'credenciales_ver_claves',
+                datos.get('cliente'), 0, resultado.get('archivo') or '')
+        return jsonify(resultado)
+
+    @app.route('/api/credenciales/<path:ident>', methods=['POST'])
+    @requiere_login
+    def api_credenciales_guardar(ident):
+        cfg = config.get('credenciales') or {}
+        if not cfg.get('editar', True):
+            return jsonify({'ok': False, 'error': 'La edición de credenciales está desactivada'}), 403
+        datos = colector.instancia(ident)
+        if not datos:
+            return jsonify({'ok': False, 'error': 'instancia no encontrada'}), 404
+
+        cuerpo = request.get_json(silent=True) or {}
+        resultado = mod_credenciales.guardar(datos, cuerpo.get('texto'))
+        mod_acciones.registrar_evento(
+            config, session.get('usuario') or 'api', 'credenciales_guardar',
+            datos.get('cliente'), 0 if resultado.get('ok') else 1,
+            ', '.join(resultado.get('claves_modificadas') or []) or resultado.get('error', ''))
+        if not resultado.get('ok'):
+            return jsonify(resultado), 400
         colector.refrescar(forzar=True, solo=ident)
         resultado['instancia'] = colector.instancia(ident)
         return jsonify(resultado)

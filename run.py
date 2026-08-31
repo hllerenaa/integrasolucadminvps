@@ -24,8 +24,8 @@ def _reporte(colector):
     datos = colector.snapshot()
     filas = datos['instancias']
     cabecera = ('CLIENTE', 'SISTEMA', 'SERVICIO', 'APACHE', 'SSL', 'URL',
-                'BASE', 'TAM.BD', 'MEDIA', 'ULT.AUDIT.', 'ULT.SESION', '1a VENTA', 'ULT.VENTA')
-    anchos = [14, 11, 11, 11, 10, 9, 7, 9, 9, 10, 16, 10, 10]
+                'BASE', 'TAM.BD', 'MEDIA', 'LOGS', 'FACTURAS', 'ULT.AUDIT.', '1a VENTA', 'ULT.VENTA')
+    anchos = [14, 11, 11, 11, 9, 9, 7, 9, 9, 9, 12, 10, 10, 10]
 
     def linea(valores):
         return ' '.join(str(v if v is not None else '-')[:a].ljust(a)
@@ -42,8 +42,10 @@ def _reporte(colector):
             (str(r.get('ssl_dias')) + 'd') if r.get('ssl_dias') is not None else (r.get('ssl_estado') or '-'),
             ('HTTP %s' % r.get('url_codigo')) if r.get('url_responde') else 'no',
             '-' if db.get('desactivado') else ('activa' if r.get('db_ok') else 'CAIDA'),
-            r.get('db_tamano'), r.get('media_tamano'),
-            r.get('auditoria_fecha'), (r.get('ultima_sesion') or '')[:19],
+            r.get('db_tamano'), r.get('media_tamano'), r.get('logs_tamano'),
+            ('%s (%s mes)' % (r.get('facturas_total'), r.get('facturas_mes'))
+             if r.get('facturas_total') is not None else None),
+            r.get('auditoria_fecha'),
             r.get('primera_venta'), r.get('ultima_venta'),
         )))
     resumen = datos['resumen']
@@ -57,6 +59,7 @@ def _reporte(colector):
         partes += ['Bases activas: %s' % resumen['db_activas'],
                    'BD: %s' % resumen['db_tamano']]
     partes.append('Media: %s' % resumen['media_tamano'])
+    partes.append('Logs: %s' % resumen.get('logs_tamano', '-'))
     print(' | '.join(partes))
     caidos = [i['cliente'] for i in filas if not (i.get('resumen') or {}).get('servicio_activo')]
     if caidos:

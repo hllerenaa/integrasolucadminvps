@@ -139,3 +139,11 @@ a:hover{text-decoration:underline}
   .tabla-envoltura{margin-left:8px;margin-right:8px}
   .barra input[type=search]{min-width:100%}
 }
+
+/* --------------------------------------------------- credenciales.json */
+#editor-credenciales{width:100%;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;
+  border:1px solid var(--borde);border-radius:8px;padding:10px;background:#fbfcfe;color:var(--texto);
+  line-height:1.5;resize:vertical}
+#editor-credenciales[readonly]{background:#f4f6fa;color:var(--suave)}
+.codigo{background:#f4f6fa;border:1px solid var(--borde);border-radius:8px;padding:10px;
+  font-size:12px;overflow:auto;max-height:300px}

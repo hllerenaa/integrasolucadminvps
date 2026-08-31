@@ -40,6 +40,11 @@ def _registrar(config, usuario, accion, objetivo, codigo, salida):
         pass
 
 
+def registrar_evento(config, usuario, accion, objetivo, codigo=0, detalle=''):
+    """Deja constancia en el log de acciones de algo que no es un comando."""
+    _registrar(config, usuario, accion, objetivo, codigo, detalle)
+
+
 def permitida(config, accion):
     cfg = config.get('acciones') or {}
     if not cfg.get('enabled', True):

@@ -31,6 +31,9 @@ _RE_DIRECTIVA = {
     'redirect': re.compile(r'^\s*Redirect\s+permanent', re.I | re.M),
 }
 
+_RE_ERRORLOG = re.compile(r'^\s*ErrorLog\s+"?([^"\s]+)', re.I | re.M)
+_RE_CUSTOMLOG = re.compile(r'^\s*CustomLog\s+"?([^"\s]+)', re.I | re.M)
+
 
 def _leer(ruta):
     try:
@@ -87,6 +90,8 @@ def cargar_vhosts(config=None):
                 'documentroot': _uno('documentroot', contenido),
                 'puertos_proxy': proxies,
                 'ssl': bool(certificado),
+                'errorlog': [r for r in _RE_ERRORLOG.findall(contenido) if not r.startswith('|')],
+                'customlog': [r for r in _RE_CUSTOMLOG.findall(contenido) if not r.startswith('|')],
                 'modificado': modificado,
                 'contenido': contenido,
             })

@@ -6,7 +6,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from . import dbstats, discovery, storage, systemd, units, webserver
+from . import dbstats, discovery, logs as mod_logs, storage, systemd, units, webserver
 from .utils import ahora_iso, bytes_legible
 
 
@@ -61,6 +61,8 @@ def _recolectar_instancia(instancia, config, forzar_media=False, vhosts=None, un
 
     datos['media'] = (storage.tamano_media(instancia, config, forzar=forzar_media)
                       if config.get('medir_media', True) else {})
+    datos['logs'] = (mod_logs.logs_de_instancia(instancia, vhost, unidad)
+                     if config.get('medir_logs', True) else {})
     datos['git'] = storage.info_git(instancia.ruta)
     datos['fecha_instalacion'] = storage.fecha_instalacion(instancia.ruta)
     datos['actualizado'] = ahora_iso()
@@ -118,6 +120,9 @@ def _resumen_fila(datos):
         'db_tamano_bytes': db.get('tamano_bytes'),
         'media_tamano': (datos.get('media') or {}).get('tamano'),
         'media_bytes': (datos.get('media') or {}).get('bytes'),
+        'logs_tamano': (datos.get('logs') or {}).get('tamano'),
+        'logs_bytes': (datos.get('logs') or {}).get('bytes'),
+        'logs_archivos': (datos.get('logs') or {}).get('total_archivos'),
         'auditoria_fecha': auditoria.get('fecha'),
         'auditoria_hora': auditoria.get('hora'),
         'auditoria_usuario': auditoria.get('usuario'),
@@ -192,6 +197,7 @@ class Colector(object):
         db_ok = sum(1 for i in instancias if (i.get('resumen') or {}).get('db_ok'))
         db_bytes = sum((i.get('db') or {}).get('tamano_bytes') or 0 for i in instancias)
         media_bytes = sum((i.get('media') or {}).get('bytes') or 0 for i in instancias)
+        logs_bytes = sum((i.get('logs') or {}).get('bytes') or 0 for i in instancias)
         sitios_ok = sum(1 for i in instancias if (i.get('apache') or {}).get('habilitado'))
         ssl_ok = sum(1 for i in instancias if (i.get('ssl') or {}).get('estado') == 'vigente')
         ssl_alerta = sum(1 for i in instancias
@@ -216,6 +222,8 @@ class Colector(object):
             'db_tamano': bytes_legible(db_bytes),
             'media_bytes': media_bytes,
             'media_tamano': bytes_legible(media_bytes),
+            'logs_bytes': logs_bytes,
+            'logs_tamano': bytes_legible(logs_bytes),
             'por_tipo': por_tipo,
         }
 
@@ -268,6 +276,7 @@ class Colector(object):
             datos['ssl'] = {}
             datos['url_estado'] = {}
             datos['media'] = {}
+            datos['logs'] = {}
             datos['git'] = {}
             datos['actualizado'] = ahora_iso()
             datos['resumen'] = _resumen_fila(datos)

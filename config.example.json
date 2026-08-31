@@ -26,6 +26,7 @@
   },
   "consultar_bd": true,
   "medir_media": true,
+  "medir_logs": true,
   "verificar_url": true,
   "intervalo_refresco": 300,
   "ttl_datos": 300,
@@ -41,6 +42,11 @@
     "enabled": true,
     "servicios": true,
     "apache": true
+  },
+  "credenciales": {
+    "ver": true,
+    "editar": true,
+    "mostrar_secretos": true
   },
   "auth": {
     "enabled": true,

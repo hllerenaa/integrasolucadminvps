@@ -24,6 +24,7 @@ DEFAULTS = {
     'overrides': {},
     'consultar_bd': True,
     'medir_media': True,
+    'medir_logs': True,
     'verificar_url': True,
     'intervalo_refresco': 300,
     'ttl_datos': 300,
@@ -36,6 +37,7 @@ DEFAULTS = {
     'timeout_url': 6,
     'timeout_accion': 60,
     'acciones': {'enabled': True, 'servicios': True, 'apache': True},
+    'credenciales': {'ver': True, 'editar': True, 'mostrar_secretos': True},
     'auth': {
         'enabled': True,
         'username': 'admin',
