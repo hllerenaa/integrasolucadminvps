@@ -4,84 +4,80 @@
   <div class="cabecera-izq">
     <h1>{{ titulo }}</h1>
     <span class="etiqueta-version">v{{ version }}</span>
+    <span id="estado-refresco" class="estado-refresco">Cargando…</span>
   </div>
   <div class="cabecera-der">
-    <span id="estado-refresco" class="estado-refresco">Cargando…</span>
-    <button id="btn-refrescar" class="boton">Refrescar</button>
-    <button id="btn-refrescar-media" class="boton secundario" title="Recalcula el tamaño de las carpetas media (puede tardar)">Recalcular media</button>
-    <a id="btn-excel" class="boton secundario" href="/export.xlsx">Excel</a>
-    <a id="btn-csv" class="boton secundario" href="/export.csv">CSV</a>
-    <button id="btn-historial" class="boton secundario" title="Últimas acciones ejecutadas desde el panel">Historial</button>
+    <button id="btn-refrescar" class="boton" type="button">Refrescar</button>
+    <button id="btn-media" class="boton secundario" type="button"
+            title="Recalcula el tamaño de las carpetas media (puede tardar varios minutos)">Recalcular media</button>
+    <button id="btn-excel" class="boton secundario" type="button">Excel</button>
+    <button id="btn-csv" class="boton secundario" type="button">CSV</button>
+    <button id="btn-historial" class="boton secundario" type="button">Historial</button>
     {% if auth_activa %}<a class="boton secundario" href="/logout">Salir</a>{% endif %}
   </div>
 </header>
 
+<div id="avisos"></div>
+
 <section class="tarjetas" id="tarjetas"></section>
 
-<section class="filtros">
-  <input type="search" id="filtro-texto" placeholder="Buscar cliente, empresa o dominio…">
-  <select id="filtro-tipo">
+<section class="barra">
+  <input type="search" id="filtro-texto" placeholder="Buscar por cliente, empresa, dominio, ruta, servicio o base…">
+  <select id="filtro-tipo" title="Sistema">
     <option value="">Todos los sistemas</option>
     <option value="inventario">Inventario</option>
     <option value="restaurante">Restaurante</option>
   </select>
-  <select id="filtro-estado">
+  <select id="filtro-estado" title="Estado">
     <option value="">Todos los estados</option>
-    <option value="ok">Servicio y BD OK</option>
+    <option value="ok">Sin novedades</option>
     <option value="alerta">Con alerta</option>
     <option value="error">Caídos</option>
     <option value="servicio-inactivo">Servicio inactivo</option>
     <option value="db-caida">Base caída</option>
     <option value="sitio-desactivado">Sitio Apache desactivado</option>
-    <option value="ssl-problema">SSL vencido o por vencer</option>
+    <option value="ssl-problema">SSL vencido / por vencer / autofirmado</option>
     <option value="url-caida">URL no responde</option>
+    <option value="dominio-viejo">Dominio desactualizado</option>
+    <option value="sin-facturar">Dejó de facturar</option>
   </select>
+  <select id="orden" title="Ordenar por"></select>
+  <button id="btn-orden-dir" class="boton mini" type="button" title="Invertir orden">▲</button>
+  <div class="menu">
+    <button id="btn-columnas" class="boton mini" type="button">Columnas ▾</button>
+    <div class="menu-caja oculto" id="menu-columnas"></div>
+  </div>
   <label class="check"><input type="checkbox" id="auto-refresco" checked> Auto</label>
+  <span class="crece"></span>
+  <span id="contador" class="tenue"></span>
 </section>
 
 <div class="tabla-envoltura">
   <table class="tabla" id="tabla">
     <thead>
-      <tr>
-        <th data-orden="cliente">Cliente</th>
-        <th data-orden="tipo">Sistema</th>
-        <th data-orden="servicio">Servicio</th>
-        <th data-orden="url">URL</th>
-        <th data-orden="ssl">SSL</th>
-        <th data-orden="apache">Apache</th>
-        <th data-orden="fecha_instalacion">Creado</th>
-        <th data-orden="db" class="col-bd">Base</th>
-        <th data-orden="db_tamano_bytes" class="num col-bd">Tamaño BD</th>
-        <th data-orden="media_bytes" class="num col-media">Media</th>
-        <th data-orden="auditoria_fecha" class="col-bd">Última auditoría</th>
-        <th data-orden="ultima_sesion" class="col-bd">Última sesión</th>
-        <th data-orden="primera_venta" class="col-bd">Primera venta</th>
-        <th data-orden="ultima_venta" class="col-bd">Última venta</th>
-        <th></th>
-      </tr>
+      <tr id="fila-grupos"></tr>
+      <tr id="fila-cabecera"></tr>
     </thead>
     <tbody id="cuerpo-tabla">
-      <tr><td colspan="15" class="vacio">Cargando instancias…</td></tr>
+      <tr><td class="vacio">Cargando instancias…</td></tr>
     </tbody>
   </table>
 </div>
 
-<div class="tabla-envoltura" id="caja-historial" style="display:none">
-  <table class="tabla" id="tabla-historial" style="min-width:auto">
-    <thead><tr><th>Fecha</th><th>Usuario</th><th>Acción</th><th>Objetivo</th><th>Resultado</th></tr></thead>
+<div class="tabla-envoltura" id="caja-historial" hidden>
+  <table class="tabla" style="min-width:auto">
+    <thead><tr><th>Fecha</th><th>Usuario</th><th>Acción</th><th>Objetivo</th><th>Resultado</th><th>Salida</th></tr></thead>
     <tbody id="cuerpo-historial"></tbody>
   </table>
 </div>
 
-<footer class="pie">
-  <span id="pie-info"></span>
-</footer>
+<footer class="pie"><span id="pie-info"></span></footer>
 
 <div class="modal oculto" id="modal">
   <div class="modal-caja">
     <div class="modal-cabecera">
       <h2 id="modal-titulo"></h2>
-      <button class="cerrar" id="modal-cerrar">&times;</button>
+      <button class="cerrar" id="modal-cerrar" type="button">&times;</button>
     </div>
     <div class="modal-cuerpo" id="modal-cuerpo"></div>
   </div>
@@ -90,5 +86,5 @@
 
 {% block scripts %}
 <script>window.PANEL_INTERVALO = {{ intervalo }};</script>
-<script src="{{ url_for('static', filename='app.js') }}"></script>
+<script src="{{ url_for('static', filename='app.js') }}?v={{ version }}"></script>
 {% endblock %}

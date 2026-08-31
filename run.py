@@ -78,15 +78,44 @@ def _reporte(colector):
     return 0 if not (caidos or bases or ssl_mal) else 1
 
 
+def _credenciales(usuario, clave):
+    """Actualiza usuario/clave del panel en config.json (clave como hash)."""
+    import json
+    import os
+    from app.config import CONFIG_PATH, EJEMPLO_PATH, hash_password
+
+    origen = CONFIG_PATH if os.path.isfile(CONFIG_PATH) else EJEMPLO_PATH
+    with open(origen, 'r', encoding='utf-8') as fh:
+        datos = json.load(fh)
+    datos.setdefault('auth', {})
+    datos['auth']['enabled'] = True
+    if usuario:
+        datos['auth']['username'] = usuario
+    if clave:
+        datos['auth']['password_hash'] = hash_password(clave)
+        datos['auth']['password'] = ''
+    with open(CONFIG_PATH, 'w', encoding='utf-8') as fh:
+        json.dump(datos, fh, indent=2, ensure_ascii=False)
+    os.chmod(CONFIG_PATH, 0o600)
+    print('Credenciales actualizadas en %s (usuario: %s).' % (CONFIG_PATH, datos['auth']['username']))
+    print('Reinicia el panel:  systemctl restart integrasolucadmin')
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Panel VPS Integrasoluc')
     parser.add_argument('--reporte', action='store_true', help='imprime el estado en consola y sale')
     parser.add_argument('--json', action='store_true', help='vuelca el estado en JSON y sale')
     parser.add_argument('--dev', action='store_true', help='usa el servidor de desarrollo de Flask')
+    parser.add_argument('--usuario', help='cambia el usuario del panel en config.json')
+    parser.add_argument('--clave', help='cambia la clave del panel (se guarda como hash sha256)')
     parser.add_argument('--host', help='dirección de escucha (por defecto la de config.json)')
     parser.add_argument('--port', type=int, help='puerto (por defecto el de config.json)')
     parser.add_argument('--version', action='version', version='integrasolucadminvps %s' % __version__)
     args = parser.parse_args(argv)
+
+    if args.usuario or args.clave:
+        return _credenciales(args.usuario, args.clave)
 
     config = cargar()
     if args.host:

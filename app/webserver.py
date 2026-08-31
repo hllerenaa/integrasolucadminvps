@@ -93,49 +93,105 @@ def cargar_vhosts(config=None):
     return vhosts
 
 
+VHOSTS_GENERICOS = ('000-default', 'default-ssl', 'default', '000-default-le-ssl')
+
+
 def buscar_vhost(instancia, vhosts, puerto_servicio=None):
     """Empareja una instancia con su vhost de Apache.
 
-    Se prueba, en orden: dominio en ServerName/ServerAlias, ruta de la
-    instalación dentro del archivo, puerto del proxy y nombre del cliente.
+    Se puntúa por señales fuertes primero (el puerto al que hace ProxyPass el
+    vhost y la ruta de la instalación dentro del archivo), porque el dominio de
+    credenciales.json suele quedar desactualizado al clonar el template.
     """
     dominio = (instancia.dominio or '').lower()
     candidatos = []
     for vhost in vhosts:
         puntaje = 0
+        motivos = []
         nombres = [(vhost.get('servername') or '').lower()] + [a.lower() for a in vhost['alias']]
-        if dominio and dominio in nombres:
-            puntaje += 100
-        elif dominio and any(dominio in n for n in nombres if n):
-            puntaje += 60
-        if instancia.ruta and instancia.ruta in vhost['contenido']:
-            puntaje += 50
+        nombres = [n for n in nombres if n]
+
         if puerto_servicio and puerto_servicio in vhost['puertos_proxy']:
-            puntaje += 40
-        if instancia.cliente.lower() in vhost['nombre'].lower():
-            puntaje += 20
-        if vhost['ssl']:
-            puntaje += 5   # ante empate gana el vhost con SSL
-        if puntaje:
-            candidatos.append((puntaje, vhost))
+            puntaje += 100
+            motivos.append('proxy al puerto %s' % puerto_servicio)
+        if instancia.ruta and instancia.ruta in vhost['contenido']:
+            puntaje += 80
+            motivos.append('ruta de la instalación en el vhost')
+        if dominio and dominio in nombres:
+            puntaje += 60
+            motivos.append('ServerName coincide con credenciales.json')
+        elif dominio and any(dominio in n for n in nombres):
+            puntaje += 30
+            motivos.append('dominio parecido al ServerName')
+        if instancia.cliente.lower() in vhost['sitio'].lower():
+            puntaje += 25
+            motivos.append('nombre del archivo')
+
+        if vhost['sitio'].lower() in VHOSTS_GENERICOS:
+            puntaje -= 200   # el vhost por defecto de Apache nunca es la respuesta
+        if not puntaje:
+            continue
+        candidatos.append((puntaje, 1 if vhost['ssl'] else 0, vhost, motivos))
+
+    # Sin una señal fuerte (puerto o ruta) no se afirma nada: mejor "sin vhost"
+    # que atribuirle a un cliente el certificado de otro.
+    candidatos = [c for c in candidatos if c[0] >= 60]
     if not candidatos:
         return None
-    candidatos.sort(key=lambda c: c[0], reverse=True)
-    elegido = dict(candidatos[0][1])
+    candidatos.sort(key=lambda c: (c[0], c[1]), reverse=True)
+
+    puntaje, _, mejor, motivos = candidatos[0]
+    elegido = dict(mejor)
     elegido.pop('contenido', None)
-    elegido['coincidencia'] = candidatos[0][0]
-    # Otros vhost del mismo sitio (por ejemplo el :80 que redirige a https)
+    elegido['coincidencia'] = puntaje
+    elegido['motivos'] = motivos
     elegido['otros'] = [
-        {'nombre': v['nombre'], 'habilitado': v['habilitado'], 'ssl': v['ssl']}
-        for p, v in candidatos[1:4]
+        {'nombre': v['nombre'], 'habilitado': v['habilitado'], 'ssl': v['ssl'],
+         'servername': v.get('servername')}
+        for p, _s, v, _m in candidatos[1:4]
     ]
     return elegido
 
 
-def _ruta_certificado(instancia, vhost):
+def dominio_efectivo(instancia, vhost):
+    """Dominio real de la instancia: manda el ServerName del vhost de Apache.
+
+    credenciales.json arrastra el DOMINIO_GENERAL del template en muchas
+    instalaciones, por eso sólo se usa como respaldo.
+    """
+    dominio_credenciales = (instancia.dominio or '').strip()
+    dominio_apache = ((vhost or {}).get('servername') or '').strip()
+    dominio = dominio_apache or dominio_credenciales
+    if not dominio:
+        return {'dominio': None, 'url': None, 'origen': None,
+                'dominio_credenciales': dominio_credenciales or None,
+                'dominio_apache': None, 'desactualizado': False}
+
+    if dominio_apache:
+        origen = 'apache'
+        esquema = 'https' if (vhost or {}).get('ssl') else 'http'
+    else:
+        origen = 'credenciales'
+        esquema = 'https' if instancia.credenciales.get('USE_SSL') else 'http'
+
+    desactualizado = bool(dominio_apache and dominio_credenciales
+                          and dominio_apache.lower() != dominio_credenciales.lower()
+                          and dominio_credenciales.lower() not in
+                          [a.lower() for a in (vhost or {}).get('alias', [])])
+    return {
+        'dominio': dominio,
+        'url': '%s://%s' % (esquema, dominio),
+        'origen': origen,
+        'dominio_credenciales': dominio_credenciales or None,
+        'dominio_apache': dominio_apache or None,
+        'desactualizado': desactualizado,
+    }
+
+
+def _ruta_certificado(instancia, vhost, dominio=None):
     if vhost and vhost.get('certificado') and os.path.isfile(vhost['certificado']):
         return vhost['certificado']
-    dominio = instancia.dominio
+    dominio = dominio or instancia.dominio
     if dominio:
         for nombre in ('fullchain.pem', 'cert.pem'):
             ruta = '/etc/letsencrypt/live/%s/%s' % (dominio, nombre)
@@ -144,12 +200,13 @@ def _ruta_certificado(instancia, vhost):
     return None
 
 
-def info_certificado(instancia, vhost):
+def info_certificado(instancia, vhost, dominio=None):
     """Datos del certificado SSL instalado (leído con openssl, sin dependencias)."""
     datos = {'tiene_ssl': False, 'archivo': None, 'emisor': None, 'valido_hasta': None,
-             'dias_restantes': None, 'estado': 'sin-certificado', 'error': None}
+             'dias_restantes': None, 'estado': 'sin-certificado', 'autofirmado': False,
+             'coincide_dominio': None, 'error': None}
 
-    ruta = _ruta_certificado(instancia, vhost)
+    ruta = _ruta_certificado(instancia, vhost, dominio)
     if not ruta:
         if vhost and vhost.get('certificado'):
             datos['error'] = 'El vhost apunta a %s pero el archivo no existe' % vhost['certificado']
@@ -185,8 +242,21 @@ def info_certificado(instancia, vhost):
             if encontrado:
                 datos['dominio_certificado'] = encontrado.group(1).strip()
 
+    # Snakeoil / autofirmado: emisor igual al sujeto o el certificado por defecto.
+    cn_cert = datos.get('dominio_certificado')
+    datos['autofirmado'] = bool(
+        'snakeoil' in ruta.lower()
+        or (cn_cert and datos.get('emisor') and cn_cert == datos['emisor']))
+
+    objetivo = (dominio or instancia.dominio or '').lower()
+    if cn_cert and objetivo:
+        cn = cn_cert.lower().lstrip('*.')
+        datos['coincide_dominio'] = objetivo == cn or objetivo.endswith('.' + cn)
+
     dias = datos['dias_restantes']
-    if dias is None:
+    if datos['autofirmado']:
+        datos['estado'] = 'autofirmado'
+    elif dias is None:
         datos['estado'] = 'desconocido'
     elif dias < 0:
         datos['estado'] = 'vencido'

@@ -8,6 +8,7 @@ tabla/columna que realmente exista en esa base.
 """
 from __future__ import annotations
 
+import datetime
 import time
 
 from .utils import bytes_legible, dias_desde, fecha_iso
@@ -239,6 +240,63 @@ def _ventas(cur, esquema, tipo):
     return salida
 
 
+TABLA_FACTURAS = 'facturacion_facturareal'
+
+
+def _facturacion(cur, esquema):
+    """Facturas emitidas: total, del mes actual y último mes con facturación."""
+    columnas = esquema.get(TABLA_FACTURAS)
+    if not columnas:
+        return {'disponible': False, 'error': 'Tabla %s inexistente' % TABLA_FACTURAS}
+    columna = _columna_fecha(columnas)
+    if not columna:
+        return {'disponible': False, 'error': 'Sin columna de fecha en %s' % TABLA_FACTURAS}
+
+    datos = {'disponible': True, 'tabla': TABLA_FACTURAS}
+    try:
+        cur.execute("""
+            SELECT COUNT(*),
+                   SUM(CASE WHEN {col} >= date_trunc('month', CURRENT_DATE) THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN {col} >= date_trunc('month', CURRENT_DATE) - interval '1 month'
+                             AND {col} <  date_trunc('month', CURRENT_DATE) THEN 1 ELSE 0 END),
+                   MIN({col}), MAX({col})
+            FROM {tabla}{filtro}
+        """.format(col=columna, tabla=TABLA_FACTURAS, filtro=_filtro_status(columnas)))
+        fila = cur.fetchone()
+    except Exception as ex:
+        datos['error'] = str(ex).strip()
+        return datos
+
+    total, mes_actual, mes_anterior, primera, ultima = fila
+    datos.update({
+        'total': int(total or 0),
+        'mes_actual': int(mes_actual or 0),
+        'mes_anterior': int(mes_anterior or 0),
+        'primera': fecha_iso(primera),
+        'ultima': fecha_iso(ultima),
+        'dias_sin_facturar': dias_desde(ultima),
+    })
+
+    if ultima is not None:
+        hoy = datetime.date.today()
+        datos['ultimo_mes'] = '%04d-%02d' % (ultima.year, ultima.month)
+        datos['meses_sin_facturar'] = ((hoy.year - ultima.year) * 12) + (hoy.month - ultima.month)
+    else:
+        datos['ultimo_mes'] = None
+        datos['meses_sin_facturar'] = None
+
+    # Semáforo: facturó este mes / sólo el mes pasado / dejó de facturar.
+    if datos['mes_actual']:
+        datos['estado'] = 'facturando'
+    elif datos['meses_sin_facturar'] == 1:
+        datos['estado'] = 'sin-facturar-mes'
+    elif datos['meses_sin_facturar'] is None:
+        datos['estado'] = 'nunca'
+    else:
+        datos['estado'] = 'detenido'
+    return datos
+
+
 def _tablas_grandes(cur, limite=5):
     try:
         cur.execute(
@@ -273,6 +331,7 @@ def consultar(instancia, config):
         'auditoria': {},
         'sesiones': {},
         'ventas': [],
+        'facturacion': {},
         'empresa': {},
         'tablas_grandes': [],
     }
@@ -321,6 +380,7 @@ def consultar(instancia, config):
         datos['auditoria'] = _auditoria(cur, esquema)
         datos['sesiones'] = _sesiones(cur, esquema)
         datos['ventas'] = _ventas(cur, esquema, instancia.tipo)
+        datos['facturacion'] = _facturacion(cur, esquema)
         datos['tablas_grandes'] = _tablas_grandes(cur)
         cur.close()
     except Exception as ex:

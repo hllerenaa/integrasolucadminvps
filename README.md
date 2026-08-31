@@ -14,14 +14,16 @@ los certificados y (opcionalmente) la base PostgreSQL de cada cliente.
 | Dato | De dónde sale |
 |---|---|
 | Cliente, sistema (inventario/restaurante) y ruta de instalación | Escaneo de `/home/*/pryinventario` y `/home/*/pryrestaurante` |
-| URL pública y si responde (código HTTP) | `DOMINIO_GENERAL` + `USE_SSL` de `credenciales.json`, petición en vivo |
+| URL pública y si responde (código HTTP) | **ServerName del vhost de Apache** (con `DOMINIO_GENERAL` como respaldo) + petición en vivo |
+| Aviso de `DOMINIO_GENERAL` desactualizado | Comparación entre `credenciales.json` y el vhost |
 | Certificado SSL: vigente / por vencer / vencido, días restantes, emisor | `SSLCertificateFile` del vhost o `/etc/letsencrypt/live/<dominio>/` |
-| Servicio systemd: activo, arranque, PID, memoria, uptime, puerto de gunicorn | `systemctl show <servicio>` |
+| Servicio systemd: activo, arranque, PID, memoria, uptime, puerto de gunicorn | El `.service` que apunta a la carpeta (`WorkingDirectory`/`ExecStart`) + `systemctl show` |
 | Vhost de Apache: archivo, sitio, si está habilitado, ServerName, proxy | `/etc/apache2/sites-available` + `sites-enabled` |
 | Fecha de creación de la instancia y del archivo `.service` | `stat` de la carpeta y del unit file |
 | Base de datos: activa/caída, tamaño, versión, tablas más grandes | PostgreSQL de la instancia (`credenciales.json`) |
 | Tamaño de la carpeta `media` | `du -sb` con caché |
-| Última auditoría (fecha, hora, usuario, tabla, acción) | `seguridad_audiusuariotabla` |
+| Última auditoría (fecha, hora, usuario, tabla y acción) | `seguridad_audiusuariotabla` |
+| Facturas emitidas: total, del mes actual, del mes anterior, último mes facturado y meses sin facturar | `facturacion_facturareal` |
 | Última sesión y sesiones vigentes | `auth_user.last_login`, `django_session`, `seguridad_usuarioconectado` |
 | Primera y última venta | `salida_salidaservicios` / `pedido_venta` y `facturacion_facturareal` |
 | Rama y último commit desplegado | `git log` de la instalación |
@@ -29,10 +31,34 @@ los certificados y (opcionalmente) la base PostgreSQL de cada cliente.
 Las tablas de ventas **se detectan automáticamente** (`information_schema`), por
 eso funciona aunque el esquema varíe entre inventario y restaurante.
 
+### Cómo identifica cada cosa
+
+- **El servicio** no se adivina por el nombre del cliente: se leen los `.service`
+  de `/etc/systemd/system` y se toma el que tenga `WorkingDirectory` (o
+  `ExecStart`) apuntando a esa carpeta. Así aparecen también los servicios que
+  se llaman distinto al cliente.
+- **El vhost de Apache** se empareja por el puerto al que hace `ProxyPass`
+  (el mismo del gunicorn) y por la ruta de la instalación dentro del archivo.
+  Si no hay una señal fuerte se muestra "sin vhost" en vez de atribuirle a un
+  cliente el vhost de otro. Los `000-default*` quedan descartados.
+- **El dominio** sale del `ServerName` de ese vhost, porque el
+  `DOMINIO_GENERAL` de `credenciales.json` casi siempre queda con el valor del
+  template al clonar la instancia. Cuando ambos difieren, el panel lo marca
+  como "dominio desactualizado" (columna URL y tarjeta del resumen).
+- **El certificado** se lee del `SSLCertificateFile` del vhost o de
+  `/etc/letsencrypt/live/<dominio>/`. Si el emisor es igual al sujeto (o es el
+  `ssl-cert-snakeoil` de Apache) se marca **autofirmado**, para que no parezca
+  un certificado válido de 10 años.
+
 ## Qué permite hacer
 
 - Iniciar, detener, reiniciar, habilitar o deshabilitar el **servicio systemd**.
 - Activar o desactivar el **sitio de Apache** (`a2ensite` / `a2dissite` + reload).
+- Buscar por cliente, empresa, dominio, ruta, servicio o base de datos.
+- Ordenar por cualquier columna: fecha de implementación, tamaño de la base,
+  tamaño de media, última venta, meses sin facturar, etc.
+- Mostrar u ocultar grupos de columnas (Instancia / Servicio y web / Base y
+  archivos / Actividad) y filtrar con un clic desde las tarjetas del resumen.
 - Exportar el listado completo a **Excel (.xlsx)** con formato y a **CSV**.
 - Ver el **historial** de acciones ejecutadas desde el panel (`var/acciones.log`).
 - Consultar todo desde consola (`run.py --reporte`) o por **API JSON**.
@@ -61,6 +87,16 @@ El instalador:
 Luego se entra desde `http://<IP-PUBLICA>:8600`.
 
 Opciones: `--bind`, `--servicio <nombre>`, `--sin-servicio`, `--help`.
+
+### Cambiar usuario o clave del panel
+
+```bash
+cd /opt/integrasolucadminvps
+venv/bin/python run.py --usuario admin --clave "TuNuevaClave"
+systemctl restart integrasolucadmin
+```
+
+La clave se guarda como hash SHA-256 en `config.json` (permisos 600); nunca en texto plano.
 
 ### Actualizar
 
@@ -105,6 +141,7 @@ sudo ./uninstall.sh
 venv/bin/python run.py --reporte    # tabla con el estado de todas las instancias
 venv/bin/python run.py --json       # volcado completo en JSON
 venv/bin/python run.py --dev        # servidor de desarrollo
+venv/bin/python run.py --usuario admin --clave "..."   # cambia las credenciales
 ```
 
 `--reporte` devuelve código de salida 1 si hay servicios caídos, bases

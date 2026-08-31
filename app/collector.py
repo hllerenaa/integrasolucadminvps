@@ -6,28 +6,52 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from . import dbstats, discovery, storage, systemd, webserver
+from . import dbstats, discovery, storage, systemd, units, webserver
 from .utils import ahora_iso, bytes_legible
 
 
-def _recolectar_instancia(instancia, config, forzar_media=False, vhosts=None):
+def _recolectar_instancia(instancia, config, forzar_media=False, vhosts=None, unidades=None):
     """Estado completo de una instancia (servicio + apache + SSL + base + media)."""
     inicio = time.time()
     datos = instancia.as_dict()
+
+    # 1. Servicio: se busca el .service que apunta a esta carpeta; si no
+    #    aparece, se cae al nombre por convención ({cliente}).
+    unidad = units.buscar_unidad(instancia, unidades or [], instancia.servicio)
+    if unidad:
+        instancia.servicio = unidad['unidad']
+        datos['servicio'] = unidad['unidad']
+        datos['servicio_origen'] = unidad['origen']
     datos['servicio_estado'] = systemd.estado_servicio(
         instancia.servicio, timeout=int(config.get('timeout_systemctl') or 10))
 
-    puerto = (datos['servicio_estado'] or {}).get('puerto')
+    # 2. Apache: el puerto del gunicorn es la señal más confiable para
+    #    emparejar el vhost (el dominio de credenciales.json suele estar viejo).
+    puerto = (datos['servicio_estado'] or {}).get('puerto') or (unidad or {}).get('puerto')
+    datos['puerto'] = puerto
     vhost = webserver.buscar_vhost(instancia, vhosts or [], puerto)
     datos['apache'] = vhost or {'archivo': None, 'habilitado': None,
                                 'error': 'No se encontró vhost de Apache para esta instancia'}
-    datos['ssl'] = webserver.info_certificado(instancia, vhost)
+
+    # 3. Dominio real: manda el ServerName del vhost.
+    dominios = webserver.dominio_efectivo(instancia, vhost)
+    datos.update({
+        'dominio': dominios['dominio'],
+        'url': dominios['url'],
+        'dominio_origen': dominios['origen'],
+        'dominio_credenciales': dominios['dominio_credenciales'],
+        'dominio_apache': dominios['dominio_apache'],
+        'dominio_desactualizado': dominios['desactualizado'],
+    })
+
+    datos['ssl'] = webserver.info_certificado(instancia, vhost, dominios['dominio'])
 
     if config.get('verificar_url', True):
         datos['url_estado'] = webserver.verificar_url(
-            instancia.url, timeout=int(config.get('timeout_url') or 6))
+            dominios['url'], timeout=int(config.get('timeout_url') or 6))
     else:
-        datos['url_estado'] = {'url': instancia.url, 'responde': None, 'error': 'verificación desactivada'}
+        datos['url_estado'] = {'url': dominios['url'], 'responde': None,
+                               'error': 'verificación desactivada'}
 
     if config.get('consultar_bd', True):
         datos['db'] = dbstats.consultar(instancia, config)
@@ -53,6 +77,7 @@ def _resumen_fila(datos):
     ssl_info = datos.get('ssl') or {}
     url_estado = datos.get('url_estado') or {}
     venta = dbstats.venta_principal(db)
+    facturacion = db.get('facturacion') or {}
     auditoria = db.get('auditoria') or {}
     sesiones = db.get('sesiones') or {}
     empresa = db.get('empresa') or {}
@@ -71,6 +96,8 @@ def _resumen_fila(datos):
 
     return {
         'salud': salud,
+        'dominio_desactualizado': bool(datos.get('dominio_desactualizado')),
+        'dominio_credenciales': datos.get('dominio_credenciales'),
         'fecha_instalacion': datos.get('fecha_instalacion'),
         'servicio_creado': servicio.get('creado'),
         'servicio_desde': servicio.get('desde'),
@@ -92,10 +119,21 @@ def _resumen_fila(datos):
         'media_tamano': (datos.get('media') or {}).get('tamano'),
         'media_bytes': (datos.get('media') or {}).get('bytes'),
         'auditoria_fecha': auditoria.get('fecha'),
+        'auditoria_hora': auditoria.get('hora'),
         'auditoria_usuario': auditoria.get('usuario'),
+        'auditoria_accion': auditoria.get('accion'),
+        'auditoria_tabla': auditoria.get('tabla_afectada'),
         'auditoria_dias': auditoria.get('dias'),
+        'facturas_total': facturacion.get('total'),
+        'facturas_mes': facturacion.get('mes_actual'),
+        'facturas_mes_anterior': facturacion.get('mes_anterior'),
+        'facturas_ultimo_mes': facturacion.get('ultimo_mes'),
+        'facturas_meses_sin': facturacion.get('meses_sin_facturar'),
+        'facturas_estado': facturacion.get('estado'),
+        'ruta': datos.get('ruta'),
         'ultima_sesion': sesiones.get('ultimo_login'),
         'ultima_sesion_usuario': sesiones.get('usuario'),
+        'ultima_sesion_dias': sesiones.get('dias'),
         'sesiones_vigentes': sesiones.get('sesiones_vigentes'),
         'venta_tabla': venta.get('etiqueta'),
         'primera_venta': venta.get('primera'),
@@ -159,6 +197,7 @@ class Colector(object):
         ssl_alerta = sum(1 for i in instancias
                          if (i.get('ssl') or {}).get('estado') in ('vencido', 'por-vencer'))
         urls_ok = sum(1 for i in instancias if (i.get('url_estado') or {}).get('responde'))
+        dominios_viejos = sum(1 for i in instancias if i.get('dominio_desactualizado'))
         por_tipo = {}
         for i in instancias:
             por_tipo[i.get('tipo')] = por_tipo.get(i.get('tipo'), 0) + 1
@@ -170,6 +209,7 @@ class Colector(object):
             'ssl_vigentes': ssl_ok,
             'ssl_alerta': ssl_alerta,
             'urls_ok': urls_ok,
+            'dominios_desactualizados': dominios_viejos,
             'db_activas': db_ok,
             'db_caidas': total - db_ok,
             'db_bytes': db_bytes,
@@ -192,11 +232,12 @@ class Colector(object):
                 instancias = [i for i in instancias if i.id == solo]
             # Los vhost de Apache se leen una sola vez por refresco.
             vhosts = webserver.cargar_vhosts(self.config)
+            unidades = units.cargar_unidades(self.config)
             workers = max(1, int(self.config.get('workers') or 8))
             resultados = {}
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futuros = {
-                    pool.submit(self._seguro, inst, forzar_media, vhosts): inst
+                    pool.submit(self._seguro, inst, forzar_media, vhosts, unidades): inst
                     for inst in instancias
                 }
                 for futuro, inst in futuros.items():
@@ -214,9 +255,10 @@ class Colector(object):
             with self._lock:
                 self._refrescando = False
 
-    def _seguro(self, instancia, forzar_media, vhosts=None):
+    def _seguro(self, instancia, forzar_media, vhosts=None, unidades=None):
         try:
-            return _recolectar_instancia(instancia, self.config, forzar_media, vhosts)
+            return _recolectar_instancia(instancia, self.config, forzar_media,
+                                         vhosts, unidades)
         except Exception as ex:  # pragma: no cover - defensivo
             datos = instancia.as_dict()
             datos['error'] = 'Fallo recolectando: %s' % ex

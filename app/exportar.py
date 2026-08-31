@@ -12,6 +12,8 @@ COLUMNAS = [
     ('empresa', 'Empresa', 30),
     ('url', 'URL', 34),
     ('url_estado', 'URL responde', 14),
+    ('dominio_credenciales', 'DOMINIO_GENERAL (credenciales)', 30),
+    ('dominio_desactualizado', 'Dominio desactualizado', 20),
     ('servicio', 'Servicio systemd', 20),
     ('servicio_estado', 'Estado servicio', 15),
     ('servicio_uptime', 'Uptime', 12),
@@ -31,8 +33,15 @@ COLUMNAS = [
     ('media_tamano', 'Tamaño media', 13),
     ('auditoria_fecha', 'Última auditoría', 17),
     ('auditoria_usuario', 'Usuario auditoría', 18),
+    ('auditoria_accion', 'Acción auditoría', 16),
+    ('auditoria_tabla', 'Tabla auditada', 26),
     ('ultima_sesion', 'Última sesión', 19),
     ('ultima_sesion_usuario', 'Usuario última sesión', 20),
+    ('facturas_total', 'Facturas totales', 15),
+    ('facturas_mes', 'Facturas mes actual', 18),
+    ('facturas_mes_anterior', 'Facturas mes anterior', 19),
+    ('facturas_ultimo_mes', 'Último mes facturado', 19),
+    ('facturas_meses_sin', 'Meses sin facturar', 17),
     ('primera_venta', 'Primera venta', 14),
     ('ultima_venta', 'Última venta', 14),
     ('ventas_total', 'Total ventas', 13),
@@ -70,8 +79,18 @@ def fila(inst):
         'media_tamano': r.get('media_tamano'),
         'auditoria_fecha': r.get('auditoria_fecha'),
         'auditoria_usuario': r.get('auditoria_usuario'),
+        'auditoria_accion': {'A': 'Adición', 'M': 'Modificación', 'E': 'Eliminación'}
+                            .get(r.get('auditoria_accion'), r.get('auditoria_accion')),
+        'auditoria_tabla': r.get('auditoria_tabla'),
         'ultima_sesion': r.get('ultima_sesion'),
         'ultima_sesion_usuario': r.get('ultima_sesion_usuario'),
+        'dominio_credenciales': r.get('dominio_credenciales'),
+        'dominio_desactualizado': 'SI' if r.get('dominio_desactualizado') else 'no',
+        'facturas_total': r.get('facturas_total'),
+        'facturas_mes': r.get('facturas_mes'),
+        'facturas_mes_anterior': r.get('facturas_mes_anterior'),
+        'facturas_ultimo_mes': r.get('facturas_ultimo_mes'),
+        'facturas_meses_sin': r.get('facturas_meses_sin'),
         'primera_venta': r.get('primera_venta'),
         'ultima_venta': r.get('ultima_venta'),
         'ventas_total': r.get('ventas_total'),
@@ -138,6 +157,20 @@ def a_xlsx(instancias, resumen=None, titulo='Instancias'):
         hoja.cell(row=n, column=indices['apache_habilitado']).fill = (
             verde if datos.get('apache_habilitado') == 'SI' else
             (rojo if datos.get('apache_habilitado') == 'NO' else ambar))
+
+        meses = datos.get('facturas_meses_sin')
+        celda_fact = hoja.cell(row=n, column=indices['facturas_mes'])
+        if datos.get('facturas_mes'):
+            celda_fact.fill = verde
+        elif meses is None:
+            pass
+        elif meses <= 1:
+            celda_fact.fill = ambar
+        else:
+            celda_fact.fill = rojo
+
+        if datos.get('dominio_desactualizado') == 'SI':
+            hoja.cell(row=n, column=indices['dominio_desactualizado']).fill = ambar
 
         estado_db = datos.get('db_estado')
         if estado_db and estado_db != '-':
