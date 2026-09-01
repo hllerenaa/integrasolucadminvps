@@ -1341,24 +1341,64 @@
     tareaPoll = setInterval(tick, 1500);
   }
 
+  function tablaCron(d) {
+    var entradas = d.entradas || [];
+    var filas = entradas.map(function (c) {
+      return '<tr><td>' + esc(c.descripcion || c.expresion || '') +
+        (c.expresion && c.expresion !== c.descripcion
+          ? '<div class="sub"><code>' + esc(c.expresion) + '</code></div>' : '') +
+        '</td><td>' + esc(c.usuario || '') + '</td>' +
+        '<td class="celda-larga"><code>' + esc(c.comando) + '</code></td>' +
+        '<td class="sub">' + esc(c.origen) + '</td></tr>';
+    }).join('');
+    var timers = (d.timers || []).map(function (t) {
+      return '<tr><td>' + (t.proxima ? 'próxima: ' + esc(t.proxima) : '<span class="tenue">—</span>') +
+        (t.ultima ? '<div class="sub">última: ' + esc(t.ultima) + '</div>' : '') +
+        '</td><td>root</td><td class="celda-larga"><code>' + esc(t.unidad) + '</code>' +
+        (t.descripcion ? '<div class="sub">' + esc(t.descripcion) + '</div>' : '') +
+        (t.activa ? '<div class="sub">dispara ' + esc(t.activa) + '</div>' : '') +
+        '</td><td class="sub">systemd</td></tr>';
+    }).join('');
+    return '<h3 class="titulo-seccion">Programadas en el servidor</h3>' +
+      '<p class="tenue">Crontabs de los usuarios, /etc/crontab, /etc/cron.d y los ' +
+      'temporizadores de systemd. Es sólo lectura: para cambiarlas se edita el crontab ' +
+      'en el servidor.</p>' +
+      ((d.errores || []).length
+        ? '<p class="aviso-inline">' + esc((d.errores || []).join(' · ')) + '</p>' : '') +
+      '<table class="tabla-mini"><thead><tr><th>Cuándo</th><th>Usuario</th><th>Comando</th>' +
+      '<th>Origen</th></tr></thead><tbody>' +
+      (filas + timers || '<tr><td colspan="4" class="vacio">Sin tareas programadas</td></tr>') +
+      '</tbody></table>';
+  }
+
+  function tablaTareas(d) {
+    return '<h3 class="titulo-seccion">Ejecutadas desde el panel</h3>' +
+      '<table class="tabla-mini"><thead><tr><th>Inicio</th>' +
+      '<th>Tarea</th><th>Usuario</th><th>Estado</th><th></th></tr></thead><tbody>' +
+      ((d.tareas || []).map(function (t) {
+        return '<tr><td>' + esc(t.creado) + '</td><td>' + esc(t.titulo) + '</td><td>' +
+          esc(t.creado_por || '') + '</td><td>' +
+          badge(t.estado === 'ok' ? 'verde' : (t.estado === 'error' ? 'rojo' : 'ambar'), t.estado) +
+          '</td><td><button class="boton mini" type="button" data-tarea="' + esc(t.id) +
+          '">Ver log</button></td></tr>';
+      }).join('') || '<tr><td colspan="5" class="vacio">Sin tareas todavía</td></tr>') +
+      '</tbody></table>';
+  }
+
+  // Dos cosas distintas en la misma ventana: lo que el servidor tiene
+  // programado (cron) y lo que el panel ha lanzado en esta instalación.
   function listarTareas() {
-    fetch('/api/tareas', { credentials: 'same-origin' })
-      .then(function (r) { return r.json(); })
-      .then(function (d) {
-        $('#tarea-titulo').textContent = 'Tareas ejecutadas';
-        $('#tarea-cuerpo').innerHTML = '<table class="tabla-mini"><thead><tr><th>Inicio</th>' +
-          '<th>Tarea</th><th>Usuario</th><th>Estado</th><th></th></tr></thead><tbody>' +
-          ((d.tareas || []).map(function (t) {
-            return '<tr><td>' + esc(t.creado) + '</td><td>' + esc(t.titulo) + '</td><td>' +
-              esc(t.creado_por || '') + '</td><td>' +
-              badge(t.estado === 'ok' ? 'verde' : (t.estado === 'error' ? 'rojo' : 'ambar'), t.estado) +
-              '</td><td><button class="boton mini" type="button" data-tarea="' + esc(t.id) +
-              '">Ver log</button></td></tr>';
-          }).join('') || '<tr><td colspan="5" class="vacio">Sin tareas todavía</td></tr>') +
-          '</tbody></table>';
-        $('#modal-tarea').classList.remove('oculto');
-      })
-      .catch(function (e) { aviso(e.message); });
+    $('#tarea-titulo').textContent = 'Tareas programadas y ejecutadas';
+    $('#tarea-cuerpo').innerHTML = '<p class="tenue">Cargando…</p>';
+    $('#modal-tarea').classList.remove('oculto');
+    Promise.all([
+      fetch('/api/cron', { credentials: 'same-origin' }).then(function (r) { return r.json(); })
+        .catch(function (e) { return { errores: ['no se pudo leer el cron: ' + e.message] }; }),
+      fetch('/api/tareas', { credentials: 'same-origin' }).then(function (r) { return r.json(); })
+        .catch(function () { return {}; })
+    ]).then(function (respuestas) {
+      $('#tarea-cuerpo').innerHTML = tablaCron(respuestas[0]) + tablaTareas(respuestas[1]);
+    }).catch(function (e) { aviso(e.message); });
   }
 
   function deshacerTarea(id) {
@@ -1937,18 +1977,35 @@
       .catch(function (e) { caja.innerHTML = '<div class="aviso-error">' + esc(e.message) + '</div>'; });
   }
 
+  // El historial se muestra en el mismo modal que las tareas: antes se abría
+  // como una caja al final de la página, fuera de la pantalla, y parecía que
+  // el botón no hacía nada.
   function verHistorial() {
-    var caja = $('#caja-historial');
-    if (!caja.hidden) { caja.hidden = true; return; }
     fetch('/api/acciones', { credentials: 'same-origin' })
-      .then(function (r) { return r.json(); })
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
       .then(function (d) {
-        $('#cuerpo-historial').innerHTML = (d.acciones || []).map(function (a) {
-          return '<tr><td>' + esc(a.fecha) + '</td><td>' + esc(a.usuario) + '</td><td>' + esc(a.accion) +
-            '</td><td>' + esc(a.objetivo) + '</td><td>' + esc(a.resultado) + '</td><td class="sub">' +
-            esc(a.salida) + '</td></tr>';
-        }).join('') || '<tr><td colspan="6" class="vacio">Sin acciones registradas</td></tr>';
-        caja.hidden = false;
+        var filas = (d.acciones || []).map(function (a) {
+          var ok = /rc=0/.test(a.resultado || '');
+          return '<tr><td>' + esc(a.fecha) + '</td><td>' + esc(a.usuario || '') + '</td><td>' +
+            esc(a.accion) + '</td><td>' + esc(a.objetivo || '') + '</td><td>' +
+            badge(ok ? 'verde' : 'rojo', a.resultado || '') + '</td>' +
+            '<td class="sub celda-larga">' + esc(a.salida || '') + '</td></tr>';
+        }).join('');
+        $('#tarea-titulo').textContent = 'Historial de acciones del panel';
+        $('#tarea-cuerpo').innerHTML =
+          '<p class="tenue">Todo lo que se ha hecho desde el panel: servicios, sitios de ' +
+          'Apache, credenciales, certificados y cambios de configuración. ' +
+          ((d.acciones || []).length === 1 ? '1 acción registrada'
+            : (d.acciones || []).length + ' acciones registradas') +
+          ', la más reciente arriba.</p>' +
+          '<table class="tabla-mini"><thead><tr><th>Fecha</th><th>Usuario</th><th>Acción</th>' +
+          '<th>Objetivo</th><th>Resultado</th><th>Salida</th></tr></thead><tbody>' +
+          (filas || '<tr><td colspan="6" class="vacio">Sin acciones registradas</td></tr>') +
+          '</tbody></table>';
+        $('#modal-tarea').classList.remove('oculto');
       })
       .catch(function (e) { aviso('No se pudo leer el historial: ' + e.message); });
   }

@@ -11,8 +11,8 @@ from flask import (Flask, Response, jsonify, redirect, render_template,
 
 from . import (__version__, acciones as mod_acciones, aprovisionar,
                backups as mod_backups, certificados as mod_certificados,
-               credenciales as mod_credenciales, dbstats, discovery,
-               excluidos as mod_excluidos, exportar, units)
+               credenciales as mod_credenciales, cron as mod_cron, dbstats,
+               discovery, excluidos as mod_excluidos, exportar, units)
 from flask import send_file
 
 from .utils import bytes_legible
@@ -729,6 +729,12 @@ def crear_app(config=None):
     @requiere_login
     def api_historial_acciones():
         return jsonify({'acciones': mod_acciones.historial(config)})
+
+    @app.route('/api/cron')
+    @requiere_login
+    def api_cron():
+        """Tareas programadas del servidor (crontabs y timers de systemd)."""
+        return jsonify(mod_cron.listar(config))
 
     @app.route('/export.csv', methods=['GET', 'POST'])
     @requiere_login

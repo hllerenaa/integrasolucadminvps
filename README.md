@@ -75,7 +75,15 @@ eso funciona aunque el esquema varíe entre inventario y restaurante.
 | **Certificados** (`/certificados`) | Certificados de Let's Encrypt: emisión, vencimiento, renovar, pausar la renovación o eliminar, con buscador y tabla ordenable |
 | **Backups** (`/backups`) | Respaldos por instancia o de cualquier base, descarga, retención y las bases del servidor sin instancia |
 | **Nueva instancia** (`/nueva`) | El asistente de creación |
-| **Excluidos** (`/excluidos`) | El mismo panel con todas las instalaciones y el interruptor para ocultarlas o mostrarlas |
+| **Excluidos** (`/excluidos`) | El mismo panel con todas las instalaciones y el interruptor para ocultarlas o mostrarlas. No se enlaza desde el menú: se entra escribiendo la dirección |
+
+En la barra superior, además:
+
+| Botón | Para qué |
+|---|---|
+| **Tareas** | Lo que el servidor tiene programado (crontabs de los usuarios, `/etc/crontab`, `/etc/cron.d` y los `.timer` de systemd, con el horario traducido) y las tareas que el panel ha lanzado en segundo plano, con su log |
+| **Historial** | Todo lo hecho desde el panel: arrancar/parar servicios, activar o desactivar sitios, abrir o guardar credenciales, cambios de RUC o de API cédula y operaciones de certbot, con usuario, resultado y salida del comando |
+| **Excel** / **CSV** | Exportan exactamente las filas que están en pantalla, en el mismo orden y con los mismos filtros |
 
 ## Usuarios y permisos
 
@@ -338,6 +346,8 @@ prefieres ahorrar tiempo en cada refresco.
 | `excluidos_archivo` | Ruta alternativa del `excluidos.txt` |
 | `intervalo_refresco` | Segundos entre refrescos automáticos en segundo plano |
 | `medir_logs` | `false` no busca ni suma los archivos de log |
+| `cron_spool`, `cron_sistema`, `cron_d` | Rutas de los crontabs si no son las de Debian (`/var/spool/cron/crontabs`, `/etc/crontab`, `/etc/cron.d`) |
+| `cron_systemd` | `false` no consulta los temporizadores de systemd |
 | `acciones` | `enabled`, `servicios`, `apache`, `datos`, `certbot`: permite o bloquea cada tipo de acción |
 | `recolectar_ocultas` | `false` no recolecta los sistemas de `excluidos.txt` |
 | `credenciales` | `ver`, `editar`, `mostrar_secretos`: controla el acceso a `credenciales.json` |
@@ -395,7 +405,8 @@ inaccesibles o certificados vencidos: sirve para cron o alertas.
 | `GET /api/tareas`, `GET /api/tarea/<id>` | Tareas en segundo plano y su log (`?desde=N`) |
 | `POST /api/tarea/<id>/deshacer` | Revierte lo que creó una tarea fallida |
 | `GET /api/acciones` | Historial de acciones |
-| `GET /export.xlsx`, `GET /export.csv` | Exportaciones (aceptan `?tipo=` y `?q=`) |
+| `GET /api/cron` | Tareas programadas del servidor (crontabs y timers de systemd), sólo lectura |
+| `GET/POST /export.xlsx`, `/export.csv` | Exportaciones (aceptan `?tipo=` y `?q=`; por POST, `{"ids": [...]}` para exportar sólo esas filas y en ese orden) |
 | `GET /healthz` | Chequeo de salud (sin autenticación) |
 
 Acciones disponibles: `iniciar`, `detener`, `reiniciar`, `habilitar`,

@@ -91,6 +91,11 @@ a:hover{text-decoration:underline}
 .tabla tr.salud-alerta td.sticky{box-shadow:inset 3px 0 0 var(--ambar),1px 0 0 var(--borde)}
 .tabla tr.salud-ok td.sticky{box-shadow:inset 3px 0 0 var(--verde),1px 0 0 var(--borde)}
 .vacio{text-align:center;color:var(--suave);padding:26px}
+/* Secciones dentro de un modal (tareas programadas / ejecutadas). */
+.titulo-seccion{margin:16px 0 6px;font-size:12px;text-transform:uppercase;
+  letter-spacing:.5px;color:var(--suave)}
+.titulo-seccion:first-child{margin-top:0}
+.celda-larga{max-width:520px;word-break:break-all}
 .cliente{font-weight:600}
 .sub{color:var(--suave);font-size:11px;margin-top:2px;overflow:hidden;text-overflow:ellipsis}
 .ruta{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--suave);
