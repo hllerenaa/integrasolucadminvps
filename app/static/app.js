@@ -176,6 +176,8 @@
         return '<div class="cliente">' + esc(i.cliente) +
             ' <span class="chip ' + esc(i.tipo) + '">' + esc(i.tipo) + '</span></div>' +
           '<div class="sub">' + esc(r.empresa || '') + '</div>' +
+          '<div style="margin:3px 0">' + badgeServicio(i) +
+            ' <span class="tenue">' + esc(i.servicio || '') + '</span></div>' +
           '<div class="sub">' +
             (impl ? 'impl. ' + esc(impl) : '') +
             (r.servicio_creado ? ' · svc ' + esc(r.servicio_creado.substring(0, 10)) : '') +
@@ -204,6 +206,22 @@
           '" data-campo="rucproveedor" data-etiqueta="RUC facturador"' +
           ' title="Clic para actualizarlo (campo rucproveedor)">' + etiqueta + ' ✎</button>';
       } },
+    { id: 'api_cedula', titulo: 'API cédula', grupo: 'instancia', requiere: 'bd',
+      valor: function (i) {
+        var r = i.resumen || {};
+        return !r.api_cedula_disponible ? 2 : (r.api_cedula ? 0 : 1);
+      },
+      render: function (i) {
+        var r = i.resumen || {};
+        if (!r.api_cedula_disponible || !(estado.capacidades || {}).acciones_datos) {
+          return badgeApiCedula(i);
+        }
+        return '<button class="celda-editable alternar-api" type="button" data-id="' + esc(i.id) +
+          '" data-activar="' + (r.api_cedula ? '0' : '1') +
+          '" title="Clic para ' + (r.api_cedula ? 'desactivar' : 'activar') +
+          ' la búsqueda de personas por cédula (' + esc(r.api_cedula_columna || '') + ')">' +
+          badgeApiCedula(i) + ' ✎</button>';
+      } },
     { id: 'implementacion', titulo: 'Implementado', grupo: 'instancia', oculta: true,
       valor: function (i) { return (i.resumen || {}).fecha_instalacion || ''; },
       render: function (i) {
@@ -213,7 +231,7 @@
             esc(r.servicio_creado.substring(0, 10)) + '</div>' : '');
       } },
 
-    { id: 'servicio', titulo: 'Servicio', grupo: 'servicio',
+    { id: 'servicio', titulo: 'Servicio', grupo: 'servicio', oculta: true,
       valor: function (i) { return (i.resumen || {}).servicio_activo ? 0 : 1; },
       render: function (i) {
         return badgeServicio(i) + '<div class="sub">' + esc(i.servicio || '') + '</div>';
@@ -221,11 +239,12 @@
     { id: 'url', titulo: 'URL y ruta', grupo: 'servicio', ancho: 'ancho',
       valor: function (i) { return (i.dominio || 'zzz').toLowerCase(); },
       render: function (i) {
-        var html = i.url ? '<a href="' + esc(i.url) + '" target="_blank" rel="noopener">' +
-          esc(i.dominio) + '</a>' : '<span class="tenue">sin dominio</span>';
-        html += ' ' + badgeUrl(i);
-        html += '<div class="sub"><code class="ruta" title="' + esc(i.ruta) + '">' +
-          esc(i.ruta) + '</code></div>';
+        var html = '<div class="linea-url">' +
+          (i.url ? '<a href="' + esc(i.url) + '" target="_blank" rel="noopener">' +
+            esc(i.dominio) + '</a>' : '<span class="tenue">sin dominio</span>') +
+          ' ' + badgeUrl(i) + '</div>';
+        html += '<div class="sub ruta-linea" title="' + esc(i.ruta) + '">' +
+          '<span class="tenue">ruta</span> <code>' + esc(i.ruta) + '</code></div>';
         if (i.dominio_desactualizado) {
           html += '<div class="sub aviso-inline" title="credenciales.json apunta a ' +
             esc(i.dominio_credenciales) + '">credenciales: ' + esc(i.dominio_credenciales) + '</div>';
@@ -237,7 +256,18 @@
         }
         return html;
       } },
-    { id: 'ssl', titulo: 'SSL (vence)', grupo: 'servicio',
+    { id: 'base_ssl', titulo: 'Base / SSL', grupo: 'servicio', requiere: 'bd',
+      valor: function (i) { return (i.db || {}).ok ? 0 : 1; },
+      render: function (i) {
+        var db = i.db || {}, c = i.ssl || {};
+        return '<div class="linea-dato">' + badgeBase(i) +
+            ' <span class="tenue">' + esc(db.dbname || '') + '</span></div>' +
+          '<div class="linea-dato">' + badgeSsl(i) +
+            (c.valido_hasta ? ' <span class="tenue">vence ' + esc(c.valido_hasta) + '</span>' : '') +
+          '</div>' +
+          (c.emisor ? '<div class="sub">' + esc(c.emisor) + '</div>' : '');
+      } },
+    { id: 'ssl', titulo: 'SSL (vence)', grupo: 'servicio', oculta: true,
       valor: function (i) {
         var d = (i.ssl || {}).dias_restantes;
         return (d === null || d === undefined) ? 999999 : d;
@@ -293,12 +323,12 @@
           (s.memoria_pico ? ' · pico ' + s.memoria_pico : ''), 50, 80);
       } },
 
-    { id: 'base', titulo: 'Base', grupo: 'datos', requiere: 'bd',
+    { id: 'base', titulo: 'Base', grupo: 'datos', requiere: 'bd', oculta: true,
       valor: function (i) { return (i.db || {}).ok ? 0 : 1; },
       render: function (i) {
         return badgeBase(i) + '<div class="sub">' + esc((i.db || {}).dbname || '') + '</div>';
       } },
-    { id: 'almacenamiento', titulo: 'BD / media / logs', grupo: 'datos', num: true,
+    { id: 'almacenamiento', titulo: 'BD / media / logs / total', grupo: 'datos', num: true,
       valor: function (i) { return (i.resumen || {}).db_tamano_bytes || 0; },
       render: function (i) {
         var r = i.resumen || {}, cap = estado.capacidades || {};
@@ -324,6 +354,13 @@
                 esc(r.logs_tamano) + '</span> <span class="tenue">(' +
                 esc(r.logs_archivos) + ')</span>'
               : '<span class="tenue">—</span>') + '</div>');
+        }
+        // El total va al final, para leer de un vistazo cuánto ocupa en el disco.
+        if (r.ocupa_bytes) {
+          lineas.push('<div class="linea-dato linea-total"><span class="tenue">Total</span> ' +
+            barra((r.ocupa_pct_disco || 0) * 5,
+                  r.ocupa_legible + ' · ' + (r.ocupa_pct_disco || 0) + '%',
+                  'BD + media + logs frente al disco del servidor', 50, 80) + '</div>');
         }
         return lineas.join('');
       } },
@@ -353,7 +390,7 @@
           '<div class="sub">' + esc(r.logs_archivos) + ' archivo(s)</div>';
       } },
 
-    { id: 'ocupa', titulo: 'Ocupa (BD+media+logs)', grupo: 'datos', num: true,
+    { id: 'ocupa', titulo: 'Ocupa (BD+media+logs)', grupo: 'datos', num: true, oculta: true,
       valor: function (i) { return (i.resumen || {}).ocupa_bytes || 0; },
       render: function (i) {
         var r = i.resumen || {};
@@ -406,12 +443,13 @@
           (r.facturas_anio ? ' · ' + esc(r.facturas_anio) + ' este año' : '') +
           (r.facturas_ultimo_mes ? ' · últ. ' + esc(r.facturas_ultimo_mes) : '') + '</div>';
       } },
-    { id: 'api_cedula', titulo: 'API cédula', grupo: 'actividad', requiere: 'bd',
-      valor: function (i) {
-        var r = i.resumen || {};
-        return !r.api_cedula_disponible ? 2 : (r.api_cedula ? 0 : 1);
-      },
-      render: badgeApiCedula },
+    { id: 'facturas_anios', titulo: 'Facturas por año', grupo: 'actividad', requiere: 'bd',
+      valor: function (i) { return (i.resumen || {}).facturas_anio || 0; },
+      render: function (i) {
+        var fac = (i.db || {}).facturacion || {};
+        if (!fac.disponible) return '<span class="tenue">—</span>';
+        return porAnio(fac.por_anio, 4);
+      } },
     { id: 'primera_venta', titulo: 'Primera venta', grupo: 'actividad', requiere: 'bd',
       valor: function (i) { return (i.resumen || {}).primera_venta || ''; },
       render: function (i) { return guion((i.resumen || {}).primera_venta); } },
@@ -446,8 +484,17 @@
       if (ultimo && ultimo.id === c.grupo) ultimo.n++;
       else grupos.push({ id: c.grupo, n: 1 });
     });
-    $('#fila-grupos').innerHTML = grupos.map(function (g) {
+    $('#fila-grupos').innerHTML = grupos.map(function (g, idx) {
       var titulo = (GRUPOS.filter(function (x) { return x.id === g.id; })[0] || {}).titulo || '';
+      // La primera columna queda fija al desplazar en horizontal, así que su
+      // casilla de grupo se parte en dos: la fija (opaca, sin texto cuando el
+      // grupo abarca más columnas) y el resto con el título centrado.
+      if (idx === 0 && cols.length && cols[0].sticky) {
+        return '<th class="grupo grupo-' + g.id + ' sticky">' +
+          (g.n === 1 ? esc(titulo) : '') + '</th>' +
+          (g.n > 1 ? '<th colspan="' + (g.n - 1) + '" class="grupo grupo-' + g.id + '">' +
+            esc(titulo) + '</th>' : '');
+      }
       return '<th colspan="' + g.n + '" class="grupo grupo-' + g.id + '">' + esc(titulo) + '</th>';
     }).join('') + '<th class="grupo"></th>';
 
@@ -565,7 +612,11 @@
     var r = estado.resumen || {}, d = estado.disco || {}, cap = estado.capacidades || {};
     var t = [
       { rotulo: 'Instancias', valor: r.total || 0,
-        extra: Object.keys(r.por_tipo || {}).map(function (k) { return k + ': ' + r.por_tipo[k]; }).join(' · ') },
+        // El servidor ya filtra según el permiso: quien no puede ver las
+        // ocultas tampoco las recibe, así que nunca entran en este total.
+        extra: Object.keys(r.por_tipo || {}).map(function (k) { return k + ': ' + r.por_tipo[k]; })
+          .concat(r.ocultas ? [r.ocultas + ' oculta' + (r.ocultas === 1 ? '' : 's')] : [])
+          .join(' · ') },
       { rotulo: 'Servicios activos', valor: (r.servicios_activos || 0) + '/' + (r.total || 0),
         clase: r.servicios_inactivos ? 'mal' : 'ok', filtroServicio: 'inactivo' },
       { rotulo: 'Sitios Apache', valor: (r.sitios_habilitados || 0) + '/' + (r.total || 0),
@@ -1407,7 +1458,7 @@
         ' la búsqueda de personas por cédula en "' + inst.cliente +
         '"? Se actualiza seguridad_configuracion en su base.')) return;
     boton.disabled = true;
-    $('#resultado-api').innerHTML = ' <span class="tenue">Aplicando…</span>';
+    if ($('#resultado-api')) $('#resultado-api').innerHTML = ' <span class="tenue">Aplicando…</span>';
     fetch('/api/instancia/' + encodeURIComponent(id) + '/api-cedula', {
       method: 'POST', credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -1415,15 +1466,22 @@
     }).then(function (r) { return r.json(); })
       .then(function (d) {
         boton.disabled = false;
-        if (!d.ok) { $('#resultado-api').innerHTML = ' <span class="aviso-error">' +
-          esc(d.error) + '</span>'; return; }
+        if (!d.ok) {
+          if ($('#resultado-api')) {
+            $('#resultado-api').innerHTML = ' <span class="aviso-error">' + esc(d.error) + '</span>';
+          } else { aviso(d.error); }
+          return;
+        }
         aviso('Búsqueda por cédula ' + (activar ? 'activada' : 'desactivada') +
               ' en ' + inst.cliente + ' (' + d.columna + ')', 'aviso-ok');
-        cargar().then(function () { abrirDetalle(id); });
+        var enDetalle = !$('#modal').classList.contains('oculto');
+        cargar().then(function () { if (enDetalle) abrirDetalle(id); });
       })
       .catch(function (e) {
         boton.disabled = false;
-        $('#resultado-api').innerHTML = ' <span class="aviso-error">' + esc(e.message) + '</span>';
+        if ($('#resultado-api')) {
+          $('#resultado-api').innerHTML = ' <span class="aviso-error">' + esc(e.message) + '</span>';
+        } else { aviso(e.message); }
       });
   }
 
@@ -1964,6 +2022,11 @@
         if (el.classList.contains('diagnostico-vhost')) {
           return diagnosticoVhost(el.getAttribute('data-id'));
         }
+        var alternar = el.closest('.alternar-api');
+        if (alternar) {
+          return cambiarApiCedula(alternar.getAttribute('data-id'),
+                                  alternar.getAttribute('data-activar') === '1', alternar);
+        }
         var editable = el.closest('.editar-campo');
         if (editable) {
           return abrirModalCampo(editable.getAttribute('data-id'),
@@ -2014,7 +2077,7 @@
         var envoltura = el.closest('.tabla-envoltura');
         if (envoltura && envoltura.dataset.arrastre) return;   // venía de arrastrar
         if (fila && !el.closest('a') && !el.closest('label.interruptor') &&
-            !el.closest('.editar-campo')) {
+            !el.closest('.editar-campo') && !el.closest('.alternar-api')) {
           return abrirDetalle(fila.getAttribute('data-id'));
         }
       } catch (ex) {

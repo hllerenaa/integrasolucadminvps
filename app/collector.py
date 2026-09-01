@@ -347,8 +347,13 @@ class Colector(object):
         por_tipo = {}
         for i in instancias:
             por_tipo[i.get('tipo')] = por_tipo.get(i.get('tipo'), 0) + 1
+        # Cuántas de las contadas están ocultas. Sólo llegan aquí si el usuario
+        # tiene permiso para verlas; a los demás ya se les filtraron antes, así
+        # que sus tarjetas nunca las suman.
+        ocultas = sum(1 for i in instancias if i.get('oculta'))
         return {
             'total': total,
+            'ocultas': ocultas,
             'servicios_activos': servicios_ok,
             'servicios_inactivos': total - servicios_ok,
             'sitios_habilitados': sitios_ok,

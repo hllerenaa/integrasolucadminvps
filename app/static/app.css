@@ -73,13 +73,23 @@ a:hover{text-decoration:underline}
 .tabla tbody tr:nth-child(even){background:#fbfcfe}
 .tabla tbody tr:hover{background:#f2f7ff;cursor:pointer}
 .tabla td.num,.tabla th.num{text-align:right;white-space:nowrap}
-.tabla td.sticky,.tabla th.sticky{position:sticky;left:0;background:inherit;z-index:5}
+/* La primera columna queda fija al desplazar en horizontal: su fondo debe ser
+   opaco (nunca `inherit`, que en las filas sin color se resuelve a transparente
+   y deja ver el texto que pasa por detrás). */
+.tabla td.sticky,.tabla th.sticky{position:sticky;left:0;background:#fff;z-index:5;
+  box-shadow:1px 0 0 var(--borde)}
+.tabla tbody tr:nth-child(even) td.sticky{background:#fbfcfe}
+.tabla tbody tr.fila-oculta td.sticky{background:#fafbfd}
 .tabla tbody tr:hover td.sticky{background:#f2f7ff}
-.tabla thead th.sticky{background:#f7f9fc;z-index:13}
+/* En la cabecera hay que ganarle en especificidad a las reglas de arriba: si no,
+   la casilla fija comparte z-index con las demás y el título de la columna
+   siguiente se dibuja encima al desplazar. */
+.tabla thead tr:nth-child(1) th.grupo.sticky{left:0;background:#f2f5fa;z-index:14}
+.tabla thead tr:nth-child(2) th.sticky{background:#f7f9fc;z-index:13}
 .tabla td.ancho{max-width:260px}
-.tabla tr.salud-error td.sticky{box-shadow:inset 3px 0 0 var(--rojo)}
-.tabla tr.salud-alerta td.sticky{box-shadow:inset 3px 0 0 var(--ambar)}
-.tabla tr.salud-ok td.sticky{box-shadow:inset 3px 0 0 var(--verde)}
+.tabla tr.salud-error td.sticky{box-shadow:inset 3px 0 0 var(--rojo),1px 0 0 var(--borde)}
+.tabla tr.salud-alerta td.sticky{box-shadow:inset 3px 0 0 var(--ambar),1px 0 0 var(--borde)}
+.tabla tr.salud-ok td.sticky{box-shadow:inset 3px 0 0 var(--verde),1px 0 0 var(--borde)}
 .vacio{text-align:center;color:var(--suave);padding:26px}
 .cliente{font-weight:600}
 .sub{color:var(--suave);font-size:11px;margin-top:2px;overflow:hidden;text-overflow:ellipsis}
@@ -238,3 +248,12 @@ tr.fila-oculta .cliente{text-decoration:line-through;text-decoration-color:var(-
 .linea-dato{display:flex;align-items:center;gap:6px;font-size:11.5px;margin:1px 0}
 .linea-dato .tenue{min-width:38px;display:inline-block}
 .linea-dato .medidor{flex:1;min-width:70px}
+
+/* ------------------------------------------- presentación de URL y ruta */
+.linea-url{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.linea-url a{font-weight:600}
+.ruta-linea{display:flex;align-items:center;gap:5px;max-width:270px}
+.ruta-linea code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:#f4f6fa;
+  border-radius:4px;padding:1px 5px}
+.linea-total{border-top:1px solid var(--borde);margin-top:3px;padding-top:3px;font-weight:600}
