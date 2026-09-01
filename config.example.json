@@ -48,6 +48,34 @@
     "editar": true,
     "mostrar_secretos": true
   },
+  "aprovisionamiento": {
+    "enabled": true,
+    "venv": "/home/integrasoluc/venv",
+    "templates": {
+      "inventario": {
+        "ruta": "/home/template/pryinventario",
+        "db_origen": "demo_soluciones",
+        "rama": "master"
+      },
+      "restaurante": {
+        "ruta": "/home/template_restaurante/pryrestaurante",
+        "db_origen": "template_restaurante",
+        "rama": "master"
+      }
+    },
+    "backups_dir": "",
+    "puerto_inicial": 8000,
+    "puerto_final": 8999,
+    "dominio_base": "integrasoluc.net",
+    "modelo_servicio": "",
+    "modelo_vhost": "",
+    "actualizar_template": true,
+    "certbot": {
+      "enabled": false,
+      "email": ""
+    },
+    "base_dir": ""
+  },
   "auth": {
     "enabled": true,
     "username": "admin",

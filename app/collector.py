@@ -22,8 +22,10 @@ def _recolectar_instancia(instancia, config, forzar_media=False, vhosts=None, un
         instancia.servicio = unidad['unidad']
         datos['servicio'] = unidad['unidad']
         datos['servicio_origen'] = unidad['origen']
+        datos['servicio_archivo'] = unidad.get('archivo')
     datos['servicio_estado'] = systemd.estado_servicio(
         instancia.servicio, timeout=int(config.get('timeout_systemctl') or 10))
+    datos.setdefault('servicio_archivo', (datos['servicio_estado'] or {}).get('archivo'))
 
     # 2. Apache: el puerto del gunicorn es la señal más confiable para
     #    emparejar el vhost (el dominio de credenciales.json suele estar viejo).

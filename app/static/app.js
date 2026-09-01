@@ -685,6 +685,233 @@
       });
   }
 
+
+  // -------------------------------------------------- asistente de instancias
+  var opcionesAlta = null;
+  var tareaActual = null, tareaPoll = null, tareaLineas = 0;
+
+  function abrirAsistente() {
+    var caja = $('#nueva-cuerpo');
+    caja.innerHTML = '<p class="tenue">Cargando opciones…</p>';
+    $('#modal-nueva').classList.remove('oculto');
+    fetch('/api/aprovisionar/opciones', { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d.habilitado === false) {
+          caja.innerHTML = '<div class="aviso-error">La creación de instancias está desactivada en config.json</div>';
+          return;
+        }
+        opcionesAlta = d;
+        pintarFormularioAlta();
+      })
+      .catch(function (e) { caja.innerHTML = '<div class="aviso-error">' + esc(e.message) + '</div>'; });
+  }
+
+  function pintarFormularioAlta() {
+    var d = opcionesAlta;
+    var tipos = Object.keys(d.templates || {});
+    var modelos = function (tipo) {
+      return (d.modelos || []).filter(function (m) { return !tipo || m.tipo === tipo; });
+    };
+    var opcionesModelo = function (clave) {
+      return '<option value="">Usar la plantilla del panel</option>' +
+        (d.modelos || []).map(function (m) {
+          return '<option value="' + esc(m.id) + '">' + esc(m.cliente) + ' (' + esc(m.tipo) + ')</option>';
+        }).join('');
+    };
+    $('#nueva-cuerpo').innerHTML =
+      '<div class="bloque"><h3>Datos de la instancia</h3>' +
+        '<div class="formulario">' +
+          '<label>Sistema<select id="f-tipo">' + tipos.map(function (t) {
+            return '<option value="' + esc(t) + '"' + (d.templates[t].existe ? '' : ' disabled') + '>' +
+              esc(t) + (d.templates[t].existe ? '' : ' (template no encontrado)') + '</option>';
+          }).join('') + '</select></label>' +
+          '<label>Nombre de la instancia<input id="f-cliente" placeholder="ej: gigis" autocomplete="off"></label>' +
+          '<label>Base de datos<input id="f-base" placeholder="db_gigis" autocomplete="off"></label>' +
+          '<label>Dominio<input id="f-dominio" placeholder="gigis' +
+            (d.dominio_base ? '.' + esc(d.dominio_base) : '') + '" autocomplete="off"></label>' +
+          '<label>Puerto gunicorn<input id="f-puerto" type="number" value="' +
+            esc(d.puerto_sugerido || '') + '"></label>' +
+          '<label>Modelo del .service<select id="f-modelo-servicio">' + opcionesModelo() + '</select></label>' +
+          '<label>Modelo del vhost<select id="f-modelo-vhost">' + opcionesModelo() + '</select></label>' +
+        '</div>' +
+        '<div class="opciones">' +
+          '<label class="check"><input type="checkbox" id="f-actualizar"' +
+            (d.actualizar_template ? ' checked' : '') + '> Actualizar el template desde git antes de copiar</label>' +
+          '<label class="check"><input type="checkbox" id="f-servicio" checked> Crear e iniciar el servicio systemd</label>' +
+          '<label class="check"><input type="checkbox" id="f-vhost" checked> Crear y activar el vhost de Apache</label>' +
+          '<label class="check"><input type="checkbox" id="f-certbot"' +
+            (d.certbot ? ' checked' : '') + '> Emitir certificado con certbot</label>' +
+          '<label class="check"><input type="checkbox" id="f-debug"> DEBUG = true en credenciales.json</label>' +
+        '</div>' +
+        '<div id="resultado-validacion"></div>' +
+        '<div style="margin-top:12px;text-align:right">' +
+          '<button class="boton mini" type="button" id="btn-validar">Validar</button> ' +
+          '<button class="boton secundario" type="button" id="btn-simular" style="background:#eef2fa;color:#12325f">Simular</button> ' +
+          '<button class="boton" type="button" id="btn-crear">Crear instancia</button>' +
+        '</div>' +
+      '</div>' +
+      '<p class="tenue">La simulación valida todo y muestra los comandos exactos que se ejecutarían, sin tocar nada.</p>';
+
+    var cliente = $('#f-cliente');
+    cliente.addEventListener('input', function () {
+      var v = (cliente.value || '').toLowerCase().replace(/[^a-z0-9_-]/g, '');
+      if (!$('#f-base').dataset.tocado) $('#f-base').value = v ? 'db_' + v : '';
+      if (!$('#f-dominio').dataset.tocado) {
+        $('#f-dominio').value = v && opcionesAlta.dominio_base ? v + '.' + opcionesAlta.dominio_base : v;
+      }
+    });
+    ['f-base', 'f-dominio'].forEach(function (id) {
+      $('#' + id).addEventListener('input', function () { this.dataset.tocado = '1'; });
+    });
+    cliente.focus();
+  }
+
+  function datosAlta() {
+    return {
+      tipo: $('#f-tipo').value,
+      cliente: ($('#f-cliente').value || '').trim().toLowerCase(),
+      base: ($('#f-base').value || '').trim().toLowerCase(),
+      dominio: ($('#f-dominio').value || '').trim().toLowerCase(),
+      puerto: parseInt($('#f-puerto').value, 10),
+      modelo_servicio: $('#f-modelo-servicio').value,
+      modelo_vhost: $('#f-modelo-vhost').value,
+      actualizar_template: $('#f-actualizar').checked,
+      crear_servicio: $('#f-servicio').checked,
+      crear_vhost: $('#f-vhost').checked,
+      certbot: $('#f-certbot').checked,
+      debug: $('#f-debug').checked
+    };
+  }
+
+  function validarAlta() {
+    var caja = $('#resultado-validacion');
+    caja.innerHTML = '<p class="tenue">Validando…</p>';
+    return fetch('/api/aprovisionar/validar', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(datosAlta())
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        caja.innerHTML = '<ul class="revisiones">' + (d.revisiones || []).map(function (r) {
+          var icono = r.ok ? '✔' : (r.critico ? '✖' : '!');
+          var clase = r.ok ? 'ok' : (r.critico ? 'error' : 'aviso');
+          return '<li class="rev-' + clase + '">' + icono + ' ' + esc(r.mensaje) +
+            (r.detalle ? ' <span class="tenue">— ' + esc(r.detalle) + '</span>' : '') + '</li>';
+        }).join('') + '</ul>';
+        return d.ok;
+      });
+  }
+
+  function crearInstancia(simular) {
+    validarAlta().then(function (ok) {
+      if (!ok) return;
+      var datos = datosAlta();
+      datos.simular = !!simular;
+      if (!simular && !window.confirm('Se va a crear la instancia "' + datos.cliente +
+          '": carpeta /home/' + datos.cliente + ', base ' + datos.base +
+          ', servicio y vhost. ¿Continuar?')) return;
+      fetch('/api/aprovisionar/crear', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(datos)
+      }).then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (!d.ok) { aviso(d.error || 'No se pudo iniciar'); return; }
+          $('#modal-nueva').classList.add('oculto');
+          verTarea(d.tarea);
+        })
+        .catch(function (e) { aviso(e.message); });
+    });
+  }
+
+  // ------------------------------------------------------------------ tareas
+  function verTarea(id) {
+    tareaActual = id; tareaLineas = 0;
+    $('#tarea-titulo').textContent = 'Tarea en curso';
+    $('#tarea-cuerpo').innerHTML = '<div id="tarea-pasos"></div>' +
+      '<pre class="log" id="tarea-log"></pre><div id="tarea-pie"></div>';
+    $('#modal-tarea').classList.remove('oculto');
+    if (tareaPoll) clearInterval(tareaPoll);
+    var tick = function () {
+      fetch('/api/tarea/' + encodeURIComponent(id) + '?desde=' + tareaLineas,
+            { credentials: 'same-origin' })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (d.error) { clearInterval(tareaPoll); return; }
+          $('#tarea-titulo').innerHTML = esc(d.titulo) + ' ' +
+            badge(d.estado === 'ok' ? 'verde' : (d.estado === 'error' ? 'rojo' : 'ambar'), d.estado);
+          $('#tarea-pasos').innerHTML = (d.pasos || []).map(function (p) {
+            var icono = p.estado === 'ok' ? '✔' : (p.estado === 'error' ? '✖' : '…');
+            return '<div class="paso paso-' + esc(p.estado) + '">' + icono + ' ' + esc(p.nombre) +
+              (p.detalle ? ' <span class="tenue">' + esc(p.detalle) + '</span>' : '') + '</div>';
+          }).join('');
+          var log = $('#tarea-log');
+          (d.lineas || []).forEach(function (l) {
+            var linea = document.createElement('div');
+            linea.className = 'log-' + l.nivel;
+            linea.textContent = l.t + '  ' + l.texto;
+            log.appendChild(linea);
+          });
+          tareaLineas = d.total_lineas;
+          log.scrollTop = log.scrollHeight;
+          if (d.estado === 'ok' || d.estado === 'error') {
+            clearInterval(tareaPoll); tareaPoll = null;
+            $('#tarea-pie').innerHTML =
+              (d.estado === 'error' && (d.deshacer || []).length
+                ? '<div class="aviso-error" style="margin-top:10px">La tarea falló después de crear cosas. ' +
+                  'Puedes revertir lo creado: ' +
+                  (d.deshacer || []).map(function (x) { return esc(x.tipo) + ' ' + esc(x.valor); }).join(', ') +
+                  '<button class="boton peligro" type="button" id="btn-deshacer" data-id="' + esc(d.id) +
+                  '" style="margin-left:10px">Deshacer</button></div>'
+                : '') +
+              (d.estado === 'ok' && d.datos && d.datos.instancia_id
+                ? '<div class="aviso-ok" style="margin-top:10px">Instancia creada. ' +
+                  '<button class="boton mini" type="button" id="btn-ver-nueva" data-id="' +
+                  esc(d.datos.instancia_id) + '">Ver en el panel</button></div>'
+                : '');
+            cargar();
+          }
+        })
+        .catch(function () {});
+    };
+    tick();
+    tareaPoll = setInterval(tick, 1500);
+  }
+
+  function listarTareas() {
+    fetch('/api/tareas', { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        $('#tarea-titulo').textContent = 'Tareas ejecutadas';
+        $('#tarea-cuerpo').innerHTML = '<table class="tabla-mini"><thead><tr><th>Inicio</th>' +
+          '<th>Tarea</th><th>Usuario</th><th>Estado</th><th></th></tr></thead><tbody>' +
+          ((d.tareas || []).map(function (t) {
+            return '<tr><td>' + esc(t.creado) + '</td><td>' + esc(t.titulo) + '</td><td>' +
+              esc(t.creado_por || '') + '</td><td>' +
+              badge(t.estado === 'ok' ? 'verde' : (t.estado === 'error' ? 'rojo' : 'ambar'), t.estado) +
+              '</td><td><button class="boton mini" type="button" data-tarea="' + esc(t.id) +
+              '">Ver log</button></td></tr>';
+          }).join('') || '<tr><td colspan="5" class="vacio">Sin tareas todavía</td></tr>') +
+          '</tbody></table>';
+        $('#modal-tarea').classList.remove('oculto');
+      })
+      .catch(function (e) { aviso(e.message); });
+  }
+
+  function deshacerTarea(id) {
+    if (!window.confirm('Se va a revertir lo que creó esa tarea (carpeta, base de datos, ' +
+                        'servicio y vhost). Esta acción borra datos. ¿Continuar?')) return;
+    fetch('/api/tarea/' + encodeURIComponent(id) + '/deshacer',
+          { method: 'POST', credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) { aviso(d.error || 'No se pudo deshacer'); return; }
+        verTarea(d.tarea);
+      })
+      .catch(function (e) { aviso(e.message); });
+  }
+
   function verHistorial() {
     var caja = $('#caja-historial');
     if (!caja.hidden) { caja.hidden = true; return; }
@@ -717,6 +944,22 @@
         if (el.id === 'btn-excel') return descargar('/export.xlsx', 'instancias.xlsx', el);
         if (el.id === 'btn-csv') return descargar('/export.csv', 'instancias.csv', el);
         if (el.id === 'btn-historial') return verHistorial();
+        if (el.id === 'btn-nueva') return abrirAsistente();
+        if (el.id === 'btn-tareas') return listarTareas();
+        if (el.id === 'nueva-cerrar' || el.id === 'modal-nueva') return $('#modal-nueva').classList.add('oculto');
+        if (el.id === 'tarea-cerrar' || el.id === 'modal-tarea') {
+          if (tareaPoll) { clearInterval(tareaPoll); tareaPoll = null; }
+          return $('#modal-tarea').classList.add('oculto');
+        }
+        if (el.id === 'btn-validar') return validarAlta();
+        if (el.id === 'btn-simular') return crearInstancia(true);
+        if (el.id === 'btn-crear') return crearInstancia(false);
+        if (el.id === 'btn-deshacer') return deshacerTarea(el.getAttribute('data-id'));
+        if (el.hasAttribute && el.hasAttribute('data-tarea')) return verTarea(el.getAttribute('data-tarea'));
+        if (el.id === 'btn-ver-nueva') {
+          $('#modal-tarea').classList.add('oculto');
+          return abrirDetalle(el.getAttribute('data-id'));
+        }
         if (el.id === 'btn-columnas') return $('#menu-columnas').classList.toggle('oculto');
         if (el.id === 'btn-orden-dir') {
           estado.asc = !estado.asc;
@@ -769,7 +1012,12 @@
     });
 
     document.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape') $('#modal').classList.add('oculto');
+      if (e.key === 'Escape') {
+        $('#modal').classList.add('oculto');
+        $('#modal-nueva').classList.add('oculto');
+        if (tareaPoll) { clearInterval(tareaPoll); tareaPoll = null; }
+        $('#modal-tarea').classList.add('oculto');
+      }
     });
 
     cargar();

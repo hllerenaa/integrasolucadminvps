@@ -7,11 +7,13 @@
     <span id="estado-refresco" class="estado-refresco">Cargando…</span>
   </div>
   <div class="cabecera-der">
-    <button id="btn-refrescar" class="boton" type="button">Refrescar</button>
+    <button id="btn-nueva" class="boton" type="button">+ Nueva instancia</button>
+    <button id="btn-refrescar" class="boton secundario" type="button">Refrescar</button>
     <button id="btn-media" class="boton secundario" type="button"
             title="Recalcula el tamaño de las carpetas media (puede tardar varios minutos)">Recalcular media</button>
     <button id="btn-excel" class="boton secundario" type="button">Excel</button>
     <button id="btn-csv" class="boton secundario" type="button">CSV</button>
+    <button id="btn-tareas" class="boton secundario" type="button">Tareas</button>
     <button id="btn-historial" class="boton secundario" type="button">Historial</button>
     {% if auth_activa %}<a class="boton secundario" href="/logout">Salir</a>{% endif %}
   </div>
@@ -72,6 +74,26 @@
 </div>
 
 <footer class="pie"><span id="pie-info"></span></footer>
+
+<div class="modal oculto" id="modal-tarea">
+  <div class="modal-caja">
+    <div class="modal-cabecera">
+      <h2 id="tarea-titulo"></h2>
+      <button class="cerrar" id="tarea-cerrar" type="button">&times;</button>
+    </div>
+    <div class="modal-cuerpo" id="tarea-cuerpo"></div>
+  </div>
+</div>
+
+<div class="modal oculto" id="modal-nueva">
+  <div class="modal-caja">
+    <div class="modal-cabecera">
+      <h2>Nueva instancia</h2>
+      <button class="cerrar" id="nueva-cerrar" type="button">&times;</button>
+    </div>
+    <div class="modal-cuerpo" id="nueva-cuerpo"></div>
+  </div>
+</div>
 
 <div class="modal oculto" id="modal">
   <div class="modal-caja">

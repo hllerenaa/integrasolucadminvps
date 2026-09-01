@@ -9,8 +9,9 @@ import threading
 from flask import (Flask, Response, jsonify, redirect, render_template,
                    request, session, url_for)
 
-from . import (__version__, acciones as mod_acciones,
+from . import (__version__, acciones as mod_acciones, aprovisionar,
                credenciales as mod_credenciales, exportar)
+from .tareas import GestorTareas
 from .collector import Colector
 from .config import cargar
 
@@ -24,6 +25,8 @@ def crear_app(config=None):
 
     colector = Colector(config)
     app.config['COLECTOR'] = colector
+    tareas = GestorTareas(config)
+    app.config['TAREAS'] = tareas
 
     # --------------------------------------------------------------- seguridad
     def autenticado():
@@ -100,6 +103,7 @@ def crear_app(config=None):
             'credenciales': bool((config.get('credenciales') or {}).get('ver', True)),
             'credenciales_editar': bool((config.get('credenciales') or {}).get('editar', True)),
             'credenciales_secretos': bool((config.get('credenciales') or {}).get('mostrar_secretos', True)),
+            'aprovisionar': bool((config.get('aprovisionamiento') or {}).get('enabled', True)),
         }
         return jsonify(datos)
 
@@ -187,6 +191,85 @@ def crear_app(config=None):
         colector.refrescar(forzar=True, solo=ident)
         resultado['instancia'] = colector.instancia(ident)
         return jsonify(resultado)
+
+    # --------------------------------------------------------- aprovisionamiento
+    def _aprovisionamiento_activo():
+        return bool((config.get('aprovisionamiento') or {}).get('enabled', True))
+
+    @app.route('/api/aprovisionar/opciones')
+    @requiere_login
+    def api_aprovisionar_opciones():
+        if not _aprovisionamiento_activo():
+            return jsonify({'habilitado': False}), 403
+        return jsonify(aprovisionar.opciones(config, colector))
+
+    @app.route('/api/aprovisionar/validar', methods=['POST'])
+    @requiere_login
+    def api_aprovisionar_validar():
+        if not _aprovisionamiento_activo():
+            return jsonify({'error': 'Creación de instancias desactivada'}), 403
+        cuerpo = request.get_json(silent=True) or {}
+        revisiones = aprovisionar.validar(config, colector, cuerpo)
+        return jsonify({'revisiones': revisiones,
+                        'ok': not any(r['critico'] for r in revisiones)})
+
+    @app.route('/api/aprovisionar/crear', methods=['POST'])
+    @requiere_login
+    def api_aprovisionar_crear():
+        if not _aprovisionamiento_activo():
+            return jsonify({'error': 'Creación de instancias desactivada'}), 403
+        cuerpo = request.get_json(silent=True) or {}
+        faltan = [c for c in ('tipo', 'cliente', 'base', 'puerto') if not cuerpo.get(c)]
+        if faltan:
+            return jsonify({'error': 'Faltan datos: %s' % ', '.join(faltan)}), 400
+
+        titulo = 'Crear instancia %s (%s)' % (cuerpo.get('cliente'), cuerpo.get('tipo'))
+        if cuerpo.get('simular'):
+            titulo = '[simulación] ' + titulo
+        tarea = tareas.crear('crear_instancia', titulo, cuerpo,
+                             usuario=session.get('usuario') or 'api')
+        mod_acciones.registrar_evento(config, tarea.creado_por, 'instancia_crear',
+                                      cuerpo.get('cliente'), 0,
+                                      'simulación' if cuerpo.get('simular') else 'tarea %s' % tarea.id)
+        tareas.lanzar(tarea, lambda t: aprovisionar.crear_instancia(t, config, colector))
+        return jsonify({'ok': True, 'tarea': tarea.id}), 202
+
+    @app.route('/api/tareas')
+    @requiere_login
+    def api_tareas():
+        return jsonify({'tareas': tareas.listar()})
+
+    @app.route('/api/tarea/<ident>')
+    @requiere_login
+    def api_tarea(ident):
+        tarea = tareas.obtener(ident)
+        if not tarea:
+            return jsonify({'error': 'tarea no encontrada'}), 404
+        try:
+            desde = int(request.args.get('desde') or 0)
+        except ValueError:
+            desde = 0
+        return jsonify(tarea.as_dict(desde=desde))
+
+    @app.route('/api/tarea/<ident>/deshacer', methods=['POST'])
+    @requiere_login
+    def api_tarea_deshacer(ident):
+        if not _aprovisionamiento_activo():
+            return jsonify({'error': 'Creación de instancias desactivada'}), 403
+        original = tareas.obtener(ident)
+        if not original:
+            return jsonify({'error': 'tarea no encontrada'}), 404
+        if original.estado == 'corriendo':
+            return jsonify({'error': 'La tarea todavía está corriendo'}), 400
+        if not original.deshacer:
+            return jsonify({'error': 'Esa tarea no creó nada que se pueda deshacer'}), 400
+
+        tarea = tareas.crear('deshacer', 'Deshacer %s' % original.titulo,
+                             {'origen': ident}, usuario=session.get('usuario') or 'api')
+        mod_acciones.registrar_evento(config, tarea.creado_por, 'instancia_deshacer',
+                                      (original.datos or {}).get('cliente'), 0, ident)
+        tareas.lanzar(tarea, lambda t: aprovisionar.deshacer(t, config, colector, original))
+        return jsonify({'ok': True, 'tarea': tarea.id}), 202
 
     @app.route('/api/acciones')
     @requiere_login

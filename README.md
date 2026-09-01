@@ -77,6 +77,38 @@ con el usuario que las ejecutó.
 
 ---
 
+## Crear una instancia nueva desde el panel
+
+Botón **+ Nueva instancia**. Reproduce lo que hacen `new_instance_inventario.sh` y
+`new_instance_restaurante.sh`, y además deja hecho lo que allí quedaba manual.
+
+1. **Formulario**: sistema, nombre de la instancia, base, dominio y puerto de
+   gunicorn (se sugiere el primero libre). La base y el dominio se autocompletan
+   a partir del nombre. Se elige si el `.service` y el vhost se **clonan de una
+   instancia que ya funciona** o se generan con las plantillas de `deploy/plantillas/`.
+2. **Validar**: comprueba nombre, que la carpeta esté libre, que la base no
+   exista, que el template esté disponible, que no haya otro servicio con ese
+   nombre, que el puerto esté libre y que el dominio no esté en otro vhost.
+3. **Simular**: hace las validaciones y muestra los comandos exactos que se
+   ejecutarían, **sin tocar nada**. Conviene usarlo la primera vez.
+4. **Crear instancia**: corre en segundo plano con log en vivo:
+   actualizar el template desde git (opcional) → `pg_dump` de la base origen sin
+   `django_migrations` → copiar el template (excluyendo `media/backups`, `__pycache__`,
+   `*.pyc`, `*.log`) → permisos → `CREATE DATABASE` + restore → ajustar
+   `credenciales.json` (base, dominio, SSL, DEBUG) → `migrate --fake` →
+   crear y arrancar el servicio systemd → crear y activar el vhost →
+   `certbot --apache` (opcional) → verificar que quedó arriba.
+5. Si algo falla a mitad, la tarea muestra un botón **Deshacer** que elimina
+   sólo lo que ella creó (carpeta, base, unidad y vhost). Nunca se ejecuta solo.
+
+El botón **Tareas** lista las ejecuciones con su log. Cada alta queda además en
+el historial de acciones.
+
+Configuración en `config.json` → `aprovisionamiento`: rutas de los templates y su
+base origen, `venv`, rango de puertos, `dominio_base`, instancias modelo para
+`.service` y vhost, y `certbot` (`enabled`, `email`). Con `"enabled": false` se
+desactiva la creación completa.
+
 ## Instalación
 
 ```bash
@@ -139,6 +171,7 @@ sudo ./uninstall.sh
 | `medir_logs` | `false` no busca ni suma los archivos de log |
 | `acciones` | `enabled`, `servicios`, `apache`: permite o bloquea cada tipo de acción |
 | `credenciales` | `ver`, `editar`, `mostrar_secretos`: controla el acceso a `credenciales.json` |
+| `aprovisionamiento` | Creación de instancias: templates, `venv`, puertos, `dominio_base`, modelos y `certbot` |
 | `auth` | `username` + `password_hash` (o `password`) y `api_token` opcional |
 
 > Si sólo quieres consulta de servicios, Apache, SSL y URL —sin nada de base de
@@ -168,6 +201,11 @@ inaccesibles o certificados vencidos: sirve para cron o alertas.
 | `POST /api/accion` | `{"id": "...", "accion": "reiniciar"}` |
 | `GET /api/credenciales/<cliente\|tipo>` | `credenciales.json` con las claves ocultas (`?secretos=1` las revela) |
 | `POST /api/credenciales/<cliente\|tipo>` | Guarda el archivo (`{"texto": "{...}"}`) dejando respaldo |
+| `GET /api/aprovisionar/opciones` | Datos para el asistente (templates, puerto libre, modelos) |
+| `POST /api/aprovisionar/validar` | Valida un alta sin ejecutarla |
+| `POST /api/aprovisionar/crear` | Lanza la creación (`{"simular": true}` para el modo simulación) |
+| `GET /api/tareas`, `GET /api/tarea/<id>` | Tareas en segundo plano y su log (`?desde=N`) |
+| `POST /api/tarea/<id>/deshacer` | Revierte lo que creó una tarea fallida |
 | `GET /api/acciones` | Historial de acciones |
 | `GET /export.xlsx`, `GET /export.csv` | Exportaciones (aceptan `?tipo=` y `?q=`) |
 | `GET /healthz` | Chequeo de salud (sin autenticación) |
