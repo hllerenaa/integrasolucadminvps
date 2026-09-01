@@ -106,7 +106,11 @@
   function badgeFacturas(i) {
     var f = (i.db || {}).facturacion || {};
     if (!f.disponible) return badge('gris', 'sin datos', f.error || '');
-    if (f.estado === 'facturando') return badge('verde', f.mes_actual + ' este mes', 'Total: ' + f.total);
+    if (f.estado === 'facturando') {
+      var mes = dinero(f.monto_mes_actual);
+      return badge('verde', f.mes_actual + ' este mes' + (mes ? ' · ' + mes : ''),
+        'Total histórico: ' + f.total + (dinero(f.monto_total) ? ' · ' + dinero(f.monto_total) : ''));
+    }
     if (f.estado === 'nunca') return badge('gris', 'nunca facturó');
     if (f.estado === 'sin-facturar-mes') return badge('ambar', '0 este mes',
       'Última facturación: ' + (f.ultimo_mes || '-'));
@@ -124,14 +128,26 @@
   }
 
 
-  function porAnio(lista, limite) {
+  // Importes en dólares al estilo que usan el SRI y las facturas: 1,234.56.
+  var FORMATO_MONEDA = (typeof Intl !== 'undefined' && Intl.NumberFormat)
+    ? new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    : null;
+  function dinero(valor) {
+    if (valor === null || valor === undefined || isNaN(valor)) return null;
+    return '$' + (FORMATO_MONEDA ? FORMATO_MONEDA.format(valor) : Number(valor).toFixed(2));
+  }
+
+  function porAnio(lista, limite, conMonto) {
     if (!lista || !lista.length) return '<span class="tenue">—</span>';
-    var completo = lista.map(function (a) { return a.anio + ': ' + a.total; }).join(' · ');
+    var completo = lista.map(function (a) {
+      return a.anio + ': ' + a.total + (conMonto && a.monto ? ' (' + dinero(a.monto) + ')' : '');
+    }).join(' · ');
     var visibles = lista.slice(0, limite || 5);
     return '<span class="anios" title="' + esc(completo) + '">' +
       visibles.map(function (a, i) {
+        var monto = (conMonto && a.monto) ? '<em>' + esc(dinero(a.monto)) + '</em>' : '';
         return '<span class="chip-anio' + (i === 0 ? ' actual' : '') + '">' +
-          esc(a.anio) + ': <strong>' + esc(a.total) + '</strong></span>';
+          esc(a.anio) + ': <strong>' + esc(a.total) + '</strong>' + monto + '</span>';
       }).join(' ') +
       (lista.length > visibles.length
         ? ' <span class="tenue">+' + (lista.length - visibles.length) + ' años</span>' : '') +
@@ -437,18 +453,25 @@
       },
       render: function (i) {
         var r = i.resumen || {};
-        return badgeFacturas(i) + '<div class="sub">' +
-          (r.facturas_total !== null && r.facturas_total !== undefined
-            ? 'total ' + esc(r.facturas_total) : '') +
-          (r.facturas_anio ? ' · ' + esc(r.facturas_anio) + ' este año' : '') +
-          (r.facturas_ultimo_mes ? ' · últ. ' + esc(r.facturas_ultimo_mes) : '') + '</div>';
+        var lineas = [];
+        if (r.facturas_total !== null && r.facturas_total !== undefined) {
+          lineas.push('total ' + esc(r.facturas_total) +
+            (dinero(r.facturas_monto_total) ? ' · ' + esc(dinero(r.facturas_monto_total)) : ''));
+        }
+        if (r.facturas_anio) {
+          lineas.push(esc(r.facturas_anio) + ' este año' +
+            (dinero(r.facturas_monto_anio) ? ' · ' + esc(dinero(r.facturas_monto_anio)) : ''));
+        }
+        if (r.facturas_ultimo_mes) lineas.push('últ. ' + esc(r.facturas_ultimo_mes));
+        return badgeFacturas(i) +
+          lineas.map(function (t) { return '<div class="sub">' + t + '</div>'; }).join('');
       } },
     { id: 'facturas_anios', titulo: 'Facturas por año', grupo: 'actividad', requiere: 'bd',
       valor: function (i) { return (i.resumen || {}).facturas_anio || 0; },
       render: function (i) {
         var fac = (i.db || {}).facturacion || {};
         if (!fac.disponible) return '<span class="tenue">—</span>';
-        return porAnio(fac.por_anio, 4);
+        return porAnio(fac.por_anio, 4, true);
       } },
     { id: 'primera_venta', titulo: 'Primera venta', grupo: 'actividad', requiere: 'bd',
       valor: function (i) { return (i.resumen || {}).primera_venta || ''; },
@@ -871,13 +894,27 @@
           (api.activa ? 'Desactivar búsqueda por cédula' : 'Activar búsqueda por cédula') +
           '</button><span id="resultado-api"></span></div>' : '') + '</div>';
 
+      // Número de facturas e importe van juntos: "12 · $3.450,00".
+      var conMonto = function (cantidad, monto) {
+        if (cantidad === null || cantidad === undefined) return null;
+        var m = dinero(monto);
+        return m ? cantidad + ' · ' + m : String(cantidad);
+      };
       b += '<div class="bloque"><h3>Facturación electrónica</h3>' + dl([
-        ['Estado', badgeFacturas(inst), true], ['Facturas totales', fac.total],
-        ['Este mes', fac.mes_actual], ['Mes anterior', fac.mes_anterior],
+        ['Estado', badgeFacturas(inst), true],
+        ['Facturas totales', conMonto(fac.total, fac.monto_total)],
+        ['Este año', conMonto(fac.anio_actual, fac.monto_anio_actual)],
+        ['Este mes', conMonto(fac.mes_actual, fac.monto_mes_actual)],
+        ['Mes anterior', conMonto(fac.mes_anterior, fac.monto_mes_anterior)],
         ['Primera factura', fac.primera], ['Última factura', fac.ultima],
-        ['Emitidas por año', porAnio(fac.por_anio, 8), true],
+        ['Emitidas por año', porAnio(fac.por_anio, 12, true), true],
         ['Último mes facturado', fac.ultimo_mes],
-        ['Meses sin facturar', fac.meses_sin_facturar], ['Error', fac.error]
+        ['Meses sin facturar', fac.meses_sin_facturar],
+        ['Columna de importe', fac.columna_monto ||
+          (fac.disponible ? 'sin columna de importe en esta base' : null)],
+        ['Filtros aplicados', (fac.filtros || []).length
+          ? (fac.filtros || []).join(' y ') + ' en verdadero' : 'ninguno'],
+        ['Error', fac.error]
       ]) + '</div>';
     }
 
@@ -986,10 +1023,24 @@
     });
   }
 
-  function descargar(ruta, nombre, boton) {
+  // Identificadores de las filas que están en pantalla, en el orden en que se
+  // ven: la exportación reproduce exactamente eso (filtros y orden incluidos).
+  function idsVisibles() {
+    return Array.prototype.map.call(
+      document.querySelectorAll('#cuerpo-tabla tr[data-id]'),
+      function (tr) { return tr.getAttribute('data-id'); });
+  }
+
+  function descargar(ruta, nombre, boton, ids) {
     if (boton) boton.disabled = true;
     aviso('Generando ' + nombre + '…', 'aviso-info');
-    fetch(ruta, { credentials: 'same-origin' })
+    var opciones = { credentials: 'same-origin' };
+    if (ids && ids.length) {
+      opciones.method = 'POST';
+      opciones.headers = { 'Content-Type': 'application/json' };
+      opciones.body = JSON.stringify({ ids: ids });
+    }
+    fetch(ruta, opciones)
       .then(function (r) {
         if (!r.ok) return r.text().then(function (t) { throw new Error(t || ('HTTP ' + r.status)); });
         return r.blob();
@@ -1964,8 +2015,12 @@
         if (el.id === 'btn-refrescar') return refrescar({}, el);
         if (el.id === 'btn-media') return refrescar({ media: true }, el);
         var sufijo = (MODO === 'excluidos') ? '?ocultas=1' : '';
-        if (el.id === 'btn-excel') return descargar('/export.xlsx' + sufijo, 'instancias.xlsx', el);
-        if (el.id === 'btn-csv') return descargar('/export.csv' + sufijo, 'instancias.csv', el);
+        if (el.id === 'btn-excel') {
+          return descargar('/export.xlsx' + sufijo, 'instancias.xlsx', el, idsVisibles());
+        }
+        if (el.id === 'btn-csv') {
+          return descargar('/export.csv' + sufijo, 'instancias.csv', el, idsVisibles());
+        }
         if (el.id === 'btn-historial') return verHistorial();
         if (el.id === 'btn-excluidos') { window.location.href = '/excluidos'; return; }
         if (el.id === 'btn-guardar-excluidos') return guardarListaExcluidos();

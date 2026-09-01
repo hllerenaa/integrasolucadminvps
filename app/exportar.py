@@ -9,6 +9,7 @@ import io
 COLUMNAS = [
     ('cliente', 'Cliente', 16),
     ('tipo', 'Sistema', 12),
+    ('oculta', 'Oculta', 9),
     ('empresa', 'Empresa', 30),
     ('ruc', 'RUC', 16),
     ('ruc_proveedor', 'RUC facturador', 18),
@@ -54,14 +55,25 @@ COLUMNAS = [
     ('ultima_sesion', 'Última sesión', 19),
     ('ultima_sesion_usuario', 'Usuario última sesión', 20),
     ('facturas_total', 'Facturas totales', 15),
+    ('facturas_monto_total', 'Facturado total', 16),
+    ('facturas_anio', 'Facturas este año', 17),
+    ('facturas_monto_anio', 'Facturado este año', 18),
     ('facturas_mes', 'Facturas mes actual', 18),
+    ('facturas_monto_mes', 'Facturado mes actual', 19),
     ('facturas_mes_anterior', 'Facturas mes anterior', 19),
+    ('facturas_monto_mes_anterior', 'Facturado mes anterior', 20),
     ('facturas_ultimo_mes', 'Último mes facturado', 19),
     ('facturas_meses_sin', 'Meses sin facturar', 17),
     ('primera_venta', 'Primera venta', 14),
     ('ultima_venta', 'Última venta', 14),
     ('ventas_total', 'Total ventas', 13),
 ]
+
+
+# Columnas con importes: se escriben como número y con formato de moneda.
+COLUMNAS_MONEDA = ('facturas_monto_total', 'facturas_monto_anio', 'facturas_monto_mes',
+                   'facturas_monto_mes_anterior')
+FORMATO_MONEDA = '"$"#,##0.00'
 
 
 def fila(inst):
@@ -71,6 +83,7 @@ def fila(inst):
     return {
         'cliente': inst.get('cliente'),
         'tipo': inst.get('tipo'),
+        'oculta': 'SI' if inst.get('oculta') else 'no',
         'empresa': r.get('empresa'),
         'ruc': r.get('ruc'),
         'ruc_proveedor': (r.get('ruc_proveedor') if r.get('ruc_proveedor_disponible')
@@ -122,8 +135,13 @@ def fila(inst):
         'dominio_credenciales': r.get('dominio_credenciales'),
         'dominio_desactualizado': 'SI' if r.get('dominio_desactualizado') else 'no',
         'facturas_total': r.get('facturas_total'),
+        'facturas_monto_total': r.get('facturas_monto_total'),
+        'facturas_anio': r.get('facturas_anio'),
+        'facturas_monto_anio': r.get('facturas_monto_anio'),
         'facturas_mes': r.get('facturas_mes'),
+        'facturas_monto_mes': r.get('facturas_monto_mes'),
         'facturas_mes_anterior': r.get('facturas_mes_anterior'),
+        'facturas_monto_mes_anterior': r.get('facturas_monto_mes_anterior'),
         'facturas_ultimo_mes': r.get('facturas_ultimo_mes'),
         'facturas_meses_sin': r.get('facturas_meses_sin'),
         'primera_venta': r.get('primera_venta'),
@@ -212,10 +230,35 @@ def a_xlsx(instancias, resumen=None, titulo='Instancias'):
             hoja.cell(row=n, column=indices['db_estado']).fill = (
                 verde if estado_db == 'activa' else rojo)
 
+        for clave in COLUMNAS_MONEDA:
+            hoja.cell(row=n, column=indices[clave]).number_format = FORMATO_MONEDA
+
+        if datos.get('oculta') == 'SI':
+            hoja.cell(row=n, column=indices['oculta']).fill = ambar
+
     for i, (_, _, ancho) in enumerate(COLUMNAS, start=1):
         hoja.column_dimensions[get_column_letter(i)].width = ancho
     hoja.freeze_panes = 'C2'
     hoja.auto_filter.ref = 'A1:%s%s' % (get_column_letter(len(COLUMNAS)), hoja.max_row)
+
+    # Hoja aparte con el desglose por año: una fila por instancia y año, para
+    # poder hacer tablas dinámicas sin pelear con las columnas de la primera.
+    hoja_anios = libro.create_sheet('Facturas por año')
+    hoja_anios.append(['Cliente', 'Sistema', 'Año', 'Facturas', 'Facturado'])
+    for celda in hoja_anios[1]:
+        celda.fill = relleno_cabecera
+        celda.font = fuente_cabecera
+    for inst in instancias:
+        facturacion = (inst.get('db') or {}).get('facturacion') or {}
+        for anio in (facturacion.get('por_anio') or []):
+            hoja_anios.append([inst.get('cliente'), inst.get('tipo'), anio.get('anio'),
+                               anio.get('total'), anio.get('monto')])
+            hoja_anios.cell(row=hoja_anios.max_row, column=5).number_format = FORMATO_MONEDA
+    for letra, ancho in (('A', 18), ('B', 13), ('C', 8), ('D', 11), ('E', 16)):
+        hoja_anios.column_dimensions[letra].width = ancho
+    hoja_anios.freeze_panes = 'A2'
+    if hoja_anios.max_row > 1:
+        hoja_anios.auto_filter.ref = 'A1:E%s' % hoja_anios.max_row
 
     if resumen:
         hoja2 = libro.create_sheet('Resumen')
@@ -238,11 +281,20 @@ def a_xlsx(instancias, resumen=None, titulo='Instancias'):
             ('RAM usada por las instancias', resumen.get('ram_tamano')),
             ('CPU usada por las instancias (% de un núcleo)', resumen.get('cpu_pct')),
             ('Ocupación total (BD + media + logs)', resumen.get('ocupa_tamano')),
+            ('Facturas emitidas este año', resumen.get('facturas_anio')),
+            ('Facturado este año', resumen.get('facturas_monto_anio')),
+            ('Facturas emitidas este mes', resumen.get('facturas_mes')),
+            ('Facturado este mes', resumen.get('facturas_monto_mes')),
+            ('Facturado histórico', resumen.get('facturas_monto_total')),
         ]
+        # Las filas de dinero llevan formato de moneda (las demás son conteos).
+        monetarias = {'Facturado este año', 'Facturado este mes', 'Facturado histórico'}
         for tipo, cantidad in (resumen.get('por_tipo') or {}).items():
             etiquetas.append(('Instancias de %s' % tipo, cantidad))
         for etiqueta, valor in etiquetas:
             hoja2.append([etiqueta, valor])
+            if etiqueta in monetarias:
+                hoja2.cell(row=hoja2.max_row, column=2).number_format = FORMATO_MONEDA
         hoja2.column_dimensions['A'].width = 38
         hoja2.column_dimensions['B'].width = 18
 

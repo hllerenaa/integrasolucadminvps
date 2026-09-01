@@ -141,21 +141,41 @@ def crear_app(config=None):
                                titulo=config.get('titulo'), version=__version__,
                                auth_activa=bool((config.get('auth') or {}).get('enabled')))
 
+    def ambito_ocultas(modo_ocultas):
+        """Qué instancias ocultas puede ver este usuario.
+
+        Es la única puerta: la usan tanto /api/estado como las exportaciones,
+        para que un Excel nunca contenga lo que la pantalla no muestra.
+        """
+        permiso = permisos()
+        modo_ocultas = (modo_ocultas or '').lower()
+        if not permiso['ver_excluidos'] and not permiso['gestionar_excluidos']:
+            return False, False
+        if permiso['ver_excluidos']:
+            # Se incluyen (marcadas) tanto en el panel principal como en /excluidos.
+            return True, modo_ocultas == 'solo'
+        # Puede administrarlas pero no verlas en el panel: sólo en /excluidos.
+        return modo_ocultas in ('1', 'todas', 'true'), modo_ocultas == 'solo'
+
+    def instancias_pedidas(datos):
+        """Recorta la instantánea a los identificadores que manda la pantalla.
+
+        Llegan por POST en el mismo orden en que se ven en la tabla. El cliente
+        sólo puede recortar: lo que el permiso dejó fuera no está en la
+        instantánea y por lo tanto no puede volver a entrar por aquí.
+        """
+        cuerpo = request.get_json(silent=True) or {}
+        ids = cuerpo.get('ids')
+        if not isinstance(ids, list) or not ids:
+            return datos['instancias']
+        por_id = {i.get('id'): i for i in datos['instancias']}
+        elegidas = [por_id[x] for x in ids if x in por_id]
+        return elegidas or datos['instancias']
+
     @app.route('/api/estado')
     @requiere_login
     def api_estado():
-        permiso = permisos()
-        modo_ocultas = (request.args.get('ocultas') or '').lower()
-        # Sin permiso nunca se devuelven las ocultas. Con permiso se incluyen
-        # (marcadas) tanto en el panel principal como en /excluidos.
-        if not permiso['ver_excluidos'] and not permiso['gestionar_excluidos']:
-            incluir, solo = False, False
-        elif permiso['ver_excluidos']:
-            incluir, solo = True, modo_ocultas == 'solo'
-        else:
-            # Puede administrarlas pero no verlas en el panel: sólo en /excluidos.
-            incluir = modo_ocultas in ('1', 'todas', 'true')
-            solo = modo_ocultas == 'solo'
+        incluir, solo = ambito_ocultas(request.args.get('ocultas'))
         datos = colector.snapshot(tipo=request.args.get('tipo') or None,
                                   buscar=request.args.get('q') or None,
                                   incluir_ocultas=incluir, solo_ocultas=solo)
@@ -710,23 +730,30 @@ def crear_app(config=None):
     def api_historial_acciones():
         return jsonify({'acciones': mod_acciones.historial(config)})
 
-    @app.route('/export.csv')
+    @app.route('/export.csv', methods=['GET', 'POST'])
     @requiere_login
     def export_csv():
+        incluir, solo = ambito_ocultas(request.args.get('ocultas'))
         datos = colector.snapshot(tipo=request.args.get('tipo') or None,
-                                  buscar=request.args.get('q') or None)
+                                  buscar=request.args.get('q') or None,
+                                  incluir_ocultas=incluir, solo_ocultas=solo)
         return Response(
-            exportar.a_csv(datos['instancias']),
+            exportar.a_csv(instancias_pedidas(datos)),
             mimetype='text/csv; charset=utf-8',
             headers={'Content-Disposition': 'attachment; filename=instancias.csv'},
         )
 
-    @app.route('/export.xlsx')
+    @app.route('/export.xlsx', methods=['GET', 'POST'])
     @requiere_login
     def export_xlsx():
+        incluir, solo = ambito_ocultas(request.args.get('ocultas'))
         datos = colector.snapshot(tipo=request.args.get('tipo') or None,
-                                  buscar=request.args.get('q') or None)
-        contenido, error = exportar.a_xlsx(datos['instancias'], datos['resumen'])
+                                  buscar=request.args.get('q') or None,
+                                  incluir_ocultas=incluir, solo_ocultas=solo)
+        instancias = instancias_pedidas(datos)
+        # El resumen del Excel se recalcula sobre lo exportado: si la pantalla
+        # está filtrada, los totales de la hoja Resumen son los de ese filtro.
+        contenido, error = exportar.a_xlsx(instancias, colector.resumen(instancias))
         if error:
             return jsonify({'error': error}), 500
         nombre = 'instancias_%s.xlsx' % datetime.datetime.now().strftime('%Y%m%d_%H%M')

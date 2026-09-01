@@ -214,8 +214,13 @@ def _resumen_fila(datos):
         'auditoria_tabla': auditoria.get('tabla_afectada'),
         'auditoria_dias': auditoria.get('dias'),
         'facturas_total': facturacion.get('total'),
+        'facturas_monto_total': facturacion.get('monto_total'),
         'facturas_mes': facturacion.get('mes_actual'),
+        'facturas_monto_mes': facturacion.get('monto_mes_actual'),
         'facturas_mes_anterior': facturacion.get('mes_anterior'),
+        'facturas_monto_mes_anterior': facturacion.get('monto_mes_anterior'),
+        'facturas_monto_anio': facturacion.get('monto_anio_actual'),
+        'facturas_moneda': bool(facturacion.get('columna_monto')),
         'facturas_ultimo_mes': facturacion.get('ultimo_mes'),
         'facturas_meses_sin': facturacion.get('meses_sin_facturar'),
         'facturas_estado': facturacion.get('estado'),
@@ -233,8 +238,8 @@ def _resumen_fila(datos):
         'ventas_total': venta.get('total'),
         'ventas_anio': venta.get('anio_actual'),
         'ventas_anio_anterior': venta.get('anio_anterior'),
-        'facturas_anio': next((a['total'] for a in (facturacion.get('por_anio') or [])
-                               if a.get('anio') == datetime.date.today().year), 0),
+        'facturas_anio': facturacion.get('anio_actual', 0) or 0,
+        'facturas_por_anio': facturacion.get('por_anio') or [],
         'dias_sin_ventas': venta.get('dias_sin_ventas'),
     }
 
@@ -341,6 +346,15 @@ class Colector(object):
         sin_columna_ruc = sum(1 for i in instancias
                               if (i.get('db') or {}).get('ok')
                               and not (i.get('resumen') or {}).get('ruc_proveedor_disponible'))
+        # Facturación electrónica del conjunto: sólo suma lo que cada instancia
+        # ya contó con status y valida en verdadero.
+        def suma(clave):
+            return sum((i.get('resumen') or {}).get(clave) or 0 for i in instancias)
+        facturas_anio = suma('facturas_anio')
+        facturas_mes = suma('facturas_mes')
+        monto_anio = round(suma('facturas_monto_anio'), 2)
+        monto_mes = round(suma('facturas_monto_mes'), 2)
+        monto_total = round(suma('facturas_monto_total'), 2)
         api_activas = sum(1 for i in instancias if (i.get('resumen') or {}).get('api_cedula'))
         api_inactivas = sum(1 for i in instancias
                             if (i.get('resumen') or {}).get('api_cedula') is False)
@@ -365,6 +379,11 @@ class Colector(object):
             'sin_uso_90': sin_uso_90,
             'sin_ruc_proveedor': sin_ruc_proveedor,
             'sin_columna_ruc_proveedor': sin_columna_ruc,
+            'facturas_anio': facturas_anio,
+            'facturas_mes': facturas_mes,
+            'facturas_monto_anio': monto_anio,
+            'facturas_monto_mes': monto_mes,
+            'facturas_monto_total': monto_total,
             'api_cedula_activas': api_activas,
             'api_cedula_inactivas': api_inactivas,
             'db_activas': db_ok,

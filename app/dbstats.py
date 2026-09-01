@@ -27,6 +27,7 @@ TABLA_CONFIGURACION = 'seguridad_configuracion'
 TABLA_SESIONES = 'django_session'
 TABLA_USUARIOS = 'auth_user'
 TABLA_CONECTADOS = 'seguridad_usuarioconectado'
+TABLA_FACTURAS = 'facturacion_facturareal'
 
 # Búsqueda de personas por cédula vía API externa: la columna cambia según el
 # sistema (inventario / restaurante) y la versión, así que se detecta.
@@ -67,6 +68,27 @@ VENTAS = {
 
 COLUMNAS_FECHA = ('fecha', 'fecha_registro', 'fechasalida')
 
+# Facturas electrónicas: además de status, sólo cuentan las validadas.
+COLUMNAS_VALIDA_FACTURA = ('valida', 'validada', 'es_valida', 'autorizada')
+
+# Importe facturado. El XML del SRI lo llama importeTotal, pero cada versión
+# guarda la columna con un nombre distinto, así que también se detecta.
+COLUMNAS_MONTO_FACTURA = ('importetotal', 'importe_total', 'valortotal', 'valor_total',
+                          'total_factura', 'totalfactura', 'montototal', 'monto_total',
+                          'valor_factura', 'total')
+
+# Tipos que sirven para sumar dinero (una columna de texto no se suma).
+TIPOS_NUMERICOS = ('numeric', 'integer', 'bigint', 'smallint', 'real', 'double precision',
+                   'money')
+
+
+def columna_monto_factura(columnas):
+    """Columna con el importe total de la factura, si la base la tiene."""
+    for columna in COLUMNAS_MONTO_FACTURA:
+        if (columnas or {}).get(columna) in TIPOS_NUMERICOS:
+            return columna
+    return None
+
 
 def _tablas_de_interes(tipo):
     tablas = {TABLA_AUDITORIA, TABLA_CONFIGURACION, TABLA_SESIONES,
@@ -77,18 +99,24 @@ def _tablas_de_interes(tipo):
 
 
 def _esquema(cur, tipo):
-    """Devuelve {tabla: set(columnas)} de las tablas que existen en la base."""
+    """Devuelve {tabla: {columna: tipo}} de las tablas que existen en la base.
+
+    Se guarda el tipo porque algunos filtros dependen de él: `valida` es
+    booleana en unas versiones y numérica en otras, y `IS TRUE` sólo vale
+    para la booleana.  Un diccionario se comporta como un conjunto para los
+    `in` que hace el resto del módulo.
+    """
     cur.execute(
         """
-        SELECT table_name, column_name
+        SELECT table_name, column_name, data_type
         FROM information_schema.columns
         WHERE table_schema = 'public' AND table_name = ANY(%s)
         """,
         (_tablas_de_interes(tipo),),
     )
     esquema = {}
-    for tabla, columna in cur.fetchall():
-        esquema.setdefault(tabla, set()).add(columna)
+    for tabla, columna, tipo_dato in cur.fetchall():
+        esquema.setdefault(tabla, {})[columna] = tipo_dato
     return esquema
 
 
@@ -99,8 +127,50 @@ def _columna_fecha(columnas):
     return None
 
 
+def _condicion_verdadero(columna, tipo):
+    """Condición SQL para una bandera que puede no ser booleana.
+
+    Entre versiones de los sistemas la misma bandera aparece como boolean,
+    como entero (0/1) o como texto, y `IS TRUE` sólo es válido para la
+    booleana: aplicarlo a las otras aborta la consulta entera.
+    """
+    if tipo == 'boolean':
+        return '%s IS TRUE' % columna
+    if tipo in ('smallint', 'integer', 'bigint', 'numeric', 'real', 'double precision'):
+        return '%s = 1' % columna
+    if tipo in ('character varying', 'character', 'text'):
+        return "lower(%s::text) IN ('t','true','1','s','si')" % columna
+    return None
+
+
+def _condiciones(columnas, *grupos):
+    """Condiciones para el primer nombre de cada grupo que exista en la tabla."""
+    condiciones, usadas = [], []
+    for nombres in grupos:
+        columna = next((c for c in nombres if c in (columnas or {})), None)
+        if not columna:
+            continue
+        condicion = _condicion_verdadero(columna, (columnas or {}).get(columna))
+        if condicion:
+            condiciones.append(condicion)
+            usadas.append(columna)
+    return condiciones, usadas
+
+
 def _filtro_status(columnas):
-    return ' WHERE status IS TRUE' if 'status' in columnas else ''
+    condiciones, _ = _condiciones(columnas, ('status',))
+    return (' WHERE ' + ' AND '.join(condiciones)) if condiciones else ''
+
+
+def _filtro_facturas(columnas):
+    """WHERE de las facturas que cuentan de verdad.
+
+    Una fila sólo se suma si está activa (status) y validada por el SRI
+    (valida); las anuladas o rechazadas siguen en la tabla y no deben contar
+    ni en el número de facturas ni en el importe.
+    """
+    condiciones, usadas = _condiciones(columnas, ('status',), COLUMNAS_VALIDA_FACTURA)
+    return (' WHERE ' + ' AND '.join(condiciones)) if condiciones else '', usadas
 
 
 def _estimado(cur, tabla):
@@ -284,9 +354,13 @@ def _ventas(cur, esquema, tipo):
         registro = {'tabla': tabla, 'etiqueta': etiqueta, 'columna': columna}
         try:
             # Una sola pasada por la tabla: totales y desglose por año.
+            # La tabla de facturas se filtra igual que en el bloque de
+            # facturación (status y valida), para que los dos números cuadren.
+            filtro = (_filtro_facturas(columnas)[0] if tabla == TABLA_FACTURAS
+                      else _filtro_status(columnas))
             consulta = ('SELECT EXTRACT(YEAR FROM {c})::int AS anio, COUNT(*), '
                         'MIN({c}), MAX({c}) FROM {t}{f} GROUP BY 1 ORDER BY 1'
-                        ).format(c=columna, t=tabla, f=_filtro_status(columnas))
+                        ).format(c=columna, t=tabla, f=filtro)
             cur.execute(consulta)
             filas = cur.fetchall()
             por_anio = [{'anio': f[0], 'total': int(f[1])} for f in filas if f[0] is not None]
@@ -309,7 +383,11 @@ def _ventas(cur, esquema, tipo):
     return salida
 
 
-TABLA_FACTURAS = 'facturacion_facturareal'
+def _suma_si(monto, condicion):
+    """SUM del importe sólo para las filas que cumplen la condición."""
+    if not monto:
+        return '0'
+    return "COALESCE(SUM(%s) FILTER (WHERE %s), 0)" % (monto, condicion)
 
 
 def _facturacion(cur, esquema):
@@ -321,35 +399,59 @@ def _facturacion(cur, esquema):
     if not columna:
         return {'disponible': False, 'error': 'Sin columna de fecha en %s' % TABLA_FACTURAS}
 
-    datos = {'disponible': True, 'tabla': TABLA_FACTURAS}
+    filtro, banderas = _filtro_facturas(columnas)
+    monto = columna_monto_factura(columnas)
+    # Si no hay columna de importe se suma 0: el resto de los datos siguen
+    # sirviendo y en el panel se ve que no hay monto disponible.
+    suma = 'COALESCE(SUM(%s), 0)' % monto if monto else '0'
+    datos = {'disponible': True, 'tabla': TABLA_FACTURAS, 'columna_fecha': columna,
+             'columna_monto': monto, 'filtros': banderas}
     try:
-        consulta = ('SELECT EXTRACT(YEAR FROM {c})::int, COUNT(*) FROM {t}{f} '
+        consulta = ('SELECT EXTRACT(YEAR FROM {c})::int, COUNT(*), {s} FROM {t}{f} '
                     'GROUP BY 1 ORDER BY 1 DESC'
-                    ).format(c=columna, t=TABLA_FACTURAS, f=_filtro_status(columnas))
+                    ).format(c=columna, s=suma, t=TABLA_FACTURAS, f=filtro)
         cur.execute(consulta)
-        datos['por_anio'] = [{'anio': f[0], 'total': int(f[1])}
+        datos['por_anio'] = [{'anio': f[0], 'total': int(f[1]), 'monto': float(f[2] or 0)}
                              for f in cur.fetchall() if f[0] is not None]
     except Exception:
         datos['por_anio'] = []
     try:
         cur.execute("""
-            SELECT COUNT(*),
-                   SUM(CASE WHEN {col} >= date_trunc('month', CURRENT_DATE) THEN 1 ELSE 0 END),
-                   SUM(CASE WHEN {col} >= date_trunc('month', CURRENT_DATE) - interval '1 month'
-                             AND {col} <  date_trunc('month', CURRENT_DATE) THEN 1 ELSE 0 END),
+            SELECT COUNT(*), {suma},
+                   COUNT(*) FILTER (WHERE {col} >= date_trunc('month', CURRENT_DATE)),
+                   {suma_mes},
+                   COUNT(*) FILTER (WHERE {col} >= date_trunc('month', CURRENT_DATE)
+                                          - interval '1 month'
+                                     AND {col} < date_trunc('month', CURRENT_DATE)),
+                   {suma_mes_ant},
+                   COUNT(*) FILTER (WHERE {col} >= date_trunc('year', CURRENT_DATE)),
+                   {suma_anio},
                    MIN({col}), MAX({col})
             FROM {tabla}{filtro}
-        """.format(col=columna, tabla=TABLA_FACTURAS, filtro=_filtro_status(columnas)))
+        """.format(
+            col=columna, tabla=TABLA_FACTURAS, filtro=filtro, suma=suma,
+            suma_mes=_suma_si(monto, "{c} >= date_trunc('month', CURRENT_DATE)".format(c=columna)),
+            suma_mes_ant=_suma_si(monto, (
+                "{c} >= date_trunc('month', CURRENT_DATE) - interval '1 month' "
+                "AND {c} < date_trunc('month', CURRENT_DATE)").format(c=columna)),
+            suma_anio=_suma_si(monto, "{c} >= date_trunc('year', CURRENT_DATE)".format(c=columna)),
+        ))
         fila = cur.fetchone()
     except Exception as ex:
         datos['error'] = str(ex).strip()
         return datos
 
-    total, mes_actual, mes_anterior, primera, ultima = fila
+    (total, monto_total, mes_actual, monto_mes_actual, mes_anterior, monto_mes_anterior,
+     anio_actual, monto_anio_actual, primera, ultima) = fila
     datos.update({
         'total': int(total or 0),
+        'monto_total': float(monto_total or 0),
         'mes_actual': int(mes_actual or 0),
+        'monto_mes_actual': float(monto_mes_actual or 0),
         'mes_anterior': int(mes_anterior or 0),
+        'monto_mes_anterior': float(monto_mes_anterior or 0),
+        'anio_actual': int(anio_actual or 0),
+        'monto_anio_actual': float(monto_anio_actual or 0),
         'primera': fecha_iso(primera),
         'ultima': fecha_iso(ultima),
         'dias_sin_facturar': dias_desde(ultima),
