@@ -137,6 +137,26 @@ Luego se entra desde `http://<IP-PUBLICA>:8600`.
 
 Opciones: `--bind`, `--servicio <nombre>`, `--sin-servicio`, `--help`.
 
+### Publicar el panel en un dominio (en vez de IP:puerto)
+
+```bash
+sudo bash /opt/integrasolucadminvps/deploy/admin_dominio.sh admin.integrasoluc.net \
+     --certbot tu-correo@dominio.com
+```
+
+Crea el vhost que hace proxy al panel, activa los módulos de Apache, emite el
+certificado con certbot, deja el panel escuchando **sólo en 127.0.0.1**,
+marca la cookie de sesión como segura, reinicia el servicio y cierra el puerto
+en `ufw`. Con `--servidor nginx` usa nginx; con `--mantener-ip` conserva
+también el acceso por IP.
+
+Comando de certbot que usa (por si prefieres lanzarlo a mano):
+
+```bash
+certbot --apache -d admin.integrasoluc.net --redirect --non-interactive \
+        --agree-tos -m tu-correo@dominio.com
+```
+
 ### Cambiar usuario o clave del panel
 
 ```bash
@@ -218,6 +238,7 @@ El archivo está en `.gitignore` (es tuyo, no se sube). Hay un
 | `credenciales` | `ver`, `editar`, `mostrar_secretos`: controla el acceso a `credenciales.json` |
 | `aprovisionamiento` | Creación de instancias: templates, `venv`, puertos, `dominio_base`, modelos y `certbot` |
 | `auth` | `username` + `password_hash` (o `password`) y `api_token` opcional |
+| `session_cookie_secure` | `true` cuando el panel va detrás de HTTPS (lo pone `admin_dominio.sh`) |
 
 > Si sólo quieres consulta de servicios, Apache, SSL y URL —sin nada de base de
 > datos— pon `"consultar_bd": false`. El panel oculta esas columnas solo.

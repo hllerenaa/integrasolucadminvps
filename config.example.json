@@ -83,5 +83,6 @@
     "password": "",
     "api_token": ""
   },
+  "session_cookie_secure": false,
   "secret_key": ""
 }

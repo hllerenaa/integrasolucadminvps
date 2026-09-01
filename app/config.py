@@ -64,6 +64,7 @@ DEFAULTS = {
         'password': '',
         'api_token': '',
     },
+    'session_cookie_secure': False,
     'secret_key': '',
 }
 

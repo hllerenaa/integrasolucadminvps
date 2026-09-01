@@ -21,6 +21,12 @@ def crear_app(config=None):
     app = Flask(__name__)
     app.secret_key = config['secret_key']
     app.config['JSON_AS_ASCII'] = False
+    # Detrás de Apache/nginx con SSL conviene marcar la cookie como segura
+    # (config.json: "session_cookie_secure": true). Con acceso por IP en HTTP
+    # debe quedar en false o el login no persistiría.
+    app.config['SESSION_COOKIE_SECURE'] = bool(config.get('session_cookie_secure'))
+    app.config['SESSION_COOKIE_HTTPONLY'] = True
+    app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
     app.config['PANEL'] = config
 
     colector = Colector(config)
