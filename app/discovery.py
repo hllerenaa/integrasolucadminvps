@@ -121,14 +121,16 @@ def _candidatos(base_dirs, profundidad, nombres):
 def descubrir(config):
     """Devuelve la lista de Instancia detectadas en el servidor."""
     nombres = config.get('proyectos') or {}
-    excluidos = set(config.get('excluir_clientes') or [])
+    # Nota: excluidos.txt se aplica en el colector, que ya conoce el nombre
+    # real del servicio systemd de cada instancia.
+    excluidos = {c.lower() for c in (config.get('excluir_clientes') or [])}
     instancias = []
     vistos = set()
 
     for cliente, tipo, ruta in _candidatos(config.get('base_dirs') or ['/home'],
                                            int(config.get('profundidad') or 2),
                                            nombres):
-        if cliente in excluidos:
+        if cliente.lower() in excluidos:
             continue
         override = config.override(cliente)
         if override.get('ignorar'):

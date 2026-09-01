@@ -1,0 +1,5 @@
+# Sistemas que NO se muestran en el panel.
+# Una sola línea, nombres separados por comas: sirve el nombre del cliente
+# (carpeta en /home) o el del servicio systemd. Copia este archivo como
+# excluidos.txt en la raíz del proyecto; se relee en cada refresco.
+onepc,elgringo

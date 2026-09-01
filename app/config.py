@@ -24,6 +24,8 @@ DEFAULTS = {
     'overrides': {},
     'consultar_bd': True,
     'medir_media': True,
+    'medir_logs': True,
+    'recolectar_ocultas': True,
     'verificar_url': True,
     'intervalo_refresco': 300,
     'ttl_datos': 300,
@@ -35,14 +37,46 @@ DEFAULTS = {
     'timeout_du': 120,
     'timeout_url': 6,
     'timeout_accion': 60,
-    'acciones': {'enabled': True, 'servicios': True, 'apache': True},
+    'acciones': {'enabled': True, 'servicios': True, 'apache': True, 'datos': True,
+                 'certbot': True},
+    'credenciales': {'ver': True, 'editar': True, 'mostrar_secretos': True},
+    'backups': {
+        'enabled': True,
+        'destino': '/home/backups',
+        'retencion': 7,
+        'comprimir': True,
+        'alerta_dias': 3,
+    },
+    'aprovisionamiento': {
+        'enabled': True,
+        'venv': '/home/integrasoluc/venv',
+        'templates': {
+            'inventario': {'ruta': '/home/template/pryinventario',
+                           'db_origen': 'demo_soluciones', 'rama': 'master'},
+            'restaurante': {'ruta': '/home/template_restaurante/pryrestaurante',
+                            'db_origen': 'template_restaurante', 'rama': 'master'},
+        },
+        'backups_dir': '',
+        'base_dir': '',
+        'puerto_inicial': 8000,
+        'puerto_final': 8999,
+        'dominio_base': '',
+        'modelo_servicio': '',
+        'modelo_vhost': '',
+        'actualizar_template': True,
+        'certbot': {'enabled': False, 'email': ''},
+    },
     'auth': {
         'enabled': True,
+        # Usuario histórico (sigue funcionando). Los demás van en "usuarios".
         'username': 'admin',
         'password_hash': '',
         'password': '',
         'api_token': '',
+        # [{usuario, password_hash|password, ver_excluidos, gestionar_excluidos}]
+        'usuarios': [],
     },
+    'session_cookie_secure': False,
     'secret_key': '',
 }
 
@@ -81,6 +115,49 @@ class Config(dict):
             return ov['servicio']
         patron = self.get('servicio_patron') or '{cliente}'
         return patron.format(cliente=cliente, tipo=tipo)
+
+    # ------------------------------------------------------------- usuarios
+    def usuarios(self):
+        """Lista normalizada de usuarios del panel.
+
+        Incluye el usuario histórico de auth.username para no romper
+        instalaciones anteriores.
+        """
+        auth = self.get('auth') or {}
+        lista = []
+        if auth.get('username'):
+            lista.append({
+                'usuario': auth.get('username'),
+                'password_hash': (auth.get('password_hash') or '').strip().lower(),
+                'password': auth.get('password') or '',
+                # El usuario histórico administra la lista pero no ve las
+                # instancias ocultas en el panel (comportamiento de siempre).
+                'ver_excluidos': bool(auth.get('ver_excluidos', False)),
+                'gestionar_excluidos': bool(auth.get('gestionar_excluidos', True)),
+            })
+        for datos in auth.get('usuarios') or []:
+            if not datos.get('usuario'):
+                continue
+            lista.append({
+                'usuario': datos['usuario'],
+                'password_hash': (datos.get('password_hash') or '').strip().lower(),
+                'password': datos.get('password') or '',
+                'ver_excluidos': bool(datos.get('ver_excluidos', False)),
+                'gestionar_excluidos': bool(datos.get('gestionar_excluidos', False)),
+            })
+        return lista
+
+    def autenticar(self, usuario, password):
+        """Devuelve el usuario (con sus permisos) si las credenciales son válidas."""
+        for datos in self.usuarios():
+            if datos['usuario'] != usuario:
+                continue
+            if datos['password_hash']:
+                if secrets.compare_digest(hash_password(password), datos['password_hash']):
+                    return datos
+            elif datos['password'] and secrets.compare_digest(password, datos['password']):
+                return datos
+        return None
 
     def verificar_password(self, password):
         auth = self.get('auth') or {}

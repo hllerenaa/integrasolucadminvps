@@ -1,0 +1,11 @@
+<nav class="menu-principal">
+  <a href="/" class="{% if seccion == 'instancias' %}activo{% endif %}">Instancias</a>
+  <a href="/certificados" class="{% if seccion == 'certificados' %}activo{% endif %}">Certificados</a>
+  <a href="/backups" class="{% if seccion == 'backups' %}activo{% endif %}">Backups</a>
+  <a href="/nueva" class="{% if seccion == 'nueva' %}activo{% endif %}">Nueva instancia</a>
+  {# /excluidos sigue funcionando para quien la administra, pero no se enlaza
+     desde el menú: se entra escribiendo la dirección. #}
+  {% if seccion == 'excluidos' %}
+  <a href="/excluidos" class="activo">Excluidos</a>
+  {% endif %}
+</nav>

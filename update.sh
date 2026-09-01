@@ -12,7 +12,7 @@ if [[ -x "$DIR/venv/bin/pip" ]]; then
     "$DIR/venv/bin/pip" install -q -r "$DIR/requirements.txt"
 fi
 
-if systemctl list-unit-files 2>/dev/null | grep -q "^${SERVICIO}.service"; then
+if systemctl cat "${SERVICIO}.service" >/dev/null 2>&1; then
     echo "==> Reiniciando $SERVICIO"
     systemctl restart "$SERVICIO"
     sleep 2
