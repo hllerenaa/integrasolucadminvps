@@ -94,6 +94,16 @@
     return badge('rojo', (f.meses_sin_facturar || 0) + ' meses sin facturar',
       'Última facturación: ' + (f.ultimo_mes || '-'));
   }
+  function barra(pct, etiqueta, titulo, limiteAmbar, limiteRojo) {
+    var valor = (pct === null || pct === undefined) ? null : Math.max(0, pct);
+    if (valor === null) return '<span class="tenue">—</span>';
+    var ancho = Math.min(100, valor);
+    var clase = valor >= (limiteRojo || 80) ? 'rojo' : (valor >= (limiteAmbar || 50) ? 'ambar' : 'verde');
+    return '<div class="medidor" title="' + esc(titulo || '') + '">' +
+      '<div class="medidor-barra ' + clase + '" style="width:' + ancho.toFixed(1) + '%"></div>' +
+      '<span class="medidor-texto">' + esc(etiqueta) + '</span></div>';
+  }
+
   function fechaAviso(valor, dias, limite) {
     if (!valor) return '<span class="tenue">—</span>';
     var clase = (dias !== null && dias !== undefined && dias > limite) ? ' class="viejo"' : '';
@@ -169,6 +179,24 @@
           (a.nombre ? '<div class="sub">' + esc(a.nombre) + '</div>' : '');
       } },
 
+    { id: 'cpu', titulo: 'CPU', grupo: 'servicio', num: true,
+      valor: function (i) { return (i.resumen || {}).cpu_pct || 0; },
+      render: function (i) {
+        var r = i.resumen || {}, s = i.servicio_estado || {};
+        if (r.cpu_pct === null || r.cpu_pct === undefined) return '<span class="tenue">—</span>';
+        return barra(r.cpu_pct, r.cpu_pct + '%',
+          '% de un núcleo · CPU acumulada: ' + (s.cpu_segundos || 0) + ' s', 50, 90);
+      } },
+    { id: 'ram', titulo: 'RAM', grupo: 'servicio', num: true,
+      valor: function (i) { return (i.resumen || {}).ram_bytes || 0; },
+      render: function (i) {
+        var r = i.resumen || {}, s = i.servicio_estado || {};
+        if (!r.ram_bytes) return '<span class="tenue">—</span>';
+        return barra(r.ram_pct === null || r.ram_pct === undefined ? 0 : r.ram_pct * 4,
+          r.ram_legible, (r.ram_pct || 0) + '% de la RAM del servidor' +
+          (s.memoria_pico ? ' · pico ' + s.memoria_pico : ''), 50, 80);
+      } },
+
     { id: 'base', titulo: 'Base', grupo: 'datos', requiere: 'bd',
       valor: function (i) { return (i.db || {}).ok ? 0 : 1; },
       render: function (i) {
@@ -176,10 +204,20 @@
       } },
     { id: 'db_tamano', titulo: 'Tamaño BD', grupo: 'datos', requiere: 'bd', num: true,
       valor: function (i) { return (i.resumen || {}).db_tamano_bytes || 0; },
-      render: function (i) { return guion((i.resumen || {}).db_tamano); } },
+      render: function (i) {
+        var r = i.resumen || {};
+        if (!r.db_tamano_bytes) return guion(r.db_tamano);
+        return barra((r.db_pct_disco || 0) * 5, r.db_tamano,
+          (r.db_pct_disco || 0) + '% del disco del servidor', 50, 80);
+      } },
     { id: 'media', titulo: 'Media', grupo: 'datos', requiere: 'media', num: true,
       valor: function (i) { return (i.resumen || {}).media_bytes || 0; },
-      render: function (i) { return guion((i.resumen || {}).media_tamano); } },
+      render: function (i) {
+        var r = i.resumen || {};
+        if (!r.media_bytes) return guion(r.media_tamano);
+        return barra((r.media_pct_disco || 0) * 5, r.media_tamano,
+          (r.media_pct_disco || 0) + '% del disco del servidor', 50, 80);
+      } },
     { id: 'logs', titulo: 'Logs', grupo: 'datos', requiere: 'logs', num: true,
       valor: function (i) { return (i.resumen || {}).logs_bytes || 0; },
       render: function (i) {
@@ -190,6 +228,15 @@
           '<div class="sub">' + esc(r.logs_archivos) + ' archivo(s)</div>';
       } },
 
+    { id: 'ocupa', titulo: 'Ocupa (BD+media+logs)', grupo: 'datos', num: true,
+      valor: function (i) { return (i.resumen || {}).ocupa_bytes || 0; },
+      render: function (i) {
+        var r = i.resumen || {};
+        if (!r.ocupa_bytes) return '<span class="tenue">—</span>';
+        return barra((r.ocupa_pct_disco || 0) * 5, r.ocupa_legible +
+          ' · ' + (r.ocupa_pct_disco || 0) + '%',
+          'BD + media + logs frente al disco del servidor', 50, 80);
+      } },
     { id: 'auditoria', titulo: 'Última auditoría', grupo: 'actividad', requiere: 'bd', ancho: 'ancho',
       valor: function (i) { return (i.resumen || {}).auditoria_fecha || ''; },
       render: function (i) {
@@ -358,9 +405,23 @@
     }
     if (cap.media) t.push({ rotulo: 'Tamaño total media', valor: r.media_tamano || '-' });
     if (cap.logs) t.push({ rotulo: 'Tamaño total logs', valor: r.logs_tamano || '-' });
+    var rec = estado.recursos || {};
+    if (rec.ram_total) {
+      t.push({ rotulo: 'RAM del servidor', valor: (rec.ram_pct || 0) + '%',
+        clase: (rec.ram_pct || 0) > 85 ? 'mal' : 'ok',
+        extra: rec.ram_usada_legible + ' de ' + rec.ram_total_legible +
+               ' · instancias: ' + (r.ram_tamano || '-') });
+    }
+    if (rec.carga !== null && rec.carga !== undefined) {
+      t.push({ rotulo: 'CPU del servidor', valor: (rec.carga_pct || 0) + '%',
+        clase: (rec.carga_pct || 0) > 85 ? 'mal' : 'ok',
+        extra: 'carga ' + rec.carga + ' en ' + (rec.nucleos || '?') + ' núcleos · instancias: ' +
+               (r.cpu_pct || 0) + '%' });
+    }
     t.push({ rotulo: 'Disco del servidor',
       valor: (d.porcentaje === undefined || d.porcentaje === null) ? '-' : d.porcentaje + '%',
-      extra: d.usado ? (d.usado + ' de ' + d.total + ' · libre ' + d.libre) : '' });
+      extra: d.usado ? (d.usado + ' de ' + d.total + ' · libre ' + d.libre +
+                        (r.ocupa_tamano ? ' · instancias ' + r.ocupa_tamano : '')) : '' });
 
     $('#tarjetas').innerHTML = t.map(function (x) {
       return '<div class="tarjeta ' + (x.clase || '') + (x.filtro ? ' clicable" data-filtro="' + x.filtro : '') + '">' +
@@ -445,7 +506,12 @@
     b += '<div class="bloque"><h3>Servicio systemd</h3>' + dl([
       ['Unidad', s.unidad], ['Detectada por', inst.servicio_origen],
       ['Estado', badgeServicio(inst) + ' ' + esc(s.subestado || ''), true],
-      ['Arranque', s.habilitado], ['PID', s.pid], ['Memoria', s.memoria],
+      ['Arranque', s.habilitado], ['PID', s.pid],
+      ['Memoria', s.memoria + ((inst.resumen || {}).ram_pct ? ' (' + (inst.resumen || {}).ram_pct +
+        '% de la RAM del servidor)' : '')],
+      ['Pico de memoria', s.memoria_pico], ['Procesos', s.tareas],
+      ['CPU ahora', (s.cpu_pct === null || s.cpu_pct === undefined) ? null : s.cpu_pct + '% de un núcleo'],
+      ['CPU acumulada', s.cpu_segundos ? s.cpu_segundos + ' s' : null],
       ['Activo desde', s.desde], ['Uptime', s.uptime], ['Reinicios', s.reinicios],
       ['Puerto (gunicorn)', inst.puerto], ['Archivo .service', s.archivo],
       ['Servicio creado el', s.creado], ['Error', s.error]
@@ -485,7 +551,10 @@
       b += '<div class="bloque"><h3>Base de datos</h3>' + dl([
         ['Estado', badgeBase(inst), true], ['Host', db.host], ['Base', db.dbname],
         ['Versión PostgreSQL', db.version], ['Tamaño', db.tamano],
-        ['Latencia', db.latencia_ms ? db.latencia_ms + ' ms' : null], ['Error', db.error]
+        ['Latencia', db.latencia_ms ? db.latencia_ms + ' ms' : null],
+        ['% del disco del servidor', (inst.resumen || {}).db_pct_disco
+          ? (inst.resumen || {}).db_pct_disco + ' %' : null],
+        ['Error', db.error]
       ]) + '</div>';
       b += '<div class="bloque"><h3>Última auditoría</h3>' + dl([
         ['Fecha', aud.fecha], ['Hora', aud.hora], ['Usuario', aud.usuario], ['Acción', aud.accion],
@@ -567,6 +636,7 @@
         estado.disco = d.disco || {};
         estado.capacidades = d.capacidades || {};
         estado.servidoresWeb = d.servidores_web || {};
+        estado.recursos = d.recursos || {};
         $('#estado-refresco').textContent = estado.meta.refrescando
           ? 'Actualizando datos…' : 'Actualizado ' + (estado.meta.ultimo_refresco || '');
         pintarControles();

@@ -11,6 +11,10 @@ from . import (dbstats, discovery, excluidos as mod_excluidos, logs as mod_logs,
 from .utils import ahora_iso, bytes_legible
 
 
+_RECURSOS = {}
+_DISCO = {}
+
+
 def _recolectar_instancia(instancia, config, forzar_media=False, vhosts=None, unidades=None,
                           servidores_web=None):
     """Estado completo de una instancia (servicio + apache + SSL + base + media)."""
@@ -108,8 +112,25 @@ def _resumen_fila(datos):
     else:
         salud = 'ok'
 
+    ram_total = (_RECURSOS.get('ram_total') or 0)
+    memoria = servicio.get('memoria_bytes') or 0
+    disco_total = (_DISCO.get('total_bytes') or 0)
+    db_bytes = db.get('tamano_bytes') or 0
+    media_bytes = (datos.get('media') or {}).get('bytes') or 0
+    logs_bytes = (datos.get('logs') or {}).get('bytes') or 0
+
     return {
         'salud': salud,
+        'cpu_pct': servicio.get('cpu_pct'),
+        'ram_bytes': servicio.get('memoria_bytes'),
+        'ram_legible': servicio.get('memoria'),
+        'ram_pct': round(memoria * 100.0 / ram_total, 2) if (ram_total and memoria) else None,
+        'db_pct_disco': round(db_bytes * 100.0 / disco_total, 2) if (disco_total and db_bytes) else None,
+        'media_pct_disco': round(media_bytes * 100.0 / disco_total, 2) if (disco_total and media_bytes) else None,
+        'ocupa_bytes': db_bytes + media_bytes + logs_bytes,
+        'ocupa_legible': bytes_legible(db_bytes + media_bytes + logs_bytes),
+        'ocupa_pct_disco': (round((db_bytes + media_bytes + logs_bytes) * 100.0 / disco_total, 2)
+                            if disco_total else None),
         'dominio_desactualizado': bool(datos.get('dominio_desactualizado')),
         'dominio_credenciales': datos.get('dominio_credenciales'),
         'fecha_instalacion': datos.get('fecha_instalacion'),
@@ -203,6 +224,7 @@ class Colector(object):
             'instancias': instancias,
             'disco': storage.uso_disco('/'),
             'servidores_web': dict(self._servidores_web),
+            'recursos': systemd.recursos_del_sistema(),
         }
 
     def instancia(self, ident):
@@ -218,6 +240,8 @@ class Colector(object):
         db_bytes = sum((i.get('db') or {}).get('tamano_bytes') or 0 for i in instancias)
         media_bytes = sum((i.get('media') or {}).get('bytes') or 0 for i in instancias)
         logs_bytes = sum((i.get('logs') or {}).get('bytes') or 0 for i in instancias)
+        ram_bytes = sum((i.get('servicio_estado') or {}).get('memoria_bytes') or 0 for i in instancias)
+        cpu_pct = sum((i.get('resumen') or {}).get('cpu_pct') or 0 for i in instancias)
         sitios_ok = sum(1 for i in instancias if (i.get('apache') or {}).get('habilitado'))
         ssl_ok = sum(1 for i in instancias if (i.get('ssl') or {}).get('estado') == 'vigente')
         ssl_alerta = sum(1 for i in instancias
@@ -244,6 +268,11 @@ class Colector(object):
             'media_tamano': bytes_legible(media_bytes),
             'logs_bytes': logs_bytes,
             'logs_tamano': bytes_legible(logs_bytes),
+            'ram_bytes': ram_bytes,
+            'ram_tamano': bytes_legible(ram_bytes),
+            'cpu_pct': round(cpu_pct, 1),
+            'ocupa_bytes': media_bytes + logs_bytes + db_bytes,
+            'ocupa_tamano': bytes_legible(media_bytes + logs_bytes + db_bytes),
             'por_tipo': por_tipo,
         }
 
@@ -262,6 +291,11 @@ class Colector(object):
             vhosts = webserver.cargar_vhosts(self.config)
             unidades = units.cargar_unidades(self.config)
             self._servidores_web = webserver.estado_servidores_web(self.config)
+            # Totales del servidor, para poder expresar el consumo en porcentaje.
+            _RECURSOS.clear()
+            _RECURSOS.update(systemd.recursos_del_sistema())
+            _DISCO.clear()
+            _DISCO.update(storage.uso_disco('/'))
 
             # excluidos.txt puede nombrar el cliente o su servicio systemd,
             # así que se filtra recién con la unidad ya resuelta.

@@ -17,7 +17,9 @@ los certificados y (opcionalmente) la base PostgreSQL de cada cliente.
 | URL pública y si responde (código HTTP) | **ServerName del vhost de Apache** (con `DOMINIO_GENERAL` como respaldo) + petición en vivo |
 | Aviso de `DOMINIO_GENERAL` desactualizado | Comparación entre `credenciales.json` y el vhost |
 | Certificado SSL: vigente / por vencer / vencido / autofirmado, **fecha de vencimiento**, días restantes y emisor | `SSLCertificateFile` (Apache) o `ssl_certificate` (nginx) del sitio, o `/etc/letsencrypt/live/<dominio>/` |
-| Servicio systemd: activo, arranque, PID, memoria, uptime, puerto de gunicorn | El `.service` que apunta a la carpeta (`WorkingDirectory`/`ExecStart`) + `systemctl show` |
+| Servicio systemd: activo, arranque, PID, uptime, puerto de gunicorn | El `.service` que apunta a la carpeta (`WorkingDirectory`/`ExecStart`) + `systemctl show` |
+| **Consumo de CPU y RAM de cada instancia**, con barra y % sobre el total del servidor | `CPUUsageNSec` (diferencia entre dos muestras) y `MemoryCurrent` de su unidad |
+| **Cuánto ocupa cada instancia frente al disco**: BD, media y logs en % del disco | Tamaños medidos + `statvfs` del servidor |
 | Sitio web: si es **Apache o nginx**, archivo, si está habilitado, ServerName, proxy, y si el demonio (`apache2`/`nginx`) está activo | `/etc/apache2/sites-*` y `/etc/nginx/sites-*` + `conf.d` |
 | Fecha de creación de la instancia y del archivo `.service` | `stat` de la carpeta y del unit file |
 | Base de datos: activa/caída, tamaño, versión, tablas más grandes | PostgreSQL de la instancia (`credenciales.json`) |
@@ -66,6 +68,9 @@ eso funciona aunque el esquema varíe entre inventario y restaurante.
 - Activar o desactivar el **sitio web**: `a2ensite`/`a2dissite` en Apache o el
   enlace en `sites-enabled` en nginx. Antes de recargar se valida la
   configuración (`apache2ctl configtest` / `nginx -t`) y sólo se recarga si pasa.
+- Ver de un vistazo el consumo: columnas **CPU**, **RAM** y **Ocupa (BD+media+logs)**
+  con barras, y tarjetas con la RAM, la carga y el disco del servidor indicando
+  cuánto de eso se llevan las instancias.
 - Buscar por cliente, empresa, dominio, ruta, servicio o base de datos.
 - Ordenar por cualquier columna: fecha de implementación, tamaño de la base,
   tamaño de media, última venta, meses sin facturar, etc.

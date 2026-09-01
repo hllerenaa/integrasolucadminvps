@@ -23,9 +23,9 @@ def _reporte(colector):
     colector.refrescar()
     datos = colector.snapshot()
     filas = datos['instancias']
-    cabecera = ('CLIENTE', 'SISTEMA', 'SERVICIO', 'APACHE', 'SSL', 'URL',
-                'BASE', 'TAM.BD', 'MEDIA', 'LOGS', 'FACTURAS', 'ULT.AUDIT.', '1a VENTA', 'ULT.VENTA')
-    anchos = [14, 11, 11, 11, 9, 9, 7, 9, 9, 9, 12, 10, 10, 10]
+    cabecera = ('CLIENTE', 'SISTEMA', 'SERVICIO', 'WEB', 'SSL', 'URL', 'CPU%', 'RAM',
+                'BASE', 'TAM.BD', 'MEDIA', 'LOGS', 'FACTURAS', 'ULT.AUDIT.', 'ULT.VENTA')
+    anchos = [14, 11, 11, 10, 9, 9, 6, 9, 7, 9, 9, 9, 12, 10, 10]
 
     def linea(valores):
         return ' '.join(str(v if v is not None else '-')[:a].ljust(a)
@@ -41,12 +41,12 @@ def _reporte(colector):
             'activo' if r.get('apache_habilitado') else ('inactivo' if r.get('apache_archivo') else '-'),
             (str(r.get('ssl_dias')) + 'd') if r.get('ssl_dias') is not None else (r.get('ssl_estado') or '-'),
             ('HTTP %s' % r.get('url_codigo')) if r.get('url_responde') else 'no',
+            r.get('cpu_pct'), r.get('ram_legible'),
             '-' if db.get('desactivado') else ('activa' if r.get('db_ok') else 'CAIDA'),
             r.get('db_tamano'), r.get('media_tamano'), r.get('logs_tamano'),
             ('%s (%s mes)' % (r.get('facturas_total'), r.get('facturas_mes'))
              if r.get('facturas_total') is not None else None),
-            r.get('auditoria_fecha'),
-            r.get('primera_venta'), r.get('ultima_venta'),
+            r.get('auditoria_fecha'), r.get('ultima_venta'),
         )))
     resumen = datos['resumen']
     con_bd = any(not (i.get('db') or {}).get('desactivado') for i in filas)
@@ -60,6 +60,11 @@ def _reporte(colector):
                    'BD: %s' % resumen['db_tamano']]
     partes.append('Media: %s' % resumen['media_tamano'])
     partes.append('Logs: %s' % resumen.get('logs_tamano', '-'))
+    partes.append('RAM instancias: %s' % resumen.get('ram_tamano', '-'))
+    disco = datos.get('disco') or {}
+    if disco.get('total'):
+        partes.append('Disco: %s de %s (%s%%)'
+                      % (disco.get('usado'), disco.get('total'), disco.get('porcentaje')))
     print(' | '.join(partes))
     caidos = [i['cliente'] for i in filas if not (i.get('resumen') or {}).get('servicio_activo')]
     if caidos:

@@ -174,3 +174,12 @@ pre.log .log-ok{color:#8ce8b4}
 pre.log .log-error{color:#ff9a92}
 pre.log .log-aviso{color:#ffd479}
 pre.log .log-salida{color:#9fb0c7}
+
+/* ------------------------------------------------- medidores de consumo */
+.medidor{position:relative;height:16px;background:#eef1f6;border-radius:4px;overflow:hidden;min-width:88px}
+.medidor-barra{position:absolute;left:0;top:0;bottom:0;border-radius:4px;opacity:.35}
+.medidor-barra.verde{background:var(--verde)}
+.medidor-barra.ambar{background:var(--ambar)}
+.medidor-barra.rojo{background:var(--rojo)}
+.medidor-texto{position:relative;display:block;text-align:right;padding:0 5px;line-height:16px;
+  font-size:11px;font-variant-numeric:tabular-nums}
