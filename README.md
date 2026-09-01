@@ -147,7 +147,26 @@ systemctl restart integrasolucadmin
 
 La clave se guarda como hash SHA-256 en `config.json` (permisos 600); nunca en texto plano.
 
-### Actualizar
+### Actualizar y reiniciar desde /home
+
+En `deploy/` vienen dos scripts pensados para dejarlos en `/home` del servidor,
+junto a los demás (`allupdateweb`, `backup.sh`, …):
+
+```bash
+cp /opt/integrasolucadminvps/deploy/admin_update.sh  /home/
+cp /opt/integrasolucadminvps/deploy/admin_restart.sh /home/
+chmod +x /home/admin_update.sh /home/admin_restart.sh
+```
+
+- `bash /home/admin_update.sh` — `git pull` (con reintentos), dependencias,
+  reinicio del servicio y verificación de que el panel responde en su puerto.
+- `bash /home/admin_restart.sh [restart|start|stop|status|logs]` — sin
+  argumentos reinicia; también muestra estado, memoria y los últimos logs.
+
+Ambos detectan solos la ruta del proyecto (`/opt/integrasolucadminvps` y otras
+habituales) y aceptan `bash /home/admin_update.sh /otra/ruta nombre_servicio`.
+
+También sigue disponible, dentro del proyecto:
 
 ```bash
 cd /opt/integrasolucadminvps && sudo ./update.sh
