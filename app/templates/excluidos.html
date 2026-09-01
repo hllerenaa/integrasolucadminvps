@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Excluidos · {{ titulo }}{% endblock %}
+{% block contenido %}
+<header class="cabecera">
+  <div class="cabecera-izq">
+    <h1>{{ titulo }}</h1>
+    <span class="etiqueta-version">excluidos</span>
+  </div>
+  <div class="cabecera-der">
+    <a class="boton secundario" href="/">Volver al panel</a>
+    {% if auth_activa %}<a class="boton secundario" href="/logout">Salir</a>{% endif %}
+  </div>
+</header>
+
+<div id="avisos"></div>
+
+<section class="barra">
+  <input type="search" id="filtro-texto" placeholder="Buscar instalación…">
+  <span class="crece"></span>
+  <span class="tenue">{{ instalaciones|length }} instalaciones detectadas · {{ nombres|length }} en la lista</span>
+</section>
+
+<div class="tabla-envoltura">
+  <table class="tabla" id="tabla-excluidos" style="min-width:auto">
+    <thead>
+      <tr>
+        <th>Mostrar en el panel</th>
+        <th>Cliente</th>
+        <th>Sistema</th>
+        <th>Servicio</th>
+        <th>Dominio</th>
+        <th>Ruta</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for i in instalaciones %}
+      <tr data-buscar="{{ (i.cliente ~ ' ' ~ i.servicio ~ ' ' ~ (i.dominio or '') ~ ' ' ~ i.ruta)|lower }}">
+        <td>
+          <label class="check">
+            <input type="checkbox" class="ver" data-cliente="{{ i.cliente }}"
+                   data-servicio="{{ i.servicio }}" {% if not i.oculta %}checked{% endif %}>
+            {% if i.oculta %}<span class="badge gris">oculta</span>{% else %}<span class="badge verde">visible</span>{% endif %}
+          </label>
+        </td>
+        <td class="cliente">{{ i.cliente }}</td>
+        <td><span class="chip {{ i.tipo }}">{{ i.tipo }}</span></td>
+        <td>{{ i.servicio }}</td>
+        <td>{{ i.dominio or '' }}</td>
+        <td><code class="ruta" title="{{ i.ruta }}">{{ i.ruta }}</code></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<section class="barra" style="align-items:flex-start">
+  <div class="bloque" style="flex:1">
+    <h3>excluidos.txt</h3>
+    <p class="tenue" style="margin:0 0 8px">
+      {{ archivo }} · una sola línea, nombres separados por comas. Sirve el nombre del
+      cliente o el del servicio systemd. Se aplica en el siguiente refresco.
+    </p>
+    <textarea id="editor-excluidos" rows="3" spellcheck="false">{{ texto }}</textarea>
+    {% if huerfanos %}
+    <p class="tenue" style="margin-top:8px">
+      En la lista pero sin instalación que coincida: <strong>{{ huerfanos|join(', ') }}</strong>
+    </p>
+    {% endif %}
+    <div style="margin-top:10px;text-align:right">
+      <button class="boton" type="button" id="btn-guardar">Guardar y refrescar</button>
+    </div>
+    <div id="resultado"></div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='excluidos.js') }}?v={{ version }}"></script>
+{% endblock %}

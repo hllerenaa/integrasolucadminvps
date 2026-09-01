@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from . import (dbstats, discovery, excluidos as mod_excluidos, logs as mod_logs,
                storage, systemd, units, webserver)
@@ -197,6 +197,8 @@ class Colector(object):
         self._refrescando = False
         self._ocultas = 0
         self._servidores_web = {}
+        self._pendientes = 0
+        self._recolectadas = 0
         self._hilo = None
         self._parar = threading.Event()
 
@@ -209,6 +211,9 @@ class Colector(object):
                 'refrescando': self._refrescando,
                 'total': len(instancias),
                 'ocultas': self._ocultas,
+                'pendientes': max(0, self._pendientes - self._recolectadas),
+                'recolectadas': self._recolectadas,
+                'esperadas': self._pendientes,
             }
         if tipo:
             instancias = [i for i in instancias if i.get('tipo') == tipo]
@@ -311,23 +316,38 @@ class Colector(object):
             instancias = visibles
             self._ocultas = omitidas
             workers = max(1, int(self.config.get('workers') or 8))
-            resultados = {}
+            with self._lock:
+                if not solo:
+                    # El orden se fija de una vez para que las filas aparezcan
+                    # en su sitio conforme se van recolectando.
+                    self._orden = [i.id for i in instancias]
+                    self._datos = {k: v for k, v in self._datos.items()
+                                   if k in set(self._orden)}
+                self._pendientes = len(instancias)
+                self._recolectadas = 0
+
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futuros = {
                     pool.submit(self._seguro, inst, forzar_media, vhosts, unidades,
                                 self._servidores_web): inst
                     for inst in instancias
                 }
-                for futuro, inst in futuros.items():
-                    resultados[inst.id] = futuro.result()
+                for futuro in as_completed(futuros):
+                    inst = futuros[futuro]
+                    try:
+                        datos = futuro.result()
+                    except Exception as ex:  # pragma: no cover - defensivo
+                        datos = {'id': inst.id, 'cliente': inst.cliente, 'tipo': inst.tipo,
+                                 'error': str(ex)}
+                    # Cada instancia se publica apenas está lista: el panel se
+                    # va llenando en vez de quedarse vacío hasta el final.
+                    with self._lock:
+                        self._datos[inst.id] = datos
+                        self._recolectadas += 1
 
             with self._lock:
-                if solo:
-                    self._datos.update(resultados)
-                else:
-                    self._datos = resultados
-                    self._orden = [i.id for i in instancias]
                 self._ultimo_refresco = ahora_iso()
+                self._pendientes = 0
             return True
         finally:
             with self._lock:

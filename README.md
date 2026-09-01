@@ -217,6 +217,12 @@ avisa cuántos sistemas quedaron ocultos.
 El archivo está en `.gitignore` (es tuyo, no se sube). Hay un
 `excluidos.example.txt` con el formato.
 
+También se administra desde el navegador en **`/excluidos`** (botón *Excluidos*
+en la cabecera): lista todas las instalaciones detectadas con su servicio y
+dominio, con una casilla por fila para mostrarlas u ocultarlas, más el
+contenido del archivo editable a mano. Al guardar se reescribe `excluidos.txt`
+y se dispara un refresco.
+
 ## Configuración (`config.json`)
 
 | Clave | Para qué sirve |
@@ -257,6 +263,13 @@ venv/bin/python run.py --usuario admin --clave "..."   # cambia las credenciales
 `--reporte` devuelve código de salida 1 si hay servicios caídos, bases
 inaccesibles o certificados vencidos: sirve para cron o alertas.
 
+> **La primera recolección tarda**: medir el tamaño de cada `media` con `du`,
+> consultar todas las bases y verificar las URLs puede llevar varios minutos con
+> muchas instancias. La tabla se va llenando conforme cada instancia termina y
+> la cabecera muestra el avance ("Recolectando 12 de 37 instancias…"). A partir
+> de ahí el tamaño de `media` queda en caché (6 h por defecto) y los refrescos
+> son mucho más rápidos.
+
 ## API
 
 | Endpoint | Descripción |
@@ -267,6 +280,7 @@ inaccesibles o certificados vencidos: sirve para cron o alertas.
 | `POST /api/accion` | `{"id": "...", "accion": "reiniciar"}` |
 | `GET /api/credenciales/<cliente\|tipo>` | `credenciales.json` con las claves ocultas (`?secretos=1` las revela) |
 | `POST /api/credenciales/<cliente\|tipo>` | Guarda el archivo (`{"texto": "{...}"}`) dejando respaldo |
+| `GET /api/excluidos`, `POST /api/excluidos` | Lee y guarda la lista de sistemas ocultos |
 | `GET /api/aprovisionar/opciones` | Datos para el asistente (templates, puerto libre, modelos) |
 | `POST /api/aprovisionar/validar` | Valida un alta sin ejecutarla |
 | `POST /api/aprovisionar/crear` | Lanza la creación (`{"simular": true}` para el modo simulación) |

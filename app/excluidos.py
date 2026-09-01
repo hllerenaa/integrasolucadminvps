@@ -45,6 +45,32 @@ def cargar(config):
     return nombres
 
 
+def guardar(config, nombres):
+    """Escribe excluidos.txt con los nombres en una sola línea."""
+    limpios, vistos = [], set()
+    for nombre in nombres or []:
+        nombre = (nombre or '').strip().lower()
+        if nombre and nombre not in vistos:
+            vistos.add(nombre)
+            limpios.append(nombre)
+    archivo = ruta(config)
+    with open(archivo, 'w', encoding='utf-8') as fh:
+        fh.write(','.join(limpios) + '\n')
+    return {'archivo': archivo, 'nombres': limpios}
+
+
+def desde_texto(texto):
+    """Convierte lo que el usuario escribió (comas o líneas) en una lista."""
+    nombres = []
+    for linea in (texto or '').splitlines():
+        linea = linea.split('#', 1)[0]
+        for parte in linea.replace(';', ',').split(','):
+            nombre = parte.strip().lower()
+            if nombre:
+                nombres.append(nombre)
+    return nombres
+
+
 def excluida(nombres, cliente=None, servicio=None):
     """True si el cliente o su servicio están en la lista."""
     if not nombres:

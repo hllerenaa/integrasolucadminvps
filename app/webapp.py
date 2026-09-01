@@ -10,7 +10,8 @@ from flask import (Flask, Response, jsonify, redirect, render_template,
                    request, session, url_for)
 
 from . import (__version__, acciones as mod_acciones, aprovisionar,
-               credenciales as mod_credenciales, exportar)
+               credenciales as mod_credenciales, discovery,
+               excluidos as mod_excluidos, exportar, units)
 from .tareas import GestorTareas
 from .collector import Colector
 from .config import cargar
@@ -276,6 +277,69 @@ def crear_app(config=None):
                                       (original.datos or {}).get('cliente'), 0, ident)
         tareas.lanzar(tarea, lambda t: aprovisionar.deshacer(t, config, colector, original))
         return jsonify({'ok': True, 'tarea': tarea.id}), 202
+
+    # ------------------------------------------------------------- excluidos
+    def _inventario_excluibles():
+        """Todas las instalaciones del servidor con su servicio y si están ocultas."""
+        ocultos = mod_excluidos.cargar(config)
+        unidades = units.cargar_unidades(config)
+        filas = []
+        for inst in discovery.descubrir(config):
+            unidad = units.buscar_unidad(inst, unidades, inst.servicio)
+            servicio = (unidad or {}).get('unidad') or inst.servicio
+            filas.append({
+                'cliente': inst.cliente,
+                'tipo': inst.tipo,
+                'ruta': inst.ruta,
+                'servicio': servicio,
+                'dominio': inst.dominio,
+                'oculta': mod_excluidos.excluida(ocultos, inst.cliente, servicio),
+            })
+        filas.sort(key=lambda f: (not f['oculta'], f['cliente']))
+        # Nombres del archivo que no corresponden a ninguna instalación
+        conocidos = set()
+        for fila in filas:
+            conocidos.add(fila['cliente'].lower())
+            conocidos.add((fila['servicio'] or '').lower())
+        return filas, sorted(ocultos), sorted(n for n in ocultos if n not in conocidos)
+
+    @app.route('/excluidos')
+    @requiere_login
+    def pagina_excluidos():
+        filas, nombres, huerfanos = _inventario_excluibles()
+        return render_template(
+            'excluidos.html', titulo=config.get('titulo'), version=__version__,
+            auth_activa=bool((config.get('auth') or {}).get('enabled')),
+            instalaciones=filas, nombres=nombres, huerfanos=huerfanos,
+            archivo=mod_excluidos.ruta(config),
+            texto=', '.join(nombres))
+
+    @app.route('/api/excluidos')
+    @requiere_login
+    def api_excluidos():
+        filas, nombres, huerfanos = _inventario_excluibles()
+        return jsonify({'archivo': mod_excluidos.ruta(config), 'nombres': nombres,
+                        'huerfanos': huerfanos, 'instalaciones': filas})
+
+    @app.route('/api/excluidos', methods=['POST'])
+    @requiere_login
+    def api_excluidos_guardar():
+        cuerpo = request.get_json(silent=True) or {}
+        if 'nombres' in cuerpo:
+            nombres = cuerpo.get('nombres') or []
+        else:
+            nombres = mod_excluidos.desde_texto(cuerpo.get('texto'))
+        try:
+            resultado = mod_excluidos.guardar(config, nombres)
+        except OSError as ex:
+            return jsonify({'ok': False, 'error': 'No se pudo escribir el archivo: %s' % ex}), 500
+        mod_acciones.registrar_evento(config, session.get('usuario') or 'api',
+                                      'excluidos_guardar', resultado['archivo'], 0,
+                                      ', '.join(resultado['nombres']))
+        threading.Thread(target=lambda: colector.refrescar(forzar=True),
+                         name='refresco-excluidos', daemon=True).start()
+        resultado['ok'] = True
+        return jsonify(resultado)
 
     @app.route('/api/acciones')
     @requiere_login

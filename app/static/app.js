@@ -354,8 +354,14 @@
     pintarCabecera();
     var cuerpo = $('#cuerpo-tabla');
     if (!lista.length) {
-      cuerpo.innerHTML = '<tr><td class="vacio" colspan="' + (cols.length + 1) +
-        '">Sin instancias que coincidan con el filtro.</td></tr>';
+      var m = estado.meta || {};
+      var mensaje = m.refrescando
+        ? ('Recolectando datos de ' + (m.esperadas || 0) + ' instancias… las filas van apareciendo ' +
+           'conforme se completan (la primera vuelta puede tardar varios minutos).')
+        : (estado.datos.length ? 'Sin instancias que coincidan con el filtro.'
+                              : 'No se encontraron instalaciones. Revisa base_dirs en config.json.');
+      cuerpo.innerHTML = '<tr><td class="vacio" colspan="' + (cols.length + 1) + '">' +
+        esc(mensaje) + '</td></tr>';
     } else {
       cuerpo.innerHTML = lista.map(function (i) {
         var r = i.resumen || {};
@@ -369,8 +375,7 @@
     }
     $('#contador').textContent = lista.length + ' de ' + estado.datos.length + ' instancias';
     $('#pie-info').textContent = 'Último refresco: ' + (estado.meta.ultimo_refresco || '—') +
-      ' · los datos se recargan solos cada 30 s' +
-      (estado.meta.ocultas ? ' · ' + estado.meta.ocultas + ' sistema(s) oculto(s) por excluidos.txt' : '');
+      ' · los datos se recargan solos cada 30 s';
   }
 
   function pintarTarjetas() {
@@ -637,8 +642,10 @@
         estado.capacidades = d.capacidades || {};
         estado.servidoresWeb = d.servidores_web || {};
         estado.recursos = d.recursos || {};
-        $('#estado-refresco').textContent = estado.meta.refrescando
-          ? 'Actualizando datos…' : 'Actualizado ' + (estado.meta.ultimo_refresco || '');
+        var m = estado.meta;
+        $('#estado-refresco').textContent = m.refrescando
+          ? ('Recolectando ' + (m.recolectadas || 0) + ' de ' + (m.esperadas || 0) + ' instancias…')
+          : 'Actualizado ' + (m.ultimo_refresco || '');
         pintarControles();
         pintarTarjetas();
         pintarTabla();
@@ -1044,6 +1051,7 @@
         if (el.id === 'btn-excel') return descargar('/export.xlsx', 'instancias.xlsx', el);
         if (el.id === 'btn-csv') return descargar('/export.csv', 'instancias.csv', el);
         if (el.id === 'btn-historial') return verHistorial();
+        if (el.id === 'btn-excluidos') { window.location.href = '/excluidos'; return; }
         if (el.id === 'btn-nueva') return abrirAsistente();
         if (el.id === 'btn-tareas') return listarTareas();
         if (el.id === 'nueva-cerrar' || el.id === 'modal-nueva') return $('#modal-nueva').classList.add('oculto');

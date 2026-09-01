@@ -183,3 +183,9 @@ pre.log .log-salida{color:#9fb0c7}
 .medidor-barra.rojo{background:var(--rojo)}
 .medidor-texto{position:relative;display:block;text-align:right;padding:0 5px;line-height:16px;
   font-size:11px;font-variant-numeric:tabular-nums}
+
+/* ------------------------------------------------------ página excluidos */
+#editor-excluidos{width:100%;padding:10px;border:1px solid var(--borde);border-radius:8px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;background:#fbfcfe;
+  color:var(--texto);resize:vertical}
+#tabla-excluidos td{vertical-align:middle}
