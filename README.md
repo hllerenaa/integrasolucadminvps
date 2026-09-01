@@ -44,9 +44,16 @@ eso funciona aunque el esquema varíe entre inventario y restaurante.
   de `/etc/systemd/system` y se toma el que tenga `WorkingDirectory` (o
   `ExecStart`) apuntando a esa carpeta. Así aparecen también los servicios que
   se llaman distinto al cliente.
-- **El sitio web** se busca en Apache y en nginx: se empareja por el puerto al
-  que hace `ProxyPass` / `proxy_pass` (el mismo del gunicorn) y por la ruta de
-  la instalación dentro del archivo.
+- **El sitio web** se busca en Apache y en nginx: se empareja por el puerto o el
+  socket al que hace `ProxyPass` / `proxy_pass` (el mismo del gunicorn), por la
+  ruta de la instalación dentro del archivo y, si no hay ninguna de esas señales,
+  por el `DOMINIO_GENERAL` de `credenciales.json` cuando ese dominio es
+  exclusivo de esa instalación. **Nunca se asigna el vhost de otro cliente por
+  parecido de nombre**: antes se deja "sin vhost" (si no, `drones` se quedaba
+  con el sitio de `dronesjv`). Cuando varias instalaciones comparten el mismo
+  `DOMINIO_GENERAL` —el del template— ese dominio deja de servir como señal y
+  la instancia se marca con "dominio compartido", que es justo lo que hay que
+  corregir en su `credenciales.json`.
   Si no hay una señal fuerte se muestra "sin vhost" en vez de atribuirle a un
   cliente el vhost de otro. Los `000-default*` quedan descartados.
 - **El dominio** sale del `ServerName` de ese vhost, porque el

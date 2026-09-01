@@ -659,12 +659,20 @@ def crear_app(config=None):
         }
         ident = request.args.get('id')
         if ident:
-            instancias = {i.id: i for i in discovery.descubrir(config)}
+            todas = discovery.descubrir(config)
+            instancias = {i.id: i for i in todas}
             instancia = instancias.get(ident)
             datos = colector.instancia(ident) or {}
+            conteo = {}
+            for inst in todas:
+                dominio = (inst.dominio or '').lower()
+                if dominio:
+                    conteo[dominio] = conteo.get(dominio, 0) + 1
             if instancia:
                 resumen['instancia'] = mod_webserver.diagnostico(
-                    instancia, vhosts, datos.get('puerto'), datos.get('socket_ruta'))
+                    instancia, vhosts, datos.get('puerto'), datos.get('socket_ruta'),
+                    clientes=[i.cliente for i in todas],
+                    dominios_ambiguos=[d for d, n in conteo.items() if n > 1])
         return jsonify(resumen)
 
     @app.route('/api/acciones')

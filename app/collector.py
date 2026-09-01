@@ -16,7 +16,7 @@ _DISCO = {}
 
 
 def _recolectar_instancia(instancia, config, forzar_media=False, vhosts=None, unidades=None,
-                          servidores_web=None, sockets=None):
+                          servidores_web=None, sockets=None, contexto=None):
     """Estado completo de una instancia (servicio + apache + SSL + base + media)."""
     inicio = time.time()
     datos = instancia.as_dict()
@@ -59,7 +59,12 @@ def _recolectar_instancia(instancia, config, forzar_media=False, vhosts=None, un
     datos['socket_ruta'] = ((datos.get('socket') or {}).get('rutas') or [None])[0] \
         or (unidad or {}).get('socket_unix')
     datos['puerto'] = puerto
-    vhost = webserver.buscar_vhost(instancia, vhosts or [], puerto, datos.get('socket_ruta'))
+    contexto = contexto or {}
+    ambiguos = {d.lower() for d in (contexto.get('dominios_ambiguos') or [])}
+    datos['dominio_compartido'] = (instancia.dominio or '').lower() in ambiguos
+    vhost = webserver.buscar_vhost(instancia, vhosts or [], puerto, datos.get('socket_ruta'),
+                                   clientes=contexto.get('clientes'),
+                                   dominios_ambiguos=contexto.get('dominios_ambiguos'))
     datos['apache'] = vhost or {'archivo': None, 'habilitado': None,
                                 'error': 'No se encontró el sitio web (Apache/nginx) de esta instancia'}
     servidor = (vhost or {}).get('servidor')
@@ -165,6 +170,7 @@ def _resumen_fila(datos):
         'ocupa_pct_disco': (round((db_bytes + media_bytes + logs_bytes) * 100.0 / disco_total, 2)
                             if disco_total else None),
         'dominio_desactualizado': bool(datos.get('dominio_desactualizado')),
+        'dominio_compartido': bool(datos.get('dominio_compartido')),
         'dominio_credenciales': datos.get('dominio_credenciales'),
         'fecha_instalacion': datos.get('fecha_instalacion'),
         'servicio_creado': servicio.get('creado'),
@@ -316,6 +322,7 @@ class Colector(object):
                          if (i.get('ssl') or {}).get('estado') in ('vencido', 'por-vencer'))
         urls_ok = sum(1 for i in instancias if (i.get('url_estado') or {}).get('responde'))
         dominios_viejos = sum(1 for i in instancias if i.get('dominio_desactualizado'))
+        dominios_compartidos = sum(1 for i in instancias if i.get('dominio_compartido'))
         sin_uso_90 = sum(1 for i in instancias
                          if isinstance((i.get('resumen') or {}).get('dias_sin_uso'), int)
                          and (i.get('resumen') or {}).get('dias_sin_uso') > 90)
@@ -334,6 +341,7 @@ class Colector(object):
             'ssl_alerta': ssl_alerta,
             'urls_ok': urls_ok,
             'dominios_desactualizados': dominios_viejos,
+            'dominios_compartidos': dominios_compartidos,
             'sin_uso_90': sin_uso_90,
             'api_cedula_activas': api_activas,
             'api_cedula_inactivas': api_inactivas,
@@ -369,6 +377,19 @@ class Colector(object):
             unidades = units.cargar_unidades(self.config)
             self._servidores_web = webserver.estado_servidores_web(self.config)
             sockets = units.cargar_sockets(self.config)
+            # Contexto para no asignarle a una instancia el vhost de otra:
+            # todos los clientes y los dominios que aparecen repetidos en
+            # credenciales.json (típicamente el del template).
+            todos = discovery.descubrir(self.config)
+            conteo = {}
+            for inst in todos:
+                dominio = (inst.dominio or '').lower()
+                if dominio:
+                    conteo[dominio] = conteo.get(dominio, 0) + 1
+            contexto = {
+                'clientes': [i.cliente for i in todos],
+                'dominios_ambiguos': [d for d, n in conteo.items() if n > 1],
+            }
             # Totales del servidor, para poder expresar el consumo en porcentaje.
             _RECURSOS.clear()
             _RECURSOS.update(systemd.recursos_del_sistema())
@@ -409,7 +430,7 @@ class Colector(object):
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futuros = {
                     pool.submit(self._seguro, inst, forzar_media, vhosts, unidades,
-                                self._servidores_web, sockets): inst
+                                self._servidores_web, sockets, contexto): inst
                     for inst in instancias
                 }
                 for futuro in as_completed(futuros):
@@ -442,10 +463,10 @@ class Colector(object):
                 self._refrescando = False
 
     def _seguro(self, instancia, forzar_media, vhosts=None, unidades=None,
-                servidores_web=None, sockets=None):
+                servidores_web=None, sockets=None, contexto=None):
         try:
             return _recolectar_instancia(instancia, self.config, forzar_media,
-                                         vhosts, unidades, servidores_web, sockets)
+                                         vhosts, unidades, servidores_web, sockets, contexto)
         except Exception as ex:  # pragma: no cover - defensivo
             datos = instancia.as_dict()
             datos['error'] = 'Fallo recolectando: %s' % ex

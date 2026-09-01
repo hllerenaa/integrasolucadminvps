@@ -127,7 +127,6 @@ def cargar_vhosts(config=None):
 
 VHOSTS_GENERICOS = ('000-default', 'default-ssl', 'default', '000-default-le-ssl')
 UMBRAL_COINCIDENCIA = 60      # puntaje mínimo para dar el vhost por bueno
-UMBRAL_DEBIL = 40             # por debajo del umbral, se marca como dudoso
 
 
 
@@ -242,110 +241,128 @@ def estado_servidores_web(config=None):
     return salida
 
 
-def buscar_vhost(instancia, vhosts, puerto_servicio=None, socket_unix=None):
-    """Empareja una instancia con su vhost de Apache.
+def _nombre_de_archivo_coincide(sitio, cliente):
+    """El archivo del vhost corresponde al cliente, sin caer en 'drones' ⊂ 'dronesjv'."""
+    sitio = (sitio or '').lower()
+    cliente = (cliente or '').lower()
+    if not sitio or not cliente:
+        return False
+    return (sitio == cliente
+            or sitio in ('%s-le-ssl' % cliente, '%s-ssl' % cliente, '%s_ssl' % cliente)
+            or sitio.startswith('%s.' % cliente))      # cliente.dominio.net(-le-ssl)
 
-    Se puntúa por señales fuertes primero (el puerto al que hace ProxyPass el
-    vhost y la ruta de la instalación dentro del archivo), porque el dominio de
-    credenciales.json suele quedar desactualizado al clonar el template.
-    """
+
+def _es_de_otro_cliente(vhost, cliente, clientes):
+    """True si el vhost pertenece claramente a otra instalación."""
+    if not clientes:
+        return False
+    otros = {c.lower() for c in clientes if c and c.lower() != (cliente or '').lower()}
+    sitio = (vhost.get('sitio') or '').lower()
+    for otro in otros:
+        if _nombre_de_archivo_coincide(sitio, otro):
+            return True
+        for nombre in [vhost.get('servername') or ''] + list(vhost.get('alias') or []):
+            if nombre and nombre.lower().split('.')[0] == otro:
+                return True
+    return False
+
+
+def puntuar_vhost(instancia, vhost, puerto_servicio=None, socket_unix=None,
+                  clientes=None, dominios_ambiguos=None):
+    """Puntaje de un vhost para una instancia, con el detalle de las señales."""
     dominio = (instancia.dominio or '').lower()
-    candidatos = []
-    for vhost in vhosts:
-        puntaje = 0
-        motivos = []
-        nombres = [(vhost.get('servername') or '').lower()] + [a.lower() for a in vhost['alias']]
-        nombres = [n for n in nombres if n]
+    ambiguo = dominio in {d.lower() for d in (dominios_ambiguos or [])}
+    nombres = [(vhost.get('servername') or '').lower()] + [a.lower() for a in vhost['alias']]
+    nombres = [n for n in nombres if n]
 
-        if puerto_servicio and puerto_servicio in vhost['puertos_proxy']:
-            puntaje += 100
-            motivos.append('proxy al puerto %s' % puerto_servicio)
-        socks = vhost.get('sockets_unix') or []
-        if socket_unix and socket_unix in socks:
-            puntaje += 100
-            motivos.append('proxy al socket %s' % socket_unix)
-        elif socks and any(instancia.cliente.lower() in s.lower() for s in socks):
-            puntaje += 80
-            motivos.append('socket unix con el nombre del cliente')
-        # El primer segmento del ServerName suele ser el cliente
-        # (elmaestro.integrasoluc.net), señal fiable cuando credenciales.json
-        # quedó con el dominio del template.
-        if any(n.split('.')[0] == instancia.cliente.lower() for n in nombres):
-            puntaje += 60
-            motivos.append('el ServerName empieza por el nombre del cliente')
-        if instancia.ruta and instancia.ruta in vhost['contenido']:
-            puntaje += 80
-            motivos.append('ruta de la instalación en el vhost')
-        if dominio and dominio in nombres:
+    puntaje, motivos = 0, []
+    fuerte = False
+
+    if puerto_servicio and puerto_servicio in (vhost.get('puertos_proxy') or []):
+        puntaje += 100
+        fuerte = True
+        motivos.append('proxy al puerto %s' % puerto_servicio)
+    socks = vhost.get('sockets_unix') or []
+    if socket_unix and socket_unix in socks:
+        puntaje += 100
+        fuerte = True
+        motivos.append('proxy al socket %s' % socket_unix)
+    elif socks and any(_nombre_de_archivo_coincide(
+            os.path.basename(ruta).split('.')[0], instancia.cliente) for ruta in socks):
+        puntaje += 80
+        fuerte = True
+        motivos.append('socket unix con el nombre del cliente')
+    if instancia.ruta and instancia.ruta in vhost.get('contenido', ''):
+        puntaje += 80
+        fuerte = True
+        motivos.append('ruta de la instalación en el vhost')
+
+    if dominio and dominio in nombres:
+        if ambiguo:
+            motivos.append('el dominio de credenciales lo comparten varias '
+                           'instalaciones: no cuenta')
+        else:
             puntaje += 60
             motivos.append('ServerName coincide con credenciales.json')
-        elif dominio and any(dominio in n for n in nombres):
-            puntaje += 30
-            motivos.append('dominio parecido al ServerName')
-        if instancia.cliente.lower() in vhost['sitio'].lower():
-            puntaje += 40
-            motivos.append('nombre del archivo')
+    if any(n.split('.')[0] == instancia.cliente.lower() for n in nombres):
+        puntaje += 60
+        motivos.append('el ServerName empieza por el nombre del cliente')
+    if _nombre_de_archivo_coincide(vhost.get('sitio'), instancia.cliente):
+        puntaje += 40
+        motivos.append('nombre del archivo')
 
-        if vhost['sitio'].lower() in VHOSTS_GENERICOS:
-            puntaje -= 200   # el vhost por defecto de Apache nunca es la respuesta
-        if not puntaje:
-            continue
-        # Ante empate manda el que está habilitado y luego el que tiene SSL:
-        # a2dissite sólo puede con el que realmente está activo.
-        candidatos.append((puntaje, (1 if vhost['habilitado'] else 0, 1 if vhost['ssl'] else 0),
-                           vhost, motivos))
+    if (vhost.get('sitio') or '').lower() in VHOSTS_GENERICOS:
+        puntaje -= 200
+        motivos.append('vhost por defecto (descartado)')
+    # Un vhost que es claramente de otra instalación sólo vale si hay una señal
+    # fuerte (puerto, socket o ruta); si no, se descarta.
+    if not fuerte and _es_de_otro_cliente(vhost, instancia.cliente, clientes):
+        puntaje = 0
+        motivos = ['pertenece a otra instalación']
+    return puntaje, motivos, fuerte
 
-    # Por debajo del umbral no se afirma nada, pero si hay una coincidencia
-    # débil se devuelve marcada para no dejar la instancia "sin vhost" a ciegas.
-    fuertes = [c for c in candidatos if c[0] >= UMBRAL_COINCIDENCIA]
-    debiles = [c for c in candidatos if UMBRAL_DEBIL <= c[0] < UMBRAL_COINCIDENCIA]
-    candidatos = fuertes or debiles
+
+def buscar_vhost(instancia, vhosts, puerto_servicio=None, socket_unix=None,
+                 clientes=None, dominios_ambiguos=None):
+    """Empareja una instancia con su vhost (Apache o nginx).
+
+    Manda la señal fuerte (puerto o socket del ProxyPass, ruta de la
+    instalación) y, si no hay, el dominio de credenciales.json cuando es
+    exclusivo de esa instalación. Nunca se asigna por parecido de nombre el
+    vhost de otro cliente: antes se deja "sin vhost".
+    """
+    candidatos = []
+    for vhost in vhosts:
+        puntaje, motivos, _fuerte = puntuar_vhost(instancia, vhost, puerto_servicio,
+                                                  socket_unix, clientes, dominios_ambiguos)
+        if puntaje >= UMBRAL_COINCIDENCIA:
+            candidatos.append((puntaje, (1 if vhost['habilitado'] else 0,
+                                         1 if vhost['ssl'] else 0), vhost, motivos))
     if not candidatos:
         return None
-    debil = not fuertes
     candidatos.sort(key=lambda c: (c[0], c[1]), reverse=True)
 
-    puntaje, _, mejor, motivos = candidatos[0]
+    puntaje, _orden, mejor, motivos = candidatos[0]
     elegido = dict(mejor)
     elegido.pop('contenido', None)
     elegido['coincidencia'] = puntaje
     elegido['motivos'] = motivos
-    elegido['dudoso'] = debil
+    elegido['dudoso'] = False
     elegido['otros'] = [
         {'nombre': v['nombre'], 'habilitado': v['habilitado'], 'ssl': v['ssl'],
          'servername': v.get('servername'), 'servidor': v.get('servidor')}
-        for p, _s, v, _m in candidatos[1:4]
+        for _p, _s, v, _m in candidatos[1:4]
     ]
     return elegido
 
 
-def diagnostico(instancia, vhosts, puerto_servicio=None, socket_unix=None, limite=8):
-    """Explica el emparejamiento: qué vhosts se leyeron y qué puntaje sacó cada uno."""
-    dominio = (instancia.dominio or '').lower()
+def diagnostico(instancia, vhosts, puerto_servicio=None, socket_unix=None,
+                clientes=None, dominios_ambiguos=None, limite=8):
+    """Explica el emparejamiento: qué vhosts se leyeron y el puntaje de cada uno."""
     detalle = []
     for vhost in vhosts:
-        nombres = [(vhost.get('servername') or '').lower()] + [a.lower() for a in vhost['alias']]
-        nombres = [n for n in nombres if n]
-        motivos, puntaje = [], 0
-        if puerto_servicio and puerto_servicio in vhost['puertos_proxy']:
-            puntaje += 100; motivos.append('puerto %s' % puerto_servicio)
-        socks = vhost.get('sockets_unix') or []
-        if socket_unix and socket_unix in socks:
-            puntaje += 100; motivos.append('socket %s' % socket_unix)
-        elif socks and any(instancia.cliente.lower() in s.lower() for s in socks):
-            puntaje += 80; motivos.append('socket con el nombre del cliente')
-        if instancia.ruta and instancia.ruta in vhost['contenido']:
-            puntaje += 80; motivos.append('ruta de la instalación')
-        if dominio and dominio in nombres:
-            puntaje += 60; motivos.append('ServerName = dominio de credenciales')
-        elif dominio and any(dominio in n for n in nombres):
-            puntaje += 30; motivos.append('dominio parecido')
-        if any(n.split('.')[0] == instancia.cliente.lower() for n in nombres):
-            puntaje += 60; motivos.append('ServerName empieza por el cliente')
-        if instancia.cliente.lower() in vhost['sitio'].lower():
-            puntaje += 40; motivos.append('nombre del archivo')
-        if vhost['sitio'].lower() in VHOSTS_GENERICOS:
-            puntaje -= 200; motivos.append('vhost por defecto (descartado)')
+        puntaje, motivos, _fuerte = puntuar_vhost(instancia, vhost, puerto_servicio,
+                                                  socket_unix, clientes, dominios_ambiguos)
         detalle.append({
             'archivo': vhost['archivo'], 'servidor': vhost.get('servidor'),
             'servername': vhost.get('servername'), 'alias': vhost.get('alias'),
@@ -353,9 +370,11 @@ def diagnostico(instancia, vhosts, puerto_servicio=None, socket_unix=None, limit
             'habilitado': vhost.get('habilitado'), 'puntaje': puntaje, 'motivos': motivos,
         })
     detalle.sort(key=lambda d: d['puntaje'], reverse=True)
+    dominio = (instancia.dominio or '').lower()
     return {
         'cliente': instancia.cliente,
         'dominio_credenciales': dominio or None,
+        'dominio_ambiguo': dominio in {d.lower() for d in (dominios_ambiguos or [])},
         'puerto_servicio': puerto_servicio,
         'socket_unix': socket_unix,
         'ruta': instancia.ruta,

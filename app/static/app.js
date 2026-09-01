@@ -190,6 +190,11 @@
           html += '<div class="sub aviso-inline" title="credenciales.json apunta a ' +
             esc(i.dominio_credenciales) + '">credenciales: ' + esc(i.dominio_credenciales) + '</div>';
         }
+        if (i.dominio_compartido) {
+          html += '<div class="sub aviso-inline" title="Varias instalaciones tienen este mismo ' +
+            'DOMINIO_GENERAL en credenciales.json (suele ser el del template): por eso no se ' +
+            'puede deducir su sitio web">dominio compartido en credenciales.json</div>';
+        }
         return html;
       } },
     { id: 'ssl', titulo: 'SSL (vence)', grupo: 'servicio',
@@ -387,6 +392,7 @@
           ['vencido', 'por-vencer', 'autofirmado'].indexOf(r.ssl_estado) === -1) return false;
       if (est === 'url-caida' && r.url_responde !== false) return false;
       if (est === 'dominio-viejo' && !r.dominio_desactualizado) return false;
+      if (est === 'dominio-compartido' && !r.dominio_compartido) return false;
       if (est === 'sin-facturar' && ['detenido', 'sin-facturar-mes'].indexOf(r.facturas_estado) === -1) return false;
       if (est === 'api-activa' && !r.api_cedula) return false;
       if (est === 'api-inactiva' && (r.api_cedula !== false)) return false;
@@ -464,6 +470,9 @@
     if (r.dominios_desactualizados) t.push({ rotulo: 'Dominios desactualizados',
       valor: r.dominios_desactualizados, clase: 'mal', filtro: 'dominio-viejo',
       extra: 'credenciales.json vs Apache' });
+    if (r.dominios_compartidos) t.push({ rotulo: 'Dominio compartido',
+      valor: r.dominios_compartidos, clase: 'mal', filtro: 'dominio-compartido',
+      extra: 'mismo DOMINIO_GENERAL en varias instalaciones' });
     if (cap.bd && r.sin_uso_90) {
       t.push({ rotulo: 'Sin uso > 90 días', valor: r.sin_uso_90, clase: 'mal',
         filtroUso: '90', extra: 'sin auditoría, sesión ni ventas' });
