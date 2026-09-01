@@ -675,6 +675,36 @@ def crear_app(config=None):
                     dominios_ambiguos=[d for d, n in conteo.items() if n > 1])
         return jsonify(resumen)
 
+    @app.route('/api/instancia/<path:ident>/configuracion', methods=['POST'])
+    @requiere_login
+    def api_cambiar_configuracion(ident):
+        cfg = config.get('acciones') or {}
+        if not cfg.get('enabled', True) or not cfg.get('datos', True):
+            return jsonify({'ok': False, 'error': 'Los cambios en la base están desactivados'}), 403
+        datos = colector.instancia(ident)
+        if not datos:
+            return jsonify({'ok': False, 'error': 'instancia no encontrada'}), 404
+
+        cuerpo = request.get_json(silent=True) or {}
+        campo = (cuerpo.get('campo') or '').strip()
+        valor = (cuerpo.get('valor') or '').strip()
+
+        instancias = {i.id: i for i in discovery.descubrir(config)}
+        instancia = instancias.get(ident)
+        if not instancia:
+            return jsonify({'ok': False, 'error': 'no se pudo resolver la instalación'}), 404
+
+        resultado = dbstats.cambiar_configuracion(instancia, config, campo, valor)
+        mod_acciones.registrar_evento(
+            config, session.get('usuario') or 'api', 'configuracion_%s' % campo,
+            datos.get('cliente'), 0 if resultado.get('ok') else 1,
+            resultado.get('error') or ('%s = %s' % (campo, valor)))
+        if not resultado.get('ok'):
+            return jsonify(resultado), 400
+        colector.refrescar(forzar=True, solo=ident)
+        resultado['instancia'] = colector.instancia(ident)
+        return jsonify(resultado)
+
     @app.route('/api/acciones')
     @requiere_login
     def api_historial_acciones():

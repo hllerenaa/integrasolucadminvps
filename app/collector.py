@@ -189,6 +189,9 @@ def _resumen_fila(datos):
         'url_responde': url_estado.get('responde'),
         'url_codigo': url_estado.get('codigo'),
         'empresa': empresa.get('nombre_empresa') or empresa.get('razonsocial') or '',
+        'ruc': empresa.get('ruc'),
+        'ruc_proveedor': empresa.get('rucproveedor'),
+        'ruc_proveedor_disponible': bool(empresa.get('_rucproveedor_disponible')),
         'servicio_activo': bool(servicio.get('activo')),
         'servicio_estado': servicio.get('estado'),
         'socket_existe': bool(socket_info.get('existe')),
@@ -326,6 +329,12 @@ class Colector(object):
         sin_uso_90 = sum(1 for i in instancias
                          if isinstance((i.get('resumen') or {}).get('dias_sin_uso'), int)
                          and (i.get('resumen') or {}).get('dias_sin_uso') > 90)
+        sin_ruc_proveedor = sum(1 for i in instancias
+                                if (i.get('resumen') or {}).get('ruc_proveedor_disponible')
+                                and not (i.get('resumen') or {}).get('ruc_proveedor'))
+        sin_columna_ruc = sum(1 for i in instancias
+                              if (i.get('db') or {}).get('ok')
+                              and not (i.get('resumen') or {}).get('ruc_proveedor_disponible'))
         api_activas = sum(1 for i in instancias if (i.get('resumen') or {}).get('api_cedula'))
         api_inactivas = sum(1 for i in instancias
                             if (i.get('resumen') or {}).get('api_cedula') is False)
@@ -343,6 +352,8 @@ class Colector(object):
             'dominios_desactualizados': dominios_viejos,
             'dominios_compartidos': dominios_compartidos,
             'sin_uso_90': sin_uso_90,
+            'sin_ruc_proveedor': sin_ruc_proveedor,
+            'sin_columna_ruc_proveedor': sin_columna_ruc,
             'api_cedula_activas': api_activas,
             'api_cedula_inactivas': api_inactivas,
             'db_activas': db_ok,

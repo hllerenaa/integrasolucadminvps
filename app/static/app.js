@@ -157,16 +157,33 @@
       valor: function (i) { return (i.cliente || '').toLowerCase(); },
       render: function (i) {
         var r = i.resumen || {};
-        return '<div class="cliente">' + esc(i.cliente) + '</div>' +
-          '<div class="sub">' + esc(r.empresa || '') + '</div>';
+        var impl = (r.fecha_instalacion || '').substring(0, 10);
+        return '<div class="cliente">' + esc(i.cliente) +
+            ' <span class="chip ' + esc(i.tipo) + '">' + esc(i.tipo) + '</span></div>' +
+          '<div class="sub">' + esc(r.empresa || '') + '</div>' +
+          '<div class="sub">' +
+            (impl ? 'impl. ' + esc(impl) : '') +
+            (r.servicio_creado ? ' · svc ' + esc(r.servicio_creado.substring(0, 10)) : '') +
+          '</div>';
       } },
-    { id: 'tipo', titulo: 'Sistema', grupo: 'instancia',
+    { id: 'tipo', titulo: 'Sistema', grupo: 'instancia', oculta: true,
       valor: function (i) { return i.tipo; },
       render: function (i) { return '<span class="chip ' + esc(i.tipo) + '">' + esc(i.tipo) + '</span>'; } },
-    { id: 'ruta', titulo: 'Ruta de instalación', grupo: 'instancia', ancho: 'ancho',
+    { id: 'ruta', titulo: 'Ruta de instalación', grupo: 'instancia', oculta: true, ancho: 'ancho',
       valor: function (i) { return i.ruta || ''; },
       render: function (i) { return '<code class="ruta" title="' + esc(i.ruta) + '">' + esc(i.ruta) + '</code>'; } },
-    { id: 'implementacion', titulo: 'Implementado', grupo: 'instancia',
+    { id: 'ruc_proveedor', titulo: 'RUC proveedor', grupo: 'instancia', requiere: 'bd',
+      valor: function (i) { return ((i.resumen || {}).ruc_proveedor || 'zzz').toLowerCase(); },
+      render: function (i) {
+        var r = i.resumen || {};
+        if (!r.ruc_proveedor_disponible) {
+          return badge('gris', 'sin columna',
+            'Esta base todavía no tiene el campo rucproveedor: falta aplicar la migración');
+        }
+        if (!r.ruc_proveedor) return badge('ambar', 'vacío', 'Sin RUC de proveedor cargado');
+        return '<span>' + esc(r.ruc_proveedor) + '</span>';
+      } },
+    { id: 'implementacion', titulo: 'Implementado', grupo: 'instancia', oculta: true,
       valor: function (i) { return (i.resumen || {}).fecha_instalacion || ''; },
       render: function (i) {
         var r = i.resumen || {};
@@ -180,12 +197,14 @@
       render: function (i) {
         return badgeServicio(i) + '<div class="sub">' + esc(i.servicio || '') + '</div>';
       } },
-    { id: 'url', titulo: 'URL', grupo: 'servicio', ancho: 'ancho',
+    { id: 'url', titulo: 'URL y ruta', grupo: 'servicio', ancho: 'ancho',
       valor: function (i) { return (i.dominio || 'zzz').toLowerCase(); },
       render: function (i) {
         var html = i.url ? '<a href="' + esc(i.url) + '" target="_blank" rel="noopener">' +
           esc(i.dominio) + '</a>' : '<span class="tenue">sin dominio</span>';
         html += ' ' + badgeUrl(i);
+        html += '<div class="sub"><code class="ruta" title="' + esc(i.ruta) + '">' +
+          esc(i.ruta) + '</code></div>';
         if (i.dominio_desactualizado) {
           html += '<div class="sub aviso-inline" title="credenciales.json apunta a ' +
             esc(i.dominio_credenciales) + '">credenciales: ' + esc(i.dominio_credenciales) + '</div>';
@@ -339,6 +358,7 @@
   function columnasVisibles() {
     var cap = estado.capacidades || {};
     return COLUMNAS.filter(function (c) {
+      if (c.oculta) return false;               // su dato ya sale en otra columna
       if (c.soloExcluidos && MODO !== 'excluidos') return false;
       if (c.requiere && cap[c.requiere] === false) return false;
       return estado.grupos[c.grupo] !== false;
@@ -373,9 +393,19 @@
     var est = $('#filtro-estado').value;
     var api = $('#filtro-api') ? $('#filtro-api').value : '';
     var uso = $('#filtro-uso') ? parseInt($('#filtro-uso').value, 10) : 0;
+    var serv = $('#filtro-servicio') ? $('#filtro-servicio').value : '';
     return lista.filter(function (i) {
       var r = i.resumen || {};
       if (tipo && i.tipo !== tipo) return false;
+      if (serv) {
+        var se = (i.servicio_estado || {});
+        var sk = (i.socket || {});
+        if (serv === 'activo' && !se.activo) return false;
+        if (serv === 'inactivo' && (se.activo || se.estado === 'failed' || !se.existe)) return false;
+        if (serv === 'fallido' && se.estado !== 'failed') return false;
+        if (serv === 'sin-unidad' && se.existe) return false;
+        if (serv === 'socket' && !(sk.activo && !se.activo)) return false;
+      }
       if (api === 'si' && !r.api_cedula) return false;
       if (api === 'no' && r.api_cedula !== false) return false;
       if (api === 'nd' && r.api_cedula_disponible) return false;
@@ -393,6 +423,9 @@
       if (est === 'url-caida' && r.url_responde !== false) return false;
       if (est === 'dominio-viejo' && !r.dominio_desactualizado) return false;
       if (est === 'dominio-compartido' && !r.dominio_compartido) return false;
+      if (est === 'sin-ruc-proveedor' &&
+          !(r.ruc_proveedor_disponible && !r.ruc_proveedor)) return false;
+      if (est === 'sin-columna-ruc' && r.ruc_proveedor_disponible) return false;
       if (est === 'sin-facturar' && ['detenido', 'sin-facturar-mes'].indexOf(r.facturas_estado) === -1) return false;
       if (est === 'api-activa' && !r.api_cedula) return false;
       if (est === 'api-inactiva' && (r.api_cedula !== false)) return false;
@@ -400,7 +433,8 @@
       if ((est === 'ok' || est === 'alerta' || est === 'error') && r.salud !== est) return false;
       if (txt) {
         var blob = [i.cliente, i.dominio, i.dominio_credenciales, i.servicio, i.ruta,
-                    r.empresa, (i.db || {}).dbname, (i.apache || {}).nombre].join(' ').toLowerCase();
+                    r.empresa, r.ruc, r.ruc_proveedor, (i.db || {}).dbname,
+                    (i.apache || {}).nombre].join(' ').toLowerCase();
         if (blob.indexOf(txt) === -1) return false;
       }
       return true;
@@ -458,7 +492,7 @@
       { rotulo: 'Instancias', valor: r.total || 0,
         extra: Object.keys(r.por_tipo || {}).map(function (k) { return k + ': ' + r.por_tipo[k]; }).join(' · ') },
       { rotulo: 'Servicios activos', valor: (r.servicios_activos || 0) + '/' + (r.total || 0),
-        clase: r.servicios_inactivos ? 'mal' : 'ok', filtro: 'servicio-inactivo' },
+        clase: r.servicios_inactivos ? 'mal' : 'ok', filtroServicio: 'inactivo' },
       { rotulo: 'Sitios Apache', valor: (r.sitios_habilitados || 0) + '/' + (r.total || 0),
         filtro: 'sitio-desactivado' },
       { rotulo: 'SSL vigentes', valor: (r.ssl_vigentes || 0) + '/' + (r.total || 0),
@@ -476,6 +510,12 @@
     if (cap.bd && r.sin_uso_90) {
       t.push({ rotulo: 'Sin uso > 90 días', valor: r.sin_uso_90, clase: 'mal',
         filtroUso: '90', extra: 'sin auditoría, sesión ni ventas' });
+    }
+    if (cap.bd && (r.sin_ruc_proveedor || r.sin_columna_ruc_proveedor)) {
+      t.push({ rotulo: 'RUC proveedor', clase: 'mal',
+        valor: (r.sin_ruc_proveedor || 0) + ' sin cargar',
+        filtro: 'sin-ruc-proveedor',
+        extra: (r.sin_columna_ruc_proveedor || 0) + ' bases sin el campo (falta migrar)' });
     }
     if (cap.bd && (r.api_cedula_activas || r.api_cedula_inactivas)) {
       t.push({ rotulo: 'API cédula activa',
@@ -519,7 +559,8 @@
     $('#tarjetas').innerHTML = t.map(function (x) {
       var extraAttr = x.filtro ? ' clicable" data-filtro="' + x.filtro
                     : (x.filtroApi ? ' clicable" data-filtro-api="' + x.filtroApi
-                    : (x.filtroUso ? ' clicable" data-filtro-uso="' + x.filtroUso : ''));
+                    : (x.filtroUso ? ' clicable" data-filtro-uso="' + x.filtroUso
+                    : (x.filtroServicio ? ' clicable" data-filtro-servicio="' + x.filtroServicio : '')));
       return '<div class="tarjeta ' + (x.clase || '') + extraAttr + '">' +
         '<div class="rotulo">' + esc(x.rotulo) + '</div>' +
         '<div class="valor">' + esc(x.valor) + '</div>' +
@@ -582,9 +623,22 @@
         u = inst.url_estado || {}, fac = db.facturacion || {};
     var b = '';
 
+    var puedeEditar = (estado.capacidades || {}).acciones_datos;
+    var rucProv = (inst.resumen || {}).ruc_proveedor;
+    var rucProvOk = (inst.resumen || {}).ruc_proveedor_disponible;
     b += '<div class="bloque"><h3>Instancia</h3>' + dl([
       ['Cliente', inst.cliente], ['Sistema', inst.tipo],
       ['Empresa', emp.nombre_empresa || emp.razonsocial], ['RUC', emp.ruc],
+      ['RUC proveedor', rucProvOk
+        ? (puedeEditar
+            ? '<span class="campo-editable">' +
+              '<input id="campo-rucproveedor" value="' + esc(rucProv || '') +
+              '" placeholder="sin cargar" maxlength="20">' +
+              '<button class="boton mini guardar-config" type="button" data-id="' + esc(inst.id) +
+              '" data-campo="rucproveedor">Guardar</button>' +
+              '<span id="resultado-config"></span></span>'
+            : esc(rucProv || '(vacío)'))
+        : '<span class="badge gris">esta base no tiene el campo (falta migrar)</span>', true],
       ['Ruta de instalación', inst.ruta], ['Implementada el', inst.fecha_instalacion],
       ['Rama git', git.rama], ['Último commit', (git.commit || '') + (git.fecha ? ' · ' + git.fecha : '')],
       ['Actualizado', inst.actualizado]
@@ -1178,6 +1232,32 @@
       });
   }
 
+  function guardarConfiguracion(id, campo, boton) {
+    var entrada = $('#campo-' + campo);
+    if (!entrada) return;
+    var valor = (entrada.value || '').trim();
+    boton.disabled = true;
+    $('#resultado-config').innerHTML = ' <span class="tenue">Guardando…</span>';
+    fetch('/api/instancia/' + encodeURIComponent(id) + '/configuracion', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ campo: campo, valor: valor })
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        boton.disabled = false;
+        if (!d.ok) {
+          $('#resultado-config').innerHTML = ' <span class="aviso-error">' + esc(d.error) + '</span>';
+          return;
+        }
+        $('#resultado-config').innerHTML = ' <span class="aviso-ok">guardado</span>';
+        cargar();
+      })
+      .catch(function (e) {
+        boton.disabled = false;
+        $('#resultado-config').innerHTML = ' <span class="aviso-error">' + esc(e.message) + '</span>';
+      });
+  }
+
   function cambiarApiCedula(id, activar, boton) {
     var inst = estado.datos.filter(function (i) { return i.id === id; })[0] || {};
     if (!window.confirm((activar ? 'Activar' : 'Desactivar') +
@@ -1741,6 +1821,10 @@
         if (el.classList.contains('diagnostico-vhost')) {
           return diagnosticoVhost(el.getAttribute('data-id'));
         }
+        if (el.classList.contains('guardar-config')) {
+          return guardarConfiguracion(el.getAttribute('data-id'),
+                                      el.getAttribute('data-campo'), el);
+        }
         if (el.classList.contains('api-cedula')) {
           return cambiarApiCedula(el.getAttribute('data-id'),
                                   el.getAttribute('data-activar') === '1', el);
@@ -1753,6 +1837,8 @@
         if (tarjeta) {
           if (tarjeta.getAttribute('data-filtro-api') && $('#filtro-api')) {
             $('#filtro-api').value = tarjeta.getAttribute('data-filtro-api');
+          } else if (tarjeta.getAttribute('data-filtro-servicio') && $('#filtro-servicio')) {
+            $('#filtro-servicio').value = tarjeta.getAttribute('data-filtro-servicio');
           } else if (tarjeta.getAttribute('data-filtro-uso') && $('#filtro-uso')) {
             $('#filtro-uso').value = tarjeta.getAttribute('data-filtro-uso');
           } else if (tarjeta.getAttribute('data-filtro')) {
@@ -1784,7 +1870,7 @@
       var el = e.target;
       if (el.id === 'auto-refresco') return programarAuto();
       if (el.id === 'orden') { estado.orden = el.value; return pintarTabla(); }
-      if (el.id === 'filtro-api' || el.id === 'filtro-uso') return pintarTabla();
+      if (['filtro-api', 'filtro-uso', 'filtro-servicio'].indexOf(el.id) !== -1) return pintarTabla();
       if (el.id === 'filtro-backup-estado') return pintarBackups();
       if (el.id === 'solo-sin-uso') return pintarBases();
       if (el.id === 'filtro-cert-estado') { estadoCert.estado = el.value; return pintarFilasCert(); }
@@ -1796,7 +1882,7 @@
     });
 
     document.addEventListener('input', function (e) {
-      if (['filtro-texto', 'filtro-tipo', 'filtro-estado', 'filtro-api',
+      if (['filtro-texto', 'filtro-tipo', 'filtro-estado', 'filtro-api', 'filtro-servicio',
            'filtro-uso'].indexOf(e.target.id) !== -1) {
         pintarTabla();
       }

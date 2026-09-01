@@ -217,3 +217,8 @@ tr.fila-oculta .cliente{text-decoration:line-through;text-decoration-color:var(-
 .seccion{margin:16px 18px}
 .seccion h2{font-size:16px;margin:0 0 4px}
 .seccion > .tenue{margin:0 0 12px}
+
+/* --------------------------------------------------- campos editables */
+.campo-editable{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap}
+.campo-editable input{padding:5px 8px;border:1px solid var(--borde);border-radius:6px;
+  font:inherit;font-size:12.5px;min-width:150px}

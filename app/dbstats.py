@@ -33,6 +33,9 @@ TABLA_CONECTADOS = 'seguridad_usuarioconectado'
 COLUMNAS_API_CEDULA = ('usar_api_persona', 'traer_api_cliente', 'usar_api_personas',
                        'usar_api_cliente', 'traer_api_persona')
 
+# Campos de seguridad_configuracion que se pueden editar desde el panel.
+CAMPOS_CONFIGURACION_EDITABLES = ('rucproveedor', 'ruc', 'nombre_empresa', 'telefono_empresa')
+
 # Tablas de ventas por tipo de sistema, en orden de prioridad.
 # (tabla, etiqueta) -> la columna de fecha se detecta entre COLUMNAS_FECHA.
 VENTAS = {
@@ -143,7 +146,8 @@ def _empresa(cur, esquema):
     columnas = esquema.get(TABLA_CONFIGURACION)
     if not columnas:
         return {}
-    campos = [c for c in ('nombre_empresa', 'ruc', 'web', 'razonsocial', 'alias')
+    campos = [c for c in ('nombre_empresa', 'ruc', 'rucproveedor', 'web',
+                          'razonsocial', 'alias', 'telefono_empresa')
               if c in columnas]
     if not campos:
         return {}
@@ -153,7 +157,11 @@ def _empresa(cur, esquema):
         fila = cur.fetchone()
         if not fila:
             return {}
-        return {campo: fila[i] for i, campo in enumerate(campos)}
+        datos = {campo: fila[i] for i, campo in enumerate(campos)}
+        # Qué campos existen en esta versión (para saber dónde falta migrar)
+        datos['_campos'] = campos
+        datos['_rucproveedor_disponible'] = 'rucproveedor' in columnas
+        return datos
     except Exception as ex:
         return {'error': str(ex).strip()}
 
@@ -459,6 +467,56 @@ def listar_bases(instancia, config):
         return {'ok': True, 'host': conexion['host'], 'bases': bases}
     except Exception as ex:
         return {'ok': False, 'error': str(ex).strip().splitlines()[0], 'bases': []}
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def cambiar_configuracion(instancia, config, campo, valor):
+    """Actualiza un campo de seguridad_configuracion (lista blanca)."""
+    if campo not in CAMPOS_CONFIGURACION_EDITABLES:
+        return {'ok': False, 'error': 'Campo no editable desde el panel: %s' % campo}
+    if psycopg2 is None:
+        return {'ok': False, 'error': 'psycopg2 no está instalado'}
+    conexion = instancia.base_datos()
+    if not conexion.get('dbname'):
+        return {'ok': False, 'error': 'Sin datos de PostgreSQL en credenciales.json'}
+
+    conn = None
+    try:
+        conn = psycopg2.connect(
+            host=conexion['host'], port=int(conexion.get('port') or 5432),
+            dbname=conexion['dbname'], user=conexion.get('user'),
+            password=conexion.get('password'),
+            connect_timeout=int(config.get('db_connect_timeout') or 6),
+            application_name='integrasolucadminvps')
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("SET statement_timeout = %s", (int(config.get('db_statement_timeout') or 15000),))
+        cur.execute(
+            """
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = %s AND column_name = %s
+            """,
+            (TABLA_CONFIGURACION, campo))
+        if not cur.fetchone():
+            return {'ok': False,
+                    'error': 'Esta base todavía no tiene la columna %s '
+                             '(falta aplicar la migración)' % campo}
+
+        cur.execute('SELECT COUNT(*) FROM %s' % TABLA_CONFIGURACION)
+        if not cur.fetchone()[0]:
+            return {'ok': False, 'error': 'La tabla de configuración está vacía'}
+
+        cur.execute('UPDATE %s SET %s = %%s' % (TABLA_CONFIGURACION, campo), (valor or None,))
+        filas = cur.rowcount
+        cur.close()
+        return {'ok': True, 'campo': campo, 'valor': valor, 'filas': filas}
+    except Exception as ex:
+        return {'ok': False, 'error': str(ex).strip().splitlines()[0]}
     finally:
         if conn is not None:
             try:

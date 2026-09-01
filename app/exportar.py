@@ -10,6 +10,8 @@ COLUMNAS = [
     ('cliente', 'Cliente', 16),
     ('tipo', 'Sistema', 12),
     ('empresa', 'Empresa', 30),
+    ('ruc', 'RUC', 16),
+    ('ruc_proveedor', 'RUC proveedor', 18),
     ('url', 'URL', 34),
     ('url_estado', 'URL responde', 14),
     ('dominio_credenciales', 'DOMINIO_GENERAL (credenciales)', 30),
@@ -70,6 +72,9 @@ def fila(inst):
         'cliente': inst.get('cliente'),
         'tipo': inst.get('tipo'),
         'empresa': r.get('empresa'),
+        'ruc': r.get('ruc'),
+        'ruc_proveedor': (r.get('ruc_proveedor') if r.get('ruc_proveedor_disponible')
+                          else 'sin el campo'),
         'url': inst.get('url'),
         'url_estado': ('SI (HTTP %s)' % r.get('url_codigo')) if r.get('url_responde')
                       else ('NO' if r.get('url_responde') is False else '-'),

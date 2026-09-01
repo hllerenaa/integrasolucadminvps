@@ -20,6 +20,7 @@ los certificados y (opcionalmente) la base PostgreSQL de cada cliente.
 | Servicio systemd: activo, arranque, PID, uptime, puerto de gunicorn | El `.service` que apunta a la carpeta (`WorkingDirectory`/`ExecStart`) + `systemctl show` |
 | **Activación por socket**: si el `.service` está parado pero su `.socket` sigue escuchando (el sitio responde igual) | La unidad `<cliente>.socket` y su `ListenStream` |
 | **Búsqueda de cédula por API** activada o no en cada sistema | `seguridad_configuracion` (`usar_api_persona` en inventario, `traer_api_cliente` en restaurante; la columna se detecta) |
+| **RUC del proveedor** (`rucproveedor`), editable desde el panel, indicando además qué bases todavía no tienen el campo | `seguridad_configuracion.rucproveedor` |
 | **Días sin uso**: cuánto lleva la instancia sin actividad real | La más reciente entre la última auditoría, el último inicio de sesión y la última venta |
 | **Consumo de CPU y RAM de cada instancia**, con barra y % sobre el total del servidor | `CPUUsageNSec` (diferencia entre dos muestras) y `MemoryCurrent` de su unidad |
 | **Cuánto ocupa cada instancia frente al disco**: BD, media y logs en % del disco | Tamaños medidos + `statvfs` del servidor |
@@ -123,6 +124,9 @@ venv/bin/python run.py --quitar-usuario mochoa
   el servicio deja el socket activo y la primera petición lo vuelve a levantar.
 - Activar o desactivar la **búsqueda de personas por cédula (API)** de cada
   instancia, con la columna que corresponda a su versión.
+- Editar el **RUC del proveedor** (`rucproveedor`) de cada instancia desde el
+  detalle. Si la base todavía no tiene la columna, el panel lo dice en vez de
+  fallar, y hay un filtro para ver justo esas instalaciones pendientes de migrar.
 - Ver y renovar los **certificados de Let's Encrypt** (botón *Certificados*):
   lista `certbot certificates` con fecha de emisión, de vencimiento, días
   restantes y a qué instancia pertenece cada uno, con renovación por
@@ -142,9 +146,14 @@ venv/bin/python run.py --quitar-usuario mochoa
 - Ver de un vistazo el consumo: columnas **CPU**, **RAM** y **Ocupa (BD+media+logs)**
   con barras, y tarjetas con la RAM, la carga y el disco del servidor indicando
   cuánto de eso se llevan las instancias.
-- Buscar por cliente, empresa, dominio, ruta, servicio o base de datos, y filtrar
-  por sistema, estado, **búsqueda de cédula por API** (activa / desactivada / sin
-  la opción) y **tiempo sin uso** (más de 30, 60, 90, 180 días o un año).
+- Buscar por cliente, empresa, RUC, dominio, ruta, servicio o base de datos, y
+  filtrar por sistema, **estado del servicio** (activo, inactivo, fallido, sin
+  unidad o parado con el socket escuchando), estado general, **búsqueda de cédula
+  por API** (activa / desactivada / sin la opción) y **tiempo sin uso** (más de
+  30, 60, 90, 180 días o un año).
+- La tabla es compacta: el cliente lleva su empresa y las fechas de implementación
+  y del servicio; la columna de URL lleva el dominio, la respuesta y la ruta de
+  instalación. Esas columnas siguen disponibles en el selector "Ordenar por".
 - Desplazar la tabla en horizontal **arrastrándola con el ratón** o con la barra
   que aparece encima de la tabla, sincronizada con ella.
 - Ordenar por cualquier columna: fecha de implementación, tamaño de la base,

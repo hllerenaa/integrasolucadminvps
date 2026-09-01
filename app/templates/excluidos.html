@@ -44,15 +44,21 @@
     <option value="ok">Sin novedades</option>
     <option value="alerta">Con alerta</option>
     <option value="error">Caídos</option>
-    <option value="servicio-inactivo">Servicio inactivo</option>
     <option value="db-caida">Base caída</option>
     <option value="sitio-desactivado">Sitio Apache desactivado</option>
     <option value="ssl-problema">SSL vencido / por vencer / autofirmado</option>
     <option value="url-caida">URL no responde</option>
     <option value="sin-facturar">Dejó de facturar</option>
-    <option value="socket-huerfano">Servicio parado pero socket escuchando</option>
     <option value="api-activa">Búsqueda por cédula activa</option>
     <option value="api-inactiva">Búsqueda por cédula inactiva</option>
+  </select>
+  <select id="filtro-servicio" title="Estado del servicio">
+    <option value="">Servicio: todos</option>
+    <option value="activo">Activo</option>
+    <option value="inactivo">Inactivo</option>
+    <option value="fallido">Fallido</option>
+    <option value="sin-unidad">Sin unidad</option>
+    <option value="socket">Parado pero con socket escuchando</option>
   </select>
   <select id="filtro-uso" title="Tiempo sin actividad">
     <option value="">Actividad: todas</option>
