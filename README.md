@@ -82,7 +82,7 @@ En la barra superior, además:
 | Botón | Para qué |
 |---|---|
 | **Tareas** | Lo que el servidor tiene programado (crontabs de los usuarios, `/etc/crontab`, `/etc/cron.d` y los `.timer` de systemd, con el horario traducido) y las tareas que el panel ha lanzado en segundo plano, con su log |
-| **Historial** | Todo lo hecho desde el panel: arrancar/parar servicios, activar o desactivar sitios, abrir o guardar credenciales, cambios de RUC o de API cédula y operaciones de certbot, con usuario, resultado y salida del comando |
+| **Historial** (sólo con permiso `ver_excluidos`) | Todo lo hecho desde el panel: arrancar/parar servicios, activar o desactivar sitios, abrir o guardar credenciales, cambios de RUC o de API cédula y operaciones de certbot, con usuario, resultado y salida del comando |
 | **Excel** / **CSV** | Exportan exactamente las filas que están en pantalla, en el mismo orden y con los mismos filtros |
 
 ## Usuarios y permisos
@@ -90,7 +90,8 @@ En la barra superior, además:
 `config.json` → `auth`: el usuario histórico (`username`) más una lista `usuarios`.
 Cada uno tiene dos permisos:
 
-- `ver_excluidos`: ve también las instancias ocultas, marcadas, en el panel principal.
+- `ver_excluidos`: ve también las instancias ocultas, marcadas, en el panel principal,
+  y es el único que ve el botón **Historial** (registra acciones sobre esas instancias).
 - `gestionar_excluidos`: puede entrar a `/excluidos` y cambiar la lista.
 
 ```bash
@@ -404,7 +405,7 @@ inaccesibles o certificados vencidos: sirve para cron o alertas.
 | `POST /api/aprovisionar/crear` | Lanza la creación (`{"simular": true}` para el modo simulación) |
 | `GET /api/tareas`, `GET /api/tarea/<id>` | Tareas en segundo plano y su log (`?desde=N`) |
 | `POST /api/tarea/<id>/deshacer` | Revierte lo que creó una tarea fallida |
-| `GET /api/acciones` | Historial de acciones |
+| `GET /api/acciones` | Historial de acciones (requiere `ver_excluidos`) |
 | `GET /api/cron` | Tareas programadas del servidor (crontabs y timers de systemd), sólo lectura |
 | `GET/POST /export.xlsx`, `/export.csv` | Exportaciones (aceptan `?tipo=` y `?q=`; por POST, `{"ids": [...]}` para exportar sólo esas filas y en ese orden) |
 | `GET /healthz` | Chequeo de salud (sin autenticación) |

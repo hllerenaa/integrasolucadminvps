@@ -14,7 +14,10 @@
     <button id="btn-excel" class="boton secundario" type="button">Excel</button>
     <button id="btn-csv" class="boton secundario" type="button">CSV</button>
     <button id="btn-tareas" class="boton secundario" type="button">Tareas</button>
+    {# El historial muestra acciones sobre sistemas ocultos: mismo permiso. #}
+    {% if permisos and permisos.ver_excluidos %}
     <button id="btn-historial" class="boton secundario" type="button">Historial</button>
+    {% endif %}
     {% if auth_activa %}<a class="boton secundario" href="/logout">Salir</a>{% endif %}
   </div>
 </header>

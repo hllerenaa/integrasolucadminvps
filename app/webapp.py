@@ -60,6 +60,17 @@ def crear_app(config=None):
             return vista(*args, **kwargs)
         return envoltura
 
+    def requiere_ver_excluidos(vista):
+        @functools.wraps(vista)
+        def envoltura(*args, **kwargs):
+            if not permisos()['ver_excluidos']:
+                if request.path.startswith('/api/'):
+                    return jsonify({'ok': False, 'error': 'Tu usuario no tiene acceso al '
+                                                          'historial de acciones'}), 403
+                return redirect(url_for('dashboard'))
+            return vista(*args, **kwargs)
+        return envoltura
+
     def autenticado():
         auth = config.get('auth') or {}
         if not auth.get('enabled'):
@@ -727,7 +738,10 @@ def crear_app(config=None):
 
     @app.route('/api/acciones')
     @requiere_login
+    @requiere_ver_excluidos
     def api_historial_acciones():
+        """El historial deja ver qué se hizo sobre los sistemas ocultos, así que
+        se reserva a quien tiene permiso para verlos."""
         return jsonify({'acciones': mod_acciones.historial(config)})
 
     @app.route('/api/cron')
