@@ -87,8 +87,10 @@
   function badgeApache(i) {
     var a = i.apache || {};
     if (!a.archivo) return badge('gris', 'sin vhost', a.error || '');
-    return a.habilitado ? badge('verde', 'habilitado', a.nombre)
-                        : badge('rojo', 'deshabilitado', a.nombre);
+    var etiqueta = a.habilitado ? 'habilitado' : 'deshabilitado';
+    if (a.dudoso) return badge('ambar', etiqueta + ' (?)',
+      'Coincidencia dudosa con ' + a.nombre + ': revisa con "¿Por qué este vhost?"');
+    return a.habilitado ? badge('verde', etiqueta, a.nombre) : badge('rojo', etiqueta, a.nombre);
   }
 
   function badgeServidorWeb(i) {
@@ -580,12 +582,16 @@
       ['ServerName', ap.servername], ['ServerAlias', (ap.alias || []).join(', ')],
       ['DocumentRoot', ap.documentroot], ['Proxy a puerto', (ap.puertos_proxy || []).join(', ')],
       ['Vhost modificado', ap.modificado],
-      ['Emparejado por', (ap.motivos || []).join(' + ')],
+      ['Emparejado por', (ap.motivos || []).join(' + ') +
+        (ap.dudoso ? ' (coincidencia dudosa)' : '')],
       ['Otros vhost', (ap.otros || []).map(function (o) {
         return esc(o.nombre) + ' → ' + esc(o.servername || '?') + (o.habilitado ? ' (activo)' : ' (inactivo)');
       }).join('<br>'), true],
       ['Error', ap.error]
-    ]) + '</div>';
+    ]) +
+      '<div style="margin-top:8px"><button class="boton mini diagnostico-vhost" type="button" ' +
+      'data-id="' + esc(inst.id) + '">¿Por qué este vhost?</button>' +
+      '<div id="resultado-vhost"></div></div></div>';
 
     b += '<div class="bloque"><h3>Certificado SSL</h3>' + dl([
       ['Estado', badgeSsl(inst), true], ['Emitido el', cert.emitido],
@@ -861,10 +867,10 @@
   var opcionesAlta = null;
   var tareaActual = null, tareaPoll = null, tareaLineas = 0;
 
-  function abrirAsistente() {
+  function abrirAsistente(enPagina) {
     var caja = $('#nueva-cuerpo');
     caja.innerHTML = '<p class="tenue">Cargando opciones…</p>';
-    $('#modal-nueva').classList.remove('oculto');
+    if (!enPagina && $('#modal-nueva')) $('#modal-nueva').classList.remove('oculto');
     fetch('/api/aprovisionar/opciones', { credentials: 'same-origin' })
       .then(function (r) { return r.json(); })
       .then(function (d) {
@@ -989,7 +995,7 @@
       }).then(function (r) { return r.json(); })
         .then(function (d) {
           if (!d.ok) { aviso(d.error || 'No se pudo iniciar'); return; }
-          $('#modal-nueva').classList.add('oculto');
+          if ($('#modal-nueva')) $('#modal-nueva').classList.add('oculto');
           verTarea(d.tarea);
         })
         .catch(function (e) { aviso(e.message); });
@@ -1154,12 +1160,14 @@
       });
   }
 
-  function verCertificados() {
-    var caja = $('#tarea-cuerpo');
-    $('#tarea-titulo').textContent = 'Certificados SSL';
+  function verCertificados(destino) {
+    var caja = $(destino || '#tarea-cuerpo');
+    if (!destino) {
+      $('#tarea-titulo').textContent = 'Certificados SSL';
+      $('#modal-tarea').classList.remove('oculto');
+      if (tareaPoll) { clearInterval(tareaPoll); tareaPoll = null; }
+    }
     caja.innerHTML = '<p class="tenue">Consultando certbot…</p>';
-    $('#modal-tarea').classList.remove('oculto');
-    if (tareaPoll) { clearInterval(tareaPoll); tareaPoll = null; }
 
     fetch('/api/certificados', { credentials: 'same-origin' })
       .then(function (r) { return r.json(); })
@@ -1171,18 +1179,30 @@
         }
         var filas = (d.certificados || []).map(function (c) {
           var clase = c.estado === 'vigente' ? 'verde'
-                    : (c.estado === 'renovable' ? 'ambar'
-                    : (c.estado === 'por-vencer' ? 'ambar' : 'rojo'));
+                    : (['renovable', 'por-vencer', 'renovacion-pausada'].indexOf(c.estado) !== -1
+                       ? 'ambar' : 'rojo');
+          var pausada = c.renovacion === 'pausada';
+          var acciones = '';
+          if (cap.acciones_certbot) {
+            acciones =
+              '<button class="boton mini renovar-cert" type="button" data-nombre="' +
+                esc(c.nombre) + '">Renovar</button> ' +
+              '<button class="boton mini cert-accion" type="button" data-nombre="' + esc(c.nombre) +
+                '" data-accion="' + (pausada ? 'reanudar' : 'pausar') + '">' +
+                (pausada ? 'Reanudar renovación' : 'Pausar renovación') + '</button> ' +
+              '<button class="boton mini peligro cert-accion" type="button" data-nombre="' +
+                esc(c.nombre) + '" data-accion="eliminar" style="color:#fff">Eliminar</button>';
+          }
           return '<tr><td><strong>' + esc(c.nombre) + '</strong>' +
             (c.cliente ? '<div class="sub">' + esc(c.cliente) + '</div>' : '') + '</td>' +
             '<td>' + esc((c.dominios || []).join(', ')) + '</td>' +
             '<td>' + guion(c.emitido) + '</td>' +
             '<td>' + guion(c.vence) + '</td>' +
-            '<td>' + badge(clase, (c.dias === null || c.dias === undefined ? '?' : c.dias + 'd') +
-              ' · ' + c.estado) + '</td>' +
-            '<td>' + (cap.acciones_certbot
-              ? '<button class="boton mini renovar-cert" type="button" data-nombre="' +
-                esc(c.nombre) + '">Renovar</button>' : '') + '</td></tr>';
+            '<td>' + badge(clase, (c.dias === null || c.dias === undefined ? '?' : c.dias + 'd')) +
+              '<div class="sub">' + esc(c.estado) + '</div>' +
+              (pausada ? '<div class="sub aviso-inline">sin renovación automática</div>' : '') +
+            '</td>' +
+            '<td>' + acciones + '</td></tr>';
         }).join('') || '<tr><td colspan="6" class="vacio">No hay certificados</td></tr>';
 
         caja.innerHTML =
@@ -1203,6 +1223,33 @@
       });
   }
 
+  function accionCertificado(nombre, accion) {
+    var cuerpo = { nombre: nombre, accion: accion };
+    if (accion === 'eliminar') {
+      var escrito = window.prompt('Eliminar el certificado "' + nombre +
+        '" borra sus archivos y su configuración de renovación. Si algún vhost lo usa, ' +
+        'el servidor web no arrancará hasta corregirlo.\n\nEscribe el nombre exacto para confirmar:');
+      if (!escrito) return;
+      cuerpo.confirmacion = escrito.trim();
+    } else if (accion === 'pausar' &&
+               !window.confirm('Pausar la renovación automática de "' + nombre +
+                 '"? El certificado sigue funcionando hasta que venza, pero certbot dejará ' +
+                 'de renovarlo.')) {
+      return;
+    }
+    fetch('/api/certificados/accion', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cuerpo)
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) { aviso(d.error || 'No se pudo aplicar'); return; }
+        aviso((d.mensaje || 'Listo') + (d.aviso ? ' · ' + d.aviso : ''), 'aviso-ok');
+        verCertificados(MODO === 'certificados' ? '#contenido' : null);
+      })
+      .catch(function (e) { aviso(e.message); });
+  }
+
   function renovarCertificado(nombre, simular, forzar) {
     var texto = nombre ? ('el certificado ' + nombre) : 'los certificados que lo necesiten';
     if (!simular && !window.confirm('¿Renovar ' + texto + ' con certbot?')) return;
@@ -1216,6 +1263,223 @@
         verTarea(d.tarea);
       })
       .catch(function (e) { aviso(e.message); });
+  }
+
+  var datosBackups = null;
+
+  function verBackups() {
+    var cuerpo = $('#cuerpo-backups');
+    cuerpo.innerHTML = '<tr><td class="vacio" colspan="8">Cargando…</td></tr>';
+    fetch('/api/backups', { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d.error) {
+          cuerpo.innerHTML = '<tr><td class="vacio" colspan="8">' + esc(d.error) + '</td></tr>';
+          return;
+        }
+        datosBackups = d;
+        pintarBackups();
+      })
+      .catch(function (e) { aviso(e.message); });
+  }
+
+  function estadoBackup(fila, alerta) {
+    if (!fila.ultimo) return 'sin';
+    return (fila.dias === null || fila.dias > alerta) ? 'viejo' : 'ok';
+  }
+
+  function pintarBackups() {
+    var d = datosBackups;
+    if (!d) return;
+    var alerta = d.alerta_dias || 3;
+    var txt = ($('#filtro-backups').value || '').toLowerCase().trim();
+    var filtro = $('#filtro-backup-estado').value;
+
+    var filas = (d.instancias || []).filter(function (f) {
+      if (filtro && estadoBackup(f, alerta) !== filtro) return false;
+      if (txt && [f.cliente, f.base].join(' ').toLowerCase().indexOf(txt) === -1) return false;
+      return true;
+    });
+
+    var sin = (d.instancias || []).filter(function (f) { return !f.ultimo; }).length;
+    var viejos = (d.instancias || []).filter(function (f) {
+      return f.ultimo && f.dias > alerta; }).length;
+    $('#tarjetas-backups').innerHTML = [
+      { rotulo: 'Instancias', valor: (d.instancias || []).length },
+      { rotulo: 'Sin backup', valor: sin, clase: sin ? 'mal' : 'ok' },
+      { rotulo: 'Atrasados (> ' + alerta + ' días)', valor: viejos, clase: viejos ? 'mal' : 'ok' },
+      { rotulo: 'Archivos', valor: d.total_archivos || 0 },
+      { rotulo: 'Espacio usado', valor: d.total_tamano || '-', extra: d.carpeta },
+      { rotulo: 'Retención', valor: (d.retencion || 0) + ' copias' }
+    ].map(function (t) {
+      return '<div class="tarjeta ' + (t.clase || '') + '">' +
+        '<div class="rotulo">' + esc(t.rotulo) + '</div>' +
+        '<div class="valor">' + esc(t.valor) + '</div>' +
+        (t.extra ? '<div class="rotulo">' + esc(t.extra) + '</div>' : '') + '</div>';
+    }).join('');
+
+    $('#cuerpo-backups').innerHTML = filas.map(function (f) {
+      var est = estadoBackup(f, alerta);
+      var badgeEstado = est === 'sin' ? badge('rojo', 'sin backup')
+        : (est === 'viejo' ? badge('ambar', f.dias + ' días') : badge('verde', f.dias + ' días'));
+      return '<tr data-cliente="' + esc(f.cliente) + '">' +
+        '<td class="cliente">' + esc(f.cliente) +
+          (f.oculta ? ' <span class="badge gris">oculta</span>' : '') +
+          '<div class="sub">' + esc(f.tipo || '') + '</div></td>' +
+        '<td>' + guion(f.base) + '</td>' +
+        '<td>' + guion(f.base_tamano) + '</td>' +
+        '<td>' + (f.ultimo ? esc(f.ultimo.fecha) + '<div class="sub">' +
+          esc(f.ultimo.tamano) + (f.ultimo.sospechoso ? ' · muy pequeño' : '') + '</div>'
+          : '<span class="tenue">—</span>') + '</td>' +
+        '<td>' + badgeEstado + '</td>' +
+        '<td class="num">' + esc(f.total) + '</td>' +
+        '<td class="num">' + esc(f.ocupado) + '</td>' +
+        '<td>' + (f.id ? '<button class="boton mini backup-crear" type="button" data-id="' +
+            esc(f.id) + '">Respaldar</button> ' : '') +
+          (f.total ? '<button class="boton mini backup-ver" type="button" data-cliente="' +
+            esc(f.cliente) + '">Ver copias</button>' : '') + '</td></tr>';
+    }).join('') || '<tr><td class="vacio" colspan="8">Sin resultados</td></tr>';
+
+    $('#contador-backups').textContent = filas.length + ' de ' + (d.instancias || []).length +
+      ' instancias · ' + (d.total_tamano || '');
+  }
+
+  function verCopias(cliente) {
+    var fila = (datosBackups.instancias || []).filter(function (f) {
+      return f.cliente === cliente; })[0];
+    if (!fila) return;
+    $('#detalle-backups').innerHTML = '<div class="bloque"><h3>Copias de ' + esc(cliente) + '</h3>' +
+      '<table class="tabla-mini"><thead><tr><th>Archivo</th><th>Fecha</th><th>Tamaño</th><th></th></tr></thead><tbody>' +
+      (fila.archivos || []).map(function (a) {
+        return '<tr><td><code class="ruta" title="' + esc(a.archivo) + '">' + esc(a.nombre) +
+          '</code>' + (a.sospechoso ? ' <span class="badge ambar">muy pequeño</span>' : '') + '</td>' +
+          '<td>' + esc(a.fecha) + ' <span class="tenue">(' + esc(a.dias) + 'd)</span></td>' +
+          '<td>' + esc(a.tamano) + '</td>' +
+          '<td><a class="boton mini" href="/backups/descargar?archivo=' +
+            encodeURIComponent(a.archivo) + '">Descargar</a> ' +
+          '<button class="boton mini peligro backup-borrar" type="button" style="color:#fff" ' +
+            'data-archivo="' + esc(a.archivo) + '">Eliminar</button></td></tr>';
+      }).join('') + '</tbody></table></div>';
+    $('#detalle-backups').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  function crearBackup(ids) {
+    var texto = ids ? ('la instancia ' + ids.join(', ')) : 'TODAS las instancias';
+    if (!window.confirm('¿Generar backup de ' + texto + '? Puede tardar según el tamaño.')) return;
+    fetch('/api/backups/crear', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: ids })
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) { aviso(d.error || 'No se pudo iniciar'); return; }
+        verTarea(d.tarea);
+      })
+      .catch(function (e) { aviso(e.message); });
+  }
+
+  function crearBackupBase(base) {
+    if (!window.confirm('¿Generar backup de la base "' + base + '"?')) return;
+    fetch('/api/backups/crear', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bases: [base] })
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) { aviso(d.error || 'No se pudo iniciar'); return; }
+        verTarea(d.tarea);
+      })
+      .catch(function (e) { aviso(e.message); });
+  }
+
+  function borrarBackup(archivo) {
+    if (!window.confirm('¿Eliminar definitivamente ' + archivo + '?')) return;
+    fetch('/api/backups/eliminar', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ archivo: archivo })
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) { aviso(d.error || 'No se pudo eliminar'); return; }
+        aviso('Backup eliminado', 'aviso-ok');
+        verBackups();
+        $('#detalle-backups').innerHTML = '';
+      })
+      .catch(function (e) { aviso(e.message); });
+  }
+
+  var datosBases = null;
+
+  function verBases() {
+    fetch('/api/bases', { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        datosBases = d;
+        pintarBases();
+      })
+      .catch(function (e) {
+        $('#cuerpo-bases').innerHTML = '<tr><td class="vacio" colspan="6">' +
+          esc(e.message) + '</td></tr>';
+      });
+  }
+
+  function pintarBases() {
+    var d = datosBases;
+    if (!d) return;
+    if (d.ok === false) {
+      $('#cuerpo-bases').innerHTML = '<tr><td class="vacio" colspan="6">' +
+        esc(d.error || 'No se pudo consultar PostgreSQL') + '</td></tr>';
+      return;
+    }
+    var soloSinUso = $('#solo-sin-uso') && $('#solo-sin-uso').checked;
+    var bases = (d.bases || []).filter(function (b) {
+      return !soloSinUso || (!b.en_uso && !b.sistema);
+    });
+    $('#cuerpo-bases').innerHTML = bases.map(function (b) {
+      return '<tr><td class="cliente">' + esc(b.nombre) + '</td>' +
+        '<td>' + (b.en_uso
+          ? esc(b.instancia.cliente) + ' <span class="chip ' + esc(b.instancia.tipo) + '">' +
+            esc(b.instancia.tipo) + '</span>' +
+            (b.instancia.oculta ? ' <span class="badge gris">oculta</span>' : '')
+          : (b.sistema ? badge('gris', 'del motor') : badge('ambar', 'sin instancia'))) + '</td>' +
+        '<td class="num">' + esc(b.tamano) + '</td>' +
+        '<td class="num">' + esc(b.conexiones) + '</td>' +
+        '<td>' + guion(b.ultimo_backup) + '</td>' +
+        '<td><button class="boton mini backup-base" type="button" data-base="' +
+          esc(b.nombre) + '">Respaldar</button></td></tr>';
+    }).join('') || '<tr><td class="vacio" colspan="6">Sin bases</td></tr>';
+    $('#resumen-bases').textContent = (d.bases || []).length + ' bases · ' +
+      (d.sin_uso || 0) + ' sin instancia (' + (d.sin_uso_tamano || '0 B') + ')' +
+      (d.host ? ' · ' + d.host : '');
+  }
+
+  function diagnosticoVhost(id) {
+    var caja = $('#resultado-vhost');
+    caja.innerHTML = '<p class="tenue">Analizando los sitios del servidor…</p>';
+    fetch('/api/diagnostico/vhosts?id=' + encodeURIComponent(id), { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var info = d.instancia || {};
+        caja.innerHTML =
+          '<p class="tenue" style="margin:8px 0 4px">Se leyeron ' + esc(d.total) +
+            ' sitios · dominio en credenciales: ' + esc(info.dominio_credenciales || '—') +
+            ' · puerto: ' + esc(info.puerto_servicio || '—') +
+            ' · socket: ' + esc(info.socket_unix || '—') +
+            ' · umbral: ' + esc(info.umbral) + '</p>' +
+          '<table class="tabla-mini"><thead><tr><th>Archivo</th><th>ServerName</th>' +
+            '<th>Proxy</th><th class="num">Puntaje</th><th>Señales</th></tr></thead><tbody>' +
+          (info.candidatos || []).map(function (c) {
+            return '<tr><td><code class="ruta" title="' + esc(c.archivo) + '">' +
+              esc(c.archivo.split('/').pop()) + '</code>' +
+              (c.habilitado ? '' : ' <span class="badge gris">no habilitado</span>') + '</td>' +
+              '<td>' + esc(c.servername || '—') + '</td>' +
+              '<td>' + esc((c.puertos || []).join(', ') || (c.sockets || []).join(', ') || '—') + '</td>' +
+              '<td class="num">' + esc(c.puntaje) + '</td>' +
+              '<td class="sub">' + esc((c.motivos || []).join(' · ')) + '</td></tr>';
+          }).join('') +
+          '</tbody></table>';
+      })
+      .catch(function (e) { caja.innerHTML = '<div class="aviso-error">' + esc(e.message) + '</div>'; });
   }
 
   function verHistorial() {
@@ -1304,6 +1568,16 @@
         if (el.id === 'btn-nueva') return abrirAsistente();
         if (el.id === 'btn-tareas') return listarTareas();
         if (el.id === 'btn-certificados') return verCertificados();
+        if (el.id === 'btn-cert-recargar') return verCertificados('#contenido');
+        if (el.id === 'btn-backups-recargar') { verBackups(); return verBases(); }
+        if (el.id === 'btn-backup-todos') return crearBackup(null);
+        if (el.classList.contains('backup-crear')) return crearBackup([el.getAttribute('data-id')]);
+        if (el.classList.contains('backup-ver')) return verCopias(el.getAttribute('data-cliente'));
+        if (el.classList.contains('backup-borrar')) return borrarBackup(el.getAttribute('data-archivo'));
+        if (el.classList.contains('backup-base')) return crearBackupBase(el.getAttribute('data-base'));
+        if (el.classList.contains('cert-accion')) {
+          return accionCertificado(el.getAttribute('data-nombre'), el.getAttribute('data-accion'));
+        }
         if (el.classList.contains('renovar-cert')) {
           return renovarCertificado(el.getAttribute('data-nombre'),
                                     el.getAttribute('data-simular') === '1', false);
@@ -1334,6 +1608,9 @@
         if (el.id === 'btn-credenciales') return verCredenciales(el.getAttribute('data-id'), false);
         if (el.id === 'btn-credenciales-secretos') return verCredenciales(el.getAttribute('data-id'), true);
         if (el.id === 'btn-credenciales-guardar') return guardarCredenciales(el.getAttribute('data-id'));
+        if (el.classList.contains('diagnostico-vhost')) {
+          return diagnosticoVhost(el.getAttribute('data-id'));
+        }
         if (el.classList.contains('api-cedula')) {
           return cambiarApiCedula(el.getAttribute('data-id'),
                                   el.getAttribute('data-activar') === '1', el);
@@ -1371,6 +1648,8 @@
       var el = e.target;
       if (el.id === 'auto-refresco') return programarAuto();
       if (el.id === 'orden') { estado.orden = el.value; return pintarTabla(); }
+      if (el.id === 'filtro-backup-estado') return pintarBackups();
+      if (el.id === 'solo-sin-uso') return pintarBases();
       if (el.classList.contains('ver-en-panel')) return alternarVisibilidad(el);
       if (el.hasAttribute && el.hasAttribute('data-grupo')) {
         estado.grupos[el.getAttribute('data-grupo')] = el.checked;
@@ -1380,6 +1659,7 @@
 
     document.addEventListener('input', function (e) {
       if (['filtro-texto', 'filtro-tipo', 'filtro-estado'].indexOf(e.target.id) !== -1) pintarTabla();
+      if (['filtro-backups', 'filtro-backup-estado'].indexOf(e.target.id) !== -1) pintarBackups();
     });
 
     document.addEventListener('keydown', function (e) {
@@ -1391,9 +1671,33 @@
       }
     });
 
+    if (MODO === 'certificados') {
+      cargarCapacidades().then(function () { verCertificados('#contenido'); });
+      return;
+    }
+    if (MODO === 'backups') {
+      cargarCapacidades().then(function () { verBackups(); verBases(); });
+      return;
+    }
+    if (MODO === 'nueva') {
+      cargarCapacidades().then(function () { abrirAsistente(true); });
+      return;
+    }
     prepararScroll();
     cargar();
     programarAuto();
+  }
+
+  // En las páginas sin tabla igual hacen falta las capacidades del panel.
+  function cargarCapacidades() {
+    return fetch('/api/estado', { credentials: 'same-origin' })
+      .then(function (r) { return r.status === 401 ? null : r.json(); })
+      .then(function (d) {
+        if (!d) { window.location.href = '/login'; return; }
+        estado.capacidades = d.capacidades || {};
+        estado.datos = d.instancias || [];
+      })
+      .catch(function () {});
   }
 
   if (document.readyState === 'loading') {

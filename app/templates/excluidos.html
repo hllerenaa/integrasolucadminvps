@@ -4,18 +4,16 @@
 <header class="cabecera">
   <div class="cabecera-izq">
     <h1>{{ titulo }}</h1>
+    {% include "_nav.html" %}
     <span class="etiqueta-version">excluidos</span>
     <span id="estado-refresco" class="estado-refresco">Cargando…</span>
   </div>
   <div class="cabecera-der">
-    <a class="boton" href="/">Volver al panel</a>
     <button id="btn-refrescar" class="boton secundario" type="button">Refrescar</button>
     <button id="btn-media" class="boton secundario" type="button"
             title="Recalcula el tamaño de las carpetas media (puede tardar)">Recalcular media</button>
     <button id="btn-excel" class="boton secundario" type="button">Excel</button>
     <button id="btn-csv" class="boton secundario" type="button">CSV</button>
-    <button id="btn-certificados" class="boton secundario" type="button"
-            title="Certificados de Let's Encrypt: vigencia y renovación">Certificados</button>
     <button id="btn-tareas" class="boton secundario" type="button">Tareas</button>
     <button id="btn-historial" class="boton secundario" type="button">Historial</button>
     {% if auth_activa %}<a class="boton secundario" href="/logout">Salir</a>{% endif %}

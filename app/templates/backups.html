@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Backups · {{ titulo }}{% endblock %}
+{% block contenido %}
+<header class="cabecera">
+  <div class="cabecera-izq">
+    <h1>{{ titulo }}</h1>
+    {% include "_nav.html" %}
+  </div>
+  <div class="cabecera-der">
+    <button id="btn-backup-todos" class="boton" type="button">Respaldar todas</button>
+    <button id="btn-backups-recargar" class="boton secundario" type="button">Recargar</button>
+    <button id="btn-tareas" class="boton secundario" type="button">Tareas</button>
+    {% if auth_activa %}<a class="boton secundario" href="/logout">Salir</a>{% endif %}
+  </div>
+</header>
+
+<div id="avisos"></div>
+
+<section class="tarjetas" id="tarjetas-backups"></section>
+
+<section class="barra">
+  <input type="search" id="filtro-backups" placeholder="Buscar cliente o base…">
+  <select id="filtro-backup-estado">
+    <option value="">Todos</option>
+    <option value="sin">Sin backup</option>
+    <option value="viejo">Backup atrasado</option>
+    <option value="ok">Al día</option>
+  </select>
+  <span class="crece"></span>
+  <span id="contador-backups" class="tenue"></span>
+</section>
+
+<div class="tabla-envoltura">
+  <table class="tabla" id="tabla-backups">
+    <thead>
+      <tr>
+        <th>Cliente</th><th>Base</th><th>Tamaño BD</th><th>Último backup</th>
+        <th>Antigüedad</th><th class="num">Copias</th><th class="num">Ocupa</th><th></th>
+      </tr>
+    </thead>
+    <tbody id="cuerpo-backups"><tr><td class="vacio" colspan="8">Cargando…</td></tr></tbody>
+  </table>
+</div>
+
+<section class="seccion" id="detalle-backups"></section>
+
+<section class="seccion">
+  <h2>Bases de datos del servidor</h2>
+  <p class="tenue">Todas las bases de PostgreSQL y cuáles no corresponden a ninguna
+     instalación (candidatas a respaldar y dar de baja).</p>
+  <div class="barra" style="padding-left:0">
+    <label class="check"><input type="checkbox" id="solo-sin-uso"> Sólo las que no usa ninguna instancia</label>
+    <span class="crece"></span>
+    <span id="resumen-bases" class="tenue"></span>
+  </div>
+  <div class="tabla-envoltura">
+    <table class="tabla" id="tabla-bases" style="min-width:auto">
+      <thead><tr><th>Base</th><th>Instancia</th><th class="num">Tamaño</th>
+        <th class="num">Conexiones</th><th>Último backup</th><th></th></tr></thead>
+      <tbody id="cuerpo-bases"><tr><td class="vacio" colspan="6">Cargando…</td></tr></tbody>
+    </table>
+  </div>
+</section>
+
+<div class="modal oculto" id="modal-tarea">
+  <div class="modal-caja">
+    <div class="modal-cabecera">
+      <h2 id="tarea-titulo"></h2>
+      <button class="cerrar" id="tarea-cerrar" type="button">&times;</button>
+    </div>
+    <div class="modal-cuerpo" id="tarea-cuerpo"></div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>window.PANEL_MODO = 'backups';</script>
+<script src="{{ url_for('static', filename='app.js') }}?v={{ version }}"></script>
+{% endblock %}

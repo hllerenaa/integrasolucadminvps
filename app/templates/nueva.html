@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Nueva instancia · {{ titulo }}{% endblock %}
+{% block contenido %}
+<header class="cabecera">
+  <div class="cabecera-izq">
+    <h1>{{ titulo }}</h1>
+    {% include "_nav.html" %}
+  </div>
+  <div class="cabecera-der">
+    <button id="btn-tareas" class="boton secundario" type="button">Tareas</button>
+    {% if auth_activa %}<a class="boton secundario" href="/logout">Salir</a>{% endif %}
+  </div>
+</header>
+
+<div id="avisos"></div>
+
+<section class="seccion">
+  <h2>Crear una instancia nueva</h2>
+  <p class="tenue">Reproduce new_instance_inventario.sh / new_instance_restaurante.sh y además
+     deja hecho el servicio systemd, el vhost y (opcional) el certificado.
+     Usa <strong>Simular</strong> la primera vez: valida todo y muestra los comandos sin ejecutar nada.</p>
+  <div id="nueva-cuerpo"><p class="tenue">Cargando opciones…</p></div>
+</section>
+
+<div class="modal oculto" id="modal-tarea">
+  <div class="modal-caja">
+    <div class="modal-cabecera">
+      <h2 id="tarea-titulo"></h2>
+      <button class="cerrar" id="tarea-cerrar" type="button">&times;</button>
+    </div>
+    <div class="modal-cuerpo" id="tarea-cuerpo"></div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>window.PANEL_MODO = 'nueva';</script>
+<script src="{{ url_for('static', filename='app.js') }}?v={{ version }}"></script>
+{% endblock %}

@@ -1,0 +1,9 @@
+<nav class="menu-principal">
+  <a href="/" class="{% if seccion == 'instancias' %}activo{% endif %}">Instancias</a>
+  <a href="/certificados" class="{% if seccion == 'certificados' %}activo{% endif %}">Certificados</a>
+  <a href="/backups" class="{% if seccion == 'backups' %}activo{% endif %}">Backups</a>
+  <a href="/nueva" class="{% if seccion == 'nueva' %}activo{% endif %}">Nueva instancia</a>
+  {% if permisos and permisos.gestionar_excluidos %}
+  <a href="/excluidos" class="{% if seccion == 'excluidos' %}activo{% endif %}">Excluidos</a>
+  {% endif %}
+</nav>

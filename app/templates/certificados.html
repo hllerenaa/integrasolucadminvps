@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Certificados · {{ titulo }}{% endblock %}
+{% block contenido %}
+<header class="cabecera">
+  <div class="cabecera-izq">
+    <h1>{{ titulo }}</h1>
+    {% include "_nav.html" %}
+  </div>
+  <div class="cabecera-der">
+    <button id="btn-cert-recargar" class="boton secundario" type="button">Recargar</button>
+    <button id="btn-tareas" class="boton secundario" type="button">Tareas</button>
+    {% if auth_activa %}<a class="boton secundario" href="/logout">Salir</a>{% endif %}
+  </div>
+</header>
+
+<div id="avisos"></div>
+
+<section class="seccion">
+  <h2>Certificados de Let's Encrypt</h2>
+  <p class="tenue">Fechas de emisión y vencimiento, renovación, pausa de la renovación
+     automática y eliminación. La consulta se hace en el momento con certbot.</p>
+  <div id="contenido"><p class="tenue">Consultando certbot…</p></div>
+</section>
+
+<div class="modal oculto" id="modal-tarea">
+  <div class="modal-caja">
+    <div class="modal-cabecera">
+      <h2 id="tarea-titulo"></h2>
+      <button class="cerrar" id="tarea-cerrar" type="button">&times;</button>
+    </div>
+    <div class="modal-cuerpo" id="tarea-cuerpo"></div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>window.PANEL_MODO = 'certificados';</script>
+<script src="{{ url_for('static', filename='app.js') }}?v={{ version }}"></script>
+{% endblock %}

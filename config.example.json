@@ -51,6 +51,13 @@
     "editar": true,
     "mostrar_secretos": true
   },
+  "backups": {
+    "enabled": true,
+    "destino": "/home/backups",
+    "retencion": 7,
+    "comprimir": true,
+    "alerta_dias": 3
+  },
   "aprovisionamiento": {
     "enabled": true,
     "venv": "/home/integrasoluc/venv",

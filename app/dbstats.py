@@ -429,6 +429,44 @@ def consultar(instancia, config):
     return datos
 
 
+def listar_bases(instancia, config):
+    """Todas las bases del servidor PostgreSQL con su tamaño."""
+    if psycopg2 is None:
+        return {'ok': False, 'error': 'psycopg2 no está instalado', 'bases': []}
+    conexion = instancia.base_datos()
+    conn = None
+    try:
+        conn = psycopg2.connect(
+            host=conexion['host'], port=int(conexion.get('port') or 5432),
+            dbname=conexion['dbname'], user=conexion.get('user'),
+            password=conexion.get('password'),
+            connect_timeout=int(config.get('db_connect_timeout') or 6),
+            application_name='integrasolucadminvps')
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT d.datname,
+                   pg_database_size(d.datname),
+                   pg_get_userbyid(d.datdba),
+                   (SELECT COUNT(*) FROM pg_stat_activity a WHERE a.datname = d.datname)
+            FROM pg_database d
+            WHERE NOT d.datistemplate AND d.datallowconn
+            ORDER BY pg_database_size(d.datname) DESC
+        """)
+        bases = [{'nombre': f[0], 'bytes': int(f[1]), 'tamano': bytes_legible(f[1]),
+                  'dueno': f[2], 'conexiones': int(f[3])} for f in cur.fetchall()]
+        cur.close()
+        return {'ok': True, 'host': conexion['host'], 'bases': bases}
+    except Exception as ex:
+        return {'ok': False, 'error': str(ex).strip().splitlines()[0], 'bases': []}
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 def cambiar_api_cedula(instancia, config, activar):
     """Activa o desactiva la búsqueda de personas por cédula en esa instancia."""
     if psycopg2 is None:

@@ -57,6 +57,48 @@ eso funciona aunque el esquema varíe entre inventario y restaurante.
   `ssl-cert-snakeoil` de Apache) se marca **autofirmado**, para que no parezca
   un certificado válido de 10 años.
 
+## Secciones del panel
+
+| Sección | Para qué |
+|---|---|
+| **Instancias** (`/`) | El listado completo con todos los datos y las acciones sobre cada instalación |
+| **Certificados** (`/certificados`) | Certificados de Let's Encrypt: emisión, vencimiento, renovar, pausar la renovación o eliminar |
+| **Backups** (`/backups`) | Respaldos por instancia o de cualquier base, descarga, retención y las bases del servidor sin instancia |
+| **Nueva instancia** (`/nueva`) | El asistente de creación |
+| **Excluidos** (`/excluidos`) | El mismo panel con todas las instalaciones y el interruptor para ocultarlas o mostrarlas |
+
+## Usuarios y permisos
+
+`config.json` → `auth`: el usuario histórico (`username`) más una lista `usuarios`.
+Cada uno tiene dos permisos:
+
+- `ver_excluidos`: ve también las instancias ocultas, marcadas, en el panel principal.
+- `gestionar_excluidos`: puede entrar a `/excluidos` y cambiar la lista.
+
+```bash
+# usuario que ve todo menos lo excluido y no administra la lista
+venv/bin/python run.py --usuario mochoa --clave "..."
+
+# usuario que ve todo, incluidas las instancias ocultas
+venv/bin/python run.py --usuario hllerenaa --clave "..." --ver-excluidos --gestionar-excluidos
+
+venv/bin/python run.py --listar-usuarios
+venv/bin/python run.py --quitar-usuario mochoa
+```
+
+## Backups
+
+- Respaldo por instancia, de todas a la vez o de **cualquier base suelta**, con
+  `pg_dump` + `gzip`, en `backups.destino` (por defecto `/home/backups/<cliente>/`)
+  y con retención configurable (`backups.retencion`).
+- Lee además tus repositorios existentes (`backups.repositorios`, p. ej.
+  `/home/db_repository` de `backupall.sh`) reconociendo el formato
+  `<base>_<AAAAMMDD>.zip`: se listan y se descargan, pero no se borran desde el panel.
+- Avisa qué instancias no tienen backup o lo tienen atrasado, marca los dumps
+  sospechosamente pequeños y permite descargarlos o borrarlos.
+- Lista **todas las bases de PostgreSQL** del servidor con su tamaño y marca las
+  que no corresponden a ninguna instalación, para respaldarlas antes de darlas de baja.
+
 ## Qué permite hacer
 
 - **Abrir y editar el `credenciales.json`** de cada instancia desde el detalle
@@ -305,6 +347,11 @@ inaccesibles o certificados vencidos: sirve para cron o alertas.
 | `GET /api/excluidos`, `POST /api/excluidos` | Lee y guarda la lista de sistemas ocultos |
 | `POST /api/excluidos/alternar` | Oculta o muestra una instancia (`{"cliente","servicio","ocultar"}`) |
 | `GET /api/certificados` | Certificados de Let's Encrypt con emisión, vencimiento y días |
+| `POST /api/certificados/accion` | `pausar`, `reanudar` o `eliminar` un certificado |
+| `GET /api/backups`, `POST /api/backups/crear` | Backups: listado y generación (`{"ids"}` o `{"bases"}`) |
+| `POST /api/backups/eliminar`, `GET /backups/descargar` | Borrar y descargar un backup |
+| `GET /api/bases` | Bases del servidor y cuáles no tiene ninguna instancia |
+| `GET /api/diagnostico/vhosts?id=<instancia>` | Qué sitios web leyó el panel y el puntaje de cada candidato |
 | `POST /api/certificados/renovar` | Renueva (`{"nombre","forzar","simular"}`) en segundo plano |
 | `POST /api/instancia/<id>/api-cedula` | Activa o desactiva la búsqueda por cédula (`{"activar"}`) |
 | `GET /api/aprovisionar/opciones` | Datos para el asistente (templates, puerto libre, modelos) |

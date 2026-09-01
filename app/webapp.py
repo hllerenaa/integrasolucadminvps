@@ -10,8 +10,12 @@ from flask import (Flask, Response, jsonify, redirect, render_template,
                    request, session, url_for)
 
 from . import (__version__, acciones as mod_acciones, aprovisionar,
-               certificados as mod_certificados, credenciales as mod_credenciales,
-               dbstats, discovery, excluidos as mod_excluidos, exportar, units)
+               backups as mod_backups, certificados as mod_certificados,
+               credenciales as mod_credenciales, dbstats, discovery,
+               excluidos as mod_excluidos, exportar, units)
+from flask import send_file
+
+from .utils import bytes_legible
 from .tareas import GestorTareas
 from .collector import Colector
 from .config import cargar
@@ -36,6 +40,26 @@ def crear_app(config=None):
     app.config['TAREAS'] = tareas
 
     # --------------------------------------------------------------- seguridad
+    def permisos():
+        """Permisos del usuario de la sesión (el token de API los tiene todos)."""
+        if not (config.get('auth') or {}).get('enabled'):
+            return {'ver_excluidos': True, 'gestionar_excluidos': True}
+        if session.get('usuario'):
+            return {'ver_excluidos': bool(session.get('ver_excluidos')),
+                    'gestionar_excluidos': bool(session.get('gestionar_excluidos'))}
+        return {'ver_excluidos': True, 'gestionar_excluidos': True}   # X-API-Token
+
+    def requiere_gestionar_excluidos(vista):
+        @functools.wraps(vista)
+        def envoltura(*args, **kwargs):
+            if not permisos()['gestionar_excluidos']:
+                if request.path.startswith('/api/'):
+                    return jsonify({'ok': False, 'error': 'Tu usuario no administra la lista de '
+                                                          'sistemas excluidos'}), 403
+                return redirect(url_for('dashboard'))
+            return vista(*args, **kwargs)
+        return envoltura
+
     def autenticado():
         auth = config.get('auth') or {}
         if not auth.get('enabled'):
@@ -69,8 +93,11 @@ def crear_app(config=None):
         if request.method == 'POST':
             usuario = (request.form.get('usuario') or '').strip()
             password = request.form.get('password') or ''
-            if usuario == (auth.get('username') or 'admin') and config.verificar_password(password):
-                session['usuario'] = usuario
+            datos = config.autenticar(usuario, password)
+            if datos:
+                session['usuario'] = datos['usuario']
+                session['ver_excluidos'] = bool(datos.get('ver_excluidos'))
+                session['gestionar_excluidos'] = bool(datos.get('gestionar_excluidos'))
                 destino = request.args.get('next') or url_for('dashboard')
                 return redirect(destino)
             error = 'Usuario o contraseña incorrectos'
@@ -86,21 +113,52 @@ def crear_app(config=None):
     @requiere_login
     def dashboard():
         return render_template(
-            'dashboard.html',
+            'dashboard.html', seccion='instancias', permisos=permisos(),
             titulo=config.get('titulo'),
             version=__version__,
             auth_activa=bool((config.get('auth') or {}).get('enabled')),
             intervalo=int(config.get('intervalo_refresco') or 300),
         )
 
+    @app.route('/certificados')
+    @requiere_login
+    def pagina_certificados():
+        return render_template('certificados.html', seccion='certificados', permisos=permisos(),
+                               titulo=config.get('titulo'), version=__version__,
+                               auth_activa=bool((config.get('auth') or {}).get('enabled')))
+
+    @app.route('/backups')
+    @requiere_login
+    def pagina_backups():
+        return render_template('backups.html', seccion='backups', permisos=permisos(),
+                               titulo=config.get('titulo'), version=__version__,
+                               auth_activa=bool((config.get('auth') or {}).get('enabled')))
+
+    @app.route('/nueva')
+    @requiere_login
+    def pagina_nueva():
+        return render_template('nueva.html', seccion='nueva', permisos=permisos(),
+                               titulo=config.get('titulo'), version=__version__,
+                               auth_activa=bool((config.get('auth') or {}).get('enabled')))
+
     @app.route('/api/estado')
     @requiere_login
     def api_estado():
+        permiso = permisos()
         modo_ocultas = (request.args.get('ocultas') or '').lower()
+        # Sin permiso nunca se devuelven las ocultas. Con permiso se incluyen
+        # (marcadas) tanto en el panel principal como en /excluidos.
+        if not permiso['ver_excluidos'] and not permiso['gestionar_excluidos']:
+            incluir, solo = False, False
+        elif permiso['ver_excluidos']:
+            incluir, solo = True, modo_ocultas == 'solo'
+        else:
+            # Puede administrarlas pero no verlas en el panel: sólo en /excluidos.
+            incluir = modo_ocultas in ('1', 'todas', 'true')
+            solo = modo_ocultas == 'solo'
         datos = colector.snapshot(tipo=request.args.get('tipo') or None,
                                   buscar=request.args.get('q') or None,
-                                  incluir_ocultas=modo_ocultas in ('1', 'todas', 'true'),
-                                  solo_ocultas=modo_ocultas == 'solo')
+                                  incluir_ocultas=incluir, solo_ocultas=solo)
         datos['version'] = __version__
         datos['capacidades'] = {
             'bd': bool(config.get('consultar_bd', True)),
@@ -111,6 +169,10 @@ def crear_app(config=None):
             'acciones_apache': bool((config.get('acciones') or {}).get('apache', True)),
             'acciones_datos': bool((config.get('acciones') or {}).get('datos', True)),
             'acciones_certbot': bool((config.get('acciones') or {}).get('certbot', True)),
+            'backups': bool((config.get('backups') or {}).get('enabled', True)),
+            'ver_excluidos': permisos()['ver_excluidos'],
+            'gestionar_excluidos': permisos()['gestionar_excluidos'],
+            'usuario': session.get('usuario'),
             'logs': bool(config.get('medir_logs', True)),
             'credenciales': bool((config.get('credenciales') or {}).get('ver', True)),
             'credenciales_editar': bool((config.get('credenciales') or {}).get('editar', True)),
@@ -310,10 +372,12 @@ def crear_app(config=None):
 
     @app.route('/excluidos')
     @requiere_login
+    @requiere_gestionar_excluidos
     def pagina_excluidos():
         _filas, nombres, huerfanos = _inventario_excluibles()
         return render_template(
-            'excluidos.html', titulo=config.get('titulo'), version=__version__,
+            'excluidos.html', seccion='excluidos', permisos=permisos(),
+            titulo=config.get('titulo'), version=__version__,
             auth_activa=bool((config.get('auth') or {}).get('enabled')),
             intervalo=int(config.get('intervalo_refresco') or 300),
             nombres=nombres, huerfanos=huerfanos,
@@ -328,6 +392,7 @@ def crear_app(config=None):
 
     @app.route('/api/excluidos/alternar', methods=['POST'])
     @requiere_login
+    @requiere_gestionar_excluidos
     def api_excluidos_alternar():
         cuerpo = request.get_json(silent=True) or {}
         cliente = (cuerpo.get('cliente') or '').strip().lower()
@@ -365,6 +430,7 @@ def crear_app(config=None):
 
     @app.route('/api/excluidos', methods=['POST'])
     @requiere_login
+    @requiere_gestionar_excluidos
     def api_excluidos_guardar():
         cuerpo = request.get_json(silent=True) or {}
         if 'nombres' in cuerpo:
@@ -443,6 +509,166 @@ def crear_app(config=None):
         tareas.lanzar(tarea, lambda t: mod_certificados.renovar(
             t, config, nombre=nombre, forzar=forzar, simular=simular))
         return jsonify({'ok': True, 'tarea': tarea.id}), 202
+
+    @app.route('/api/certificados/accion', methods=['POST'])
+    @requiere_login
+    def api_certificados_accion():
+        cfg = config.get('acciones') or {}
+        if not cfg.get('enabled', True) or not cfg.get('certbot', True):
+            return jsonify({'ok': False, 'error': 'Las acciones sobre certificados están desactivadas'}), 403
+        cuerpo = request.get_json(silent=True) or {}
+        nombre = (cuerpo.get('nombre') or '').strip()
+        accion = (cuerpo.get('accion') or '').strip()
+        if not nombre:
+            return jsonify({'ok': False, 'error': 'Falta el nombre del certificado'}), 400
+
+        if accion == 'pausar':
+            resultado = mod_certificados.pausar_renovacion(nombre, config)
+        elif accion == 'reanudar':
+            resultado = mod_certificados.reanudar_renovacion(nombre, config)
+        elif accion == 'eliminar':
+            # Borrar un certificado es irreversible: se exige repetir el nombre.
+            if (cuerpo.get('confirmacion') or '').strip() != nombre:
+                return jsonify({'ok': False,
+                                'error': 'Para eliminar hay que repetir el nombre exacto'}), 400
+            resultado = mod_certificados.eliminar(nombre, config)
+        else:
+            return jsonify({'ok': False, 'error': 'Acción no permitida: %s' % accion}), 400
+
+        mod_acciones.registrar_evento(
+            config, session.get('usuario') or 'api', 'certbot_%s' % accion, nombre,
+            0 if resultado.get('ok') else 1,
+            resultado.get('mensaje') or resultado.get('error') or '')
+        return jsonify(resultado), (200 if resultado.get('ok') else 400)
+
+    # ----------------------------------------------------------------- backups
+    def _backups_activos():
+        return bool((config.get('backups') or {}).get('enabled', True))
+
+    @app.route('/api/backups')
+    @requiere_login
+    def api_backups():
+        if not _backups_activos():
+            return jsonify({'error': 'Los backups están desactivados'}), 403
+        instantanea = colector.snapshot(incluir_ocultas=True)
+        return jsonify(mod_backups.listar(config, instantanea['instancias']))
+
+    @app.route('/api/bases')
+    @requiere_login
+    def api_bases():
+        """Bases del servidor PostgreSQL y cuáles no tiene ninguna instancia."""
+        instantanea = colector.snapshot(incluir_ocultas=True)
+        instancias = {i.id: i for i in discovery.descubrir(config)}
+        objeto = None
+        for datos in instantanea['instancias']:
+            if (datos.get('db') or {}).get('ok') and instancias.get(datos['id']):
+                objeto = instancias[datos['id']]
+                break
+        if objeto is None:
+            return jsonify({'ok': False, 'error': 'Ninguna instancia con base accesible',
+                            'bases': []}), 200
+
+        resultado = dbstats.listar_bases(objeto, config)
+        en_uso = {}
+        for datos in instantanea['instancias']:
+            nombre = (datos.get('db') or {}).get('dbname')
+            if nombre:
+                en_uso[nombre] = {'cliente': datos.get('cliente'), 'tipo': datos.get('tipo'),
+                                  'oculta': bool(datos.get('oculta'))}
+        respaldos = mod_backups.listar(config, instantanea['instancias'])
+        con_backup = {}
+        for fila in respaldos['instancias']:
+            for archivo in fila.get('archivos') or []:
+                con_backup.setdefault(archivo.get('clave'), archivo)
+
+        # Bases propias de PostgreSQL: no son "sin uso", son del motor.
+        sistema = {'postgres', 'rdsadmin', 'azure_maintenance', 'azure_sys'}
+        sin_uso_bytes = 0
+        for base in resultado.get('bases') or []:
+            uso = en_uso.get(base['nombre'])
+            base['instancia'] = uso
+            base['en_uso'] = bool(uso)
+            base['sistema'] = base['nombre'] in sistema
+            base['ultimo_backup'] = (con_backup.get(base['nombre']) or {}).get('fecha')
+            if not uso and not base['sistema']:
+                sin_uso_bytes += base['bytes']
+        resultado['sin_uso'] = sum(1 for b in resultado.get('bases') or []
+                                   if not b['en_uso'] and not b['sistema'])
+        resultado['sin_uso_bytes'] = sin_uso_bytes
+        resultado['sin_uso_tamano'] = bytes_legible(sin_uso_bytes)
+        return jsonify(resultado)
+
+    @app.route('/api/backups/crear', methods=['POST'])
+    @requiere_login
+    def api_backups_crear():
+        if not _backups_activos():
+            return jsonify({'ok': False, 'error': 'Los backups están desactivados'}), 403
+        cuerpo = request.get_json(silent=True) or {}
+        ids = cuerpo.get('ids') or None
+        bases = cuerpo.get('bases') or None
+        if bases:
+            titulo = 'Backup de la base %s' % ', '.join(bases)
+        elif ids:
+            titulo = 'Backup de %s' % ', '.join(ids)
+        else:
+            titulo = 'Backup de todas las instancias'
+        tarea = tareas.crear('backup', titulo, {'ids': ids, 'bases': bases},
+                             usuario=session.get('usuario') or 'api')
+        mod_acciones.registrar_evento(config, tarea.creado_por, 'backup_crear',
+                                      ', '.join(bases or ids or ['todas']), 0,
+                                      'tarea %s' % tarea.id)
+        tareas.lanzar(tarea, lambda t: mod_backups.crear(t, config, colector, ids, bases))
+        return jsonify({'ok': True, 'tarea': tarea.id}), 202
+
+    @app.route('/api/backups/eliminar', methods=['POST'])
+    @requiere_login
+    def api_backups_eliminar():
+        if not _backups_activos():
+            return jsonify({'ok': False, 'error': 'Los backups están desactivados'}), 403
+        cuerpo = request.get_json(silent=True) or {}
+        resultado = mod_backups.eliminar(config, cuerpo.get('archivo') or '')
+        mod_acciones.registrar_evento(config, session.get('usuario') or 'api', 'backup_eliminar',
+                                      cuerpo.get('archivo') or '', 0 if resultado.get('ok') else 1,
+                                      resultado.get('error') or '')
+        return jsonify(resultado), (200 if resultado.get('ok') else 400)
+
+    @app.route('/backups/descargar')
+    @requiere_login
+    def descargar_backup():
+        archivo = request.args.get('archivo') or ''
+        if not _backups_activos() or not mod_backups.ruta_valida(config, archivo):
+            return jsonify({'error': 'Archivo no disponible'}), 404
+        mod_acciones.registrar_evento(config, session.get('usuario') or 'api',
+                                      'backup_descargar', archivo, 0, '')
+        return send_file(archivo, as_attachment=True)
+
+    @app.route('/api/diagnostico/vhosts')
+    @requiere_login
+    def api_diagnostico_vhosts():
+        """Qué sitios web leyó el panel y por qué emparejó (o no) cada instancia."""
+        from . import webserver as mod_webserver
+        vhosts = mod_webserver.cargar_vhosts(config)
+        resumen = {
+            'directorios_apache': [list(par) for par in mod_webserver.DIRECTORIOS_APACHE],
+            'directorios_nginx': [list(par) for par in mod_webserver.DIRECTORIOS_NGINX],
+            'apache_dirs_config': config.get('apache_dirs'),
+            'nginx_dirs_config': config.get('nginx_dirs'),
+            'total': len(vhosts),
+            'archivos': [{'archivo': v['archivo'], 'servidor': v.get('servidor'),
+                          'servername': v.get('servername'), 'alias': v.get('alias'),
+                          'puertos': v.get('puertos_proxy'), 'sockets': v.get('sockets_unix'),
+                          'habilitado': v.get('habilitado'), 'ssl': v.get('ssl')}
+                         for v in vhosts],
+        }
+        ident = request.args.get('id')
+        if ident:
+            instancias = {i.id: i for i in discovery.descubrir(config)}
+            instancia = instancias.get(ident)
+            datos = colector.instancia(ident) or {}
+            if instancia:
+                resumen['instancia'] = mod_webserver.diagnostico(
+                    instancia, vhosts, datos.get('puerto'), datos.get('socket_ruta'))
+        return jsonify(resumen)
 
     @app.route('/api/acciones')
     @requiere_login

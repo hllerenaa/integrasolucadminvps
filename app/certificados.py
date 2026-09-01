@@ -14,6 +14,8 @@ import re
 from .utils import ejecutar
 
 RUTA_LIVE = '/etc/letsencrypt/live'
+RUTA_RENOVACION = '/etc/letsencrypt/renewal'
+SUFIJO_PAUSA = '.desactivado'
 
 _RE_NOMBRE = re.compile(r'^\s*Certificate Name:\s*(.+)$', re.M)
 _RE_DOMINIOS = re.compile(r'^\s*Domains:\s*(.+)$', re.M)
@@ -50,6 +52,70 @@ def _parsear(texto):
         except ValueError:
             continue
     return None
+
+
+def _dir_renovacion(config=None):
+    return (config or {}).get('certbot_renewal_dir') or RUTA_RENOVACION
+
+
+def estado_renovacion(nombre, config=None):
+    """Si la renovación automática de un certificado está activa o pausada.
+
+    Pausar = renombrar <nombre>.conf a <nombre>.conf.desactivado: el
+    certificado sigue funcionando, pero `certbot renew` lo salta.
+    """
+    carpeta = _dir_renovacion(config)
+    activo = os.path.join(carpeta, '%s.conf' % nombre)
+    pausado = activo + SUFIJO_PAUSA
+    if os.path.isfile(activo):
+        return {'renovacion': 'activa', 'archivo': activo}
+    if os.path.isfile(pausado):
+        return {'renovacion': 'pausada', 'archivo': pausado}
+    return {'renovacion': 'sin-config', 'archivo': None}
+
+
+def pausar_renovacion(nombre, config=None):
+    """Desactiva la renovación automática sin tocar el certificado."""
+    datos = estado_renovacion(nombre, config)
+    if datos['renovacion'] == 'pausada':
+        return {'ok': True, 'renovacion': 'pausada', 'mensaje': 'Ya estaba pausada'}
+    if datos['renovacion'] != 'activa':
+        return {'ok': False, 'error': 'No se encontró la configuración de renovación de %s' % nombre}
+    destino = datos['archivo'] + SUFIJO_PAUSA
+    try:
+        os.rename(datos['archivo'], destino)
+    except OSError as ex:
+        return {'ok': False, 'error': str(ex)}
+    return {'ok': True, 'renovacion': 'pausada', 'archivo': destino,
+            'mensaje': 'certbot renew ya no renovará %s (el certificado sigue instalado)' % nombre}
+
+
+def reanudar_renovacion(nombre, config=None):
+    """Vuelve a activar la renovación automática."""
+    datos = estado_renovacion(nombre, config)
+    if datos['renovacion'] == 'activa':
+        return {'ok': True, 'renovacion': 'activa', 'mensaje': 'Ya estaba activa'}
+    if datos['renovacion'] != 'pausada':
+        return {'ok': False, 'error': 'No se encontró la configuración pausada de %s' % nombre}
+    destino = datos['archivo'][:-len(SUFIJO_PAUSA)]
+    try:
+        os.rename(datos['archivo'], destino)
+    except OSError as ex:
+        return {'ok': False, 'error': str(ex)}
+    return {'ok': True, 'renovacion': 'activa', 'archivo': destino,
+            'mensaje': 'La renovación automática de %s vuelve a estar activa' % nombre}
+
+
+def eliminar(nombre, config=None):
+    """Elimina el certificado con certbot delete (borra los archivos)."""
+    codigo, salida, error = ejecutar(
+        ['certbot', 'delete', '--cert-name', nombre, '--non-interactive'], timeout=300)
+    mensaje = (salida or error or '').strip()
+    if codigo != 0:
+        return {'ok': False, 'error': mensaje or 'certbot devolvió el código %s' % codigo}
+    return {'ok': True, 'mensaje': mensaje or 'Certificado %s eliminado' % nombre,
+            'aviso': 'Revisa el vhost: si apuntaba a ese certificado, Apache/nginx no arrancará '
+                     'hasta corregirlo o emitir uno nuevo.'}
 
 
 def _bloques_certbot(salida):
@@ -110,6 +176,7 @@ def listar(config=None, instancias=None):
             por_dominio.setdefault(dominio.lower(), inst)
 
     for cert in certificados:
+        cert.update(estado_renovacion(cert['nombre'], config))
         vence = cert.get('vence')
         cert['emitido'] = cert['emitido'].strftime('%Y-%m-%d') if cert.get('emitido') else None
         if vence:
@@ -118,7 +185,9 @@ def listar(config=None, instancias=None):
         else:
             cert['dias'] = None
         dias = cert.get('dias')
-        if dias is None:
+        if cert.get('renovacion') == 'pausada':
+            cert['estado'] = 'renovacion-pausada'
+        elif dias is None:
             cert['estado'] = 'desconocido'
         elif dias < 0:
             cert['estado'] = 'vencido'
