@@ -18,6 +18,8 @@ los certificados y (opcionalmente) la base PostgreSQL de cada cliente.
 | Aviso de `DOMINIO_GENERAL` desactualizado | Comparación entre `credenciales.json` y el vhost |
 | Certificado SSL: vigente / por vencer / vencido / autofirmado, **fecha de vencimiento**, días restantes y emisor | `SSLCertificateFile` (Apache) o `ssl_certificate` (nginx) del sitio, o `/etc/letsencrypt/live/<dominio>/` |
 | Servicio systemd: activo, arranque, PID, uptime, puerto de gunicorn | El `.service` que apunta a la carpeta (`WorkingDirectory`/`ExecStart`) + `systemctl show` |
+| **Activación por socket**: si el `.service` está parado pero su `.socket` sigue escuchando (el sitio responde igual) | La unidad `<cliente>.socket` y su `ListenStream` |
+| **Búsqueda de cédula por API** activada o no en cada sistema | `seguridad_configuracion` (`usar_api_persona` en inventario, `traer_api_cliente` en restaurante; la columna se detecta) |
 | **Consumo de CPU y RAM de cada instancia**, con barra y % sobre el total del servidor | `CPUUsageNSec` (diferencia entre dos muestras) y `MemoryCurrent` de su unidad |
 | **Cuánto ocupa cada instancia frente al disco**: BD, media y logs en % del disco | Tamaños medidos + `statvfs` del servidor |
 | Sitio web: si es **Apache o nginx**, archivo, si está habilitado, ServerName, proxy, y si el demonio (`apache2`/`nginx`) está activo | `/etc/apache2/sites-*` y `/etc/nginx/sites-*` + `conf.d` |
@@ -65,6 +67,17 @@ eso funciona aunque el esquema varíe entre inventario y restaurante.
   historial. Si editas sin revelar las claves, los valores enmascarados se
   conservan tal cual.
 - Iniciar, detener, reiniciar, habilitar o deshabilitar el **servicio systemd**.
+  Cuando la instancia usa activación por socket, cada acción se aplica al
+  `.socket` **y** al `.service` (igual que `desactivar_sistemas.sh`) y después se
+  verifica con `systemctl is-active` que ninguno quedó escuchando: detener sólo
+  el servicio deja el socket activo y la primera petición lo vuelve a levantar.
+- Activar o desactivar la **búsqueda de personas por cédula (API)** de cada
+  instancia, con la columna que corresponda a su versión.
+- Ver y renovar los **certificados de Let's Encrypt** (botón *Certificados*):
+  lista `certbot certificates` con fecha de emisión, de vencimiento, días
+  restantes y a qué instancia pertenece cada uno, con renovación por
+  certificado o de todos, y una opción de prueba (`--dry-run`). La renovación
+  corre en segundo plano con log en vivo y recarga el servidor web al terminar.
 - Activar o desactivar el **sitio web**: `a2ensite`/`a2dissite` en Apache o el
   enlace en `sites-enabled` en nginx. Antes de recargar se valida la
   configuración (`apache2ctl configtest` / `nginx -t`) y sólo se recarga si pasa.
@@ -72,6 +85,8 @@ eso funciona aunque el esquema varíe entre inventario y restaurante.
   con barras, y tarjetas con la RAM, la carga y el disco del servidor indicando
   cuánto de eso se llevan las instancias.
 - Buscar por cliente, empresa, dominio, ruta, servicio o base de datos.
+- Desplazar la tabla en horizontal **arrastrándola con el ratón** o con la barra
+  que aparece encima de la tabla, sincronizada con ella.
 - Ordenar por cualquier columna: fecha de implementación, tamaño de la base,
   tamaño de media, última venta, meses sin facturar, etc.
 - Mostrar u ocultar grupos de columnas (Instancia / Servicio y web / Base y
@@ -218,10 +233,16 @@ El archivo está en `.gitignore` (es tuyo, no se sube). Hay un
 `excluidos.example.txt` con el formato.
 
 También se administra desde el navegador en **`/excluidos`** (botón *Excluidos*
-en la cabecera): lista todas las instalaciones detectadas con su servicio y
-dominio, con una casilla por fila para mostrarlas u ocultarlas, más el
-contenido del archivo editable a mano. Al guardar se reescribe `excluidos.txt`
-y se dispara un refresco.
+en la cabecera). Esa página es **el mismo panel completo** —las mismas columnas,
+el mismo detalle y las mismas acciones (iniciar, detener, reiniciar, sitio web,
+credenciales, API de cédula…)— pero muestra **todas** las instalaciones,
+ocultas y visibles, y añade un interruptor por fila para sacarlas o devolverlas
+al listado principal. Abajo queda el contenido de `excluidos.txt` editable a
+mano. El cambio se refleja al instante y se dispara un refresco.
+
+Los sistemas ocultos se siguen recolectando (por eso la página tiene sus datos);
+con `"recolectar_ocultas": false` en `config.json` se omiten del todo si
+prefieres ahorrar tiempo en cada refresco.
 
 ## Configuración (`config.json`)
 
@@ -240,7 +261,8 @@ y se dispara un refresco.
 | `excluidos_archivo` | Ruta alternativa del `excluidos.txt` |
 | `intervalo_refresco` | Segundos entre refrescos automáticos en segundo plano |
 | `medir_logs` | `false` no busca ni suma los archivos de log |
-| `acciones` | `enabled`, `servicios`, `apache`: permite o bloquea cada tipo de acción |
+| `acciones` | `enabled`, `servicios`, `apache`, `datos`, `certbot`: permite o bloquea cada tipo de acción |
+| `recolectar_ocultas` | `false` no recolecta los sistemas de `excluidos.txt` |
 | `credenciales` | `ver`, `editar`, `mostrar_secretos`: controla el acceso a `credenciales.json` |
 | `aprovisionamiento` | Creación de instancias: templates, `venv`, puertos, `dominio_base`, modelos y `certbot` |
 | `auth` | `username` + `password_hash` (o `password`) y `api_token` opcional |
@@ -281,6 +303,10 @@ inaccesibles o certificados vencidos: sirve para cron o alertas.
 | `GET /api/credenciales/<cliente\|tipo>` | `credenciales.json` con las claves ocultas (`?secretos=1` las revela) |
 | `POST /api/credenciales/<cliente\|tipo>` | Guarda el archivo (`{"texto": "{...}"}`) dejando respaldo |
 | `GET /api/excluidos`, `POST /api/excluidos` | Lee y guarda la lista de sistemas ocultos |
+| `POST /api/excluidos/alternar` | Oculta o muestra una instancia (`{"cliente","servicio","ocultar"}`) |
+| `GET /api/certificados` | Certificados de Let's Encrypt con emisión, vencimiento y días |
+| `POST /api/certificados/renovar` | Renueva (`{"nombre","forzar","simular"}`) en segundo plano |
+| `POST /api/instancia/<id>/api-cedula` | Activa o desactiva la búsqueda por cédula (`{"activar"}`) |
 | `GET /api/aprovisionar/opciones` | Datos para el asistente (templates, puerto libre, modelos) |
 | `POST /api/aprovisionar/validar` | Valida un alta sin ejecutarla |
 | `POST /api/aprovisionar/crear` | Lanza la creación (`{"simular": true}` para el modo simulación) |

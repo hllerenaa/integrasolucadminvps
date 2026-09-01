@@ -13,6 +13,8 @@
             title="Recalcula el tamaño de las carpetas media (puede tardar varios minutos)">Recalcular media</button>
     <button id="btn-excel" class="boton secundario" type="button">Excel</button>
     <button id="btn-csv" class="boton secundario" type="button">CSV</button>
+    <button id="btn-certificados" class="boton secundario" type="button"
+            title="Certificados de Let's Encrypt: vigencia y renovación">Certificados</button>
     <button id="btn-tareas" class="boton secundario" type="button">Tareas</button>
     <button id="btn-historial" class="boton secundario" type="button">Historial</button>
     <button id="btn-excluidos" class="boton secundario" type="button"
@@ -44,6 +46,9 @@
     <option value="url-caida">URL no responde</option>
     <option value="dominio-viejo">Dominio desactualizado</option>
     <option value="sin-facturar">Dejó de facturar</option>
+    <option value="socket-huerfano">Servicio parado pero socket escuchando</option>
+    <option value="api-activa">Búsqueda por cédula activa</option>
+    <option value="api-inactiva">Búsqueda por cédula inactiva</option>
   </select>
   <select id="orden" title="Ordenar por"></select>
   <button id="btn-orden-dir" class="boton mini" type="button" title="Invertir orden">▲</button>

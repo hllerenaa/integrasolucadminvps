@@ -10,8 +10,8 @@ from flask import (Flask, Response, jsonify, redirect, render_template,
                    request, session, url_for)
 
 from . import (__version__, acciones as mod_acciones, aprovisionar,
-               credenciales as mod_credenciales, discovery,
-               excluidos as mod_excluidos, exportar, units)
+               certificados as mod_certificados, credenciales as mod_credenciales,
+               dbstats, discovery, excluidos as mod_excluidos, exportar, units)
 from .tareas import GestorTareas
 from .collector import Colector
 from .config import cargar
@@ -96,8 +96,11 @@ def crear_app(config=None):
     @app.route('/api/estado')
     @requiere_login
     def api_estado():
+        modo_ocultas = (request.args.get('ocultas') or '').lower()
         datos = colector.snapshot(tipo=request.args.get('tipo') or None,
-                                  buscar=request.args.get('q') or None)
+                                  buscar=request.args.get('q') or None,
+                                  incluir_ocultas=modo_ocultas in ('1', 'todas', 'true'),
+                                  solo_ocultas=modo_ocultas == 'solo')
         datos['version'] = __version__
         datos['capacidades'] = {
             'bd': bool(config.get('consultar_bd', True)),
@@ -106,6 +109,8 @@ def crear_app(config=None):
             'acciones': bool((config.get('acciones') or {}).get('enabled', True)),
             'acciones_servicios': bool((config.get('acciones') or {}).get('servicios', True)),
             'acciones_apache': bool((config.get('acciones') or {}).get('apache', True)),
+            'acciones_datos': bool((config.get('acciones') or {}).get('datos', True)),
+            'acciones_certbot': bool((config.get('acciones') or {}).get('certbot', True)),
             'logs': bool(config.get('medir_logs', True)),
             'credenciales': bool((config.get('credenciales') or {}).get('ver', True)),
             'credenciales_editar': bool((config.get('credenciales') or {}).get('editar', True)),
@@ -306,13 +311,13 @@ def crear_app(config=None):
     @app.route('/excluidos')
     @requiere_login
     def pagina_excluidos():
-        filas, nombres, huerfanos = _inventario_excluibles()
+        _filas, nombres, huerfanos = _inventario_excluibles()
         return render_template(
             'excluidos.html', titulo=config.get('titulo'), version=__version__,
             auth_activa=bool((config.get('auth') or {}).get('enabled')),
-            instalaciones=filas, nombres=nombres, huerfanos=huerfanos,
-            archivo=mod_excluidos.ruta(config),
-            texto=', '.join(nombres))
+            intervalo=int(config.get('intervalo_refresco') or 300),
+            nombres=nombres, huerfanos=huerfanos,
+            archivo=mod_excluidos.ruta(config), texto=', '.join(nombres))
 
     @app.route('/api/excluidos')
     @requiere_login
@@ -320,6 +325,43 @@ def crear_app(config=None):
         filas, nombres, huerfanos = _inventario_excluibles()
         return jsonify({'archivo': mod_excluidos.ruta(config), 'nombres': nombres,
                         'huerfanos': huerfanos, 'instalaciones': filas})
+
+    @app.route('/api/excluidos/alternar', methods=['POST'])
+    @requiere_login
+    def api_excluidos_alternar():
+        cuerpo = request.get_json(silent=True) or {}
+        cliente = (cuerpo.get('cliente') or '').strip().lower()
+        servicio = (cuerpo.get('servicio') or '').strip().lower()
+        ocultar = bool(cuerpo.get('ocultar'))
+        if not cliente and not servicio:
+            return jsonify({'ok': False, 'error': 'Falta el cliente o el servicio'}), 400
+
+        nombres = list(mod_excluidos.cargar(config))
+        if ocultar:
+            # Se guarda el nombre del servicio (es el que el usuario reconoce);
+            # si no hay, el del cliente.
+            nombre = servicio or cliente
+            if nombre not in nombres:
+                nombres.append(nombre)
+        else:
+            nombres = [n for n in nombres if n not in (cliente, servicio)]
+
+        try:
+            resultado = mod_excluidos.guardar(config, sorted(nombres))
+        except OSError as ex:
+            return jsonify({'ok': False, 'error': 'No se pudo escribir el archivo: %s' % ex}), 500
+
+        mod_acciones.registrar_evento(
+            config, session.get('usuario') or 'api',
+            'excluidos_ocultar' if ocultar else 'excluidos_mostrar',
+            servicio or cliente, 0, ', '.join(resultado['nombres']))
+        # La marca se aplica al instante sobre lo ya recolectado; el refresco
+        # de fondo sólo hace falta para traer instalaciones nuevas.
+        colector.remarcar_ocultas()
+        threading.Thread(target=lambda: colector.refrescar(forzar=True),
+                         name='refresco-excluidos', daemon=True).start()
+        resultado['ok'] = True
+        return jsonify(resultado)
 
     @app.route('/api/excluidos', methods=['POST'])
     @requiere_login
@@ -336,10 +378,71 @@ def crear_app(config=None):
         mod_acciones.registrar_evento(config, session.get('usuario') or 'api',
                                       'excluidos_guardar', resultado['archivo'], 0,
                                       ', '.join(resultado['nombres']))
+        colector.remarcar_ocultas()
         threading.Thread(target=lambda: colector.refrescar(forzar=True),
                          name='refresco-excluidos', daemon=True).start()
         resultado['ok'] = True
         return jsonify(resultado)
+
+    @app.route('/api/instancia/<path:ident>/api-cedula', methods=['POST'])
+    @requiere_login
+    def api_cambiar_api_cedula(ident):
+        cfg = config.get('acciones') or {}
+        if not cfg.get('enabled', True) or not cfg.get('datos', True):
+            return jsonify({'ok': False, 'error': 'Los cambios en la base están desactivados'}), 403
+        datos = colector.instancia(ident)
+        if not datos:
+            return jsonify({'ok': False, 'error': 'instancia no encontrada'}), 404
+
+        cuerpo = request.get_json(silent=True) or {}
+        activar = bool(cuerpo.get('activar'))
+        instancias = {i.id: i for i in discovery.descubrir(config)}
+        instancia = instancias.get(ident)
+        if not instancia:
+            return jsonify({'ok': False, 'error': 'no se pudo resolver la instalación'}), 404
+
+        resultado = dbstats.cambiar_api_cedula(instancia, config, activar)
+        mod_acciones.registrar_evento(
+            config, session.get('usuario') or 'api',
+            'api_cedula_activar' if activar else 'api_cedula_desactivar',
+            datos.get('cliente'), 0 if resultado.get('ok') else 1,
+            resultado.get('error') or ('%s = %s' % (resultado.get('columna'), activar)))
+        if not resultado.get('ok'):
+            return jsonify(resultado), 400
+        colector.refrescar(forzar=True, solo=ident)
+        resultado['instancia'] = colector.instancia(ident)
+        return jsonify(resultado)
+
+    @app.route('/api/certificados')
+    @requiere_login
+    def api_certificados():
+        instantanea = colector.snapshot(incluir_ocultas=True)
+        return jsonify(mod_certificados.listar(config, instantanea['instancias']))
+
+    @app.route('/api/certificados/renovar', methods=['POST'])
+    @requiere_login
+    def api_certificados_renovar():
+        cfg = config.get('acciones') or {}
+        if not cfg.get('enabled', True) or not cfg.get('certbot', True):
+            return jsonify({'ok': False, 'error': 'La renovación de certificados está desactivada'}), 403
+        cuerpo = request.get_json(silent=True) or {}
+        nombre = cuerpo.get('nombre')
+        forzar = bool(cuerpo.get('forzar'))
+        simular = bool(cuerpo.get('simular'))
+
+        titulo = 'Renovar %s' % (nombre or 'todos los certificados')
+        if simular:
+            titulo = '[prueba] ' + titulo
+        elif forzar:
+            titulo += ' (forzado)'
+        tarea = tareas.crear('certbot', titulo,
+                             {'nombre': nombre, 'forzar': forzar, 'simular': simular},
+                             usuario=session.get('usuario') or 'api')
+        mod_acciones.registrar_evento(config, tarea.creado_por, 'certbot_renovar',
+                                      nombre or 'todos', 0, 'tarea %s' % tarea.id)
+        tareas.lanzar(tarea, lambda t: mod_certificados.renovar(
+            t, config, nombre=nombre, forzar=forzar, simular=simular))
+        return jsonify({'ok': True, 'tarea': tarea.id}), 202
 
     @app.route('/api/acciones')
     @requiere_login

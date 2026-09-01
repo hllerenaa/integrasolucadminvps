@@ -189,3 +189,22 @@ pre.log .log-salida{color:#9fb0c7}
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;background:#fbfcfe;
   color:var(--texto);resize:vertical}
 #tabla-excluidos td{vertical-align:middle}
+
+/* ------------------------------------------------ interruptor de visibilidad */
+.interruptor{display:inline-block;position:relative;width:38px;height:20px;cursor:pointer;vertical-align:middle}
+.interruptor input{opacity:0;width:0;height:0;position:absolute}
+.interruptor .pista{position:absolute;inset:0;background:#c9d2e0;border-radius:20px;transition:.15s}
+.interruptor .pista:before{content:"";position:absolute;height:14px;width:14px;left:3px;top:3px;
+  background:#fff;border-radius:50%;transition:.15s}
+.interruptor input:checked + .pista{background:var(--verde)}
+.interruptor input:checked + .pista:before{transform:translateX(18px)}
+.interruptor input:disabled + .pista{opacity:.5;cursor:progress}
+tr.fila-oculta{opacity:.72;background:#fafbfd}
+tr.fila-oculta .cliente{text-decoration:line-through;text-decoration-color:var(--suave)}
+
+/* --------------------------------------------- scroll horizontal de la tabla */
+#scroll-superior{overflow-x:auto;overflow-y:hidden;margin:0 18px;height:12px}
+#scroll-superior div{height:1px}
+.tabla-envoltura{cursor:grab}
+.tabla-envoltura.arrastrando{cursor:grabbing;user-select:none}
+.tabla-envoltura.arrastrando .tabla tbody tr:hover{background:inherit}

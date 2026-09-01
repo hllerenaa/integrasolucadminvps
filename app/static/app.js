@@ -2,6 +2,10 @@
 (function () {
   'use strict';
 
+  // 'principal' = panel normal · 'excluidos' = mismo panel con todas las
+  // instalaciones y el interruptor para ocultarlas o mostrarlas.
+  var MODO = window.PANEL_MODO || 'principal';
+
   var estado = {
     datos: [], meta: {}, resumen: {}, disco: {}, capacidades: {},
     orden: 'cliente', asc: true, grupos: {}
@@ -36,12 +40,25 @@
 
   // ------------------------------------------------------------------ badges
   function badgeServicio(i) {
-    var s = i.servicio_estado || {};
+    var s = i.servicio_estado || {}, sk = i.socket || {};
     if (s.activo) return badge('verde', s.estado === 'activating' ? 'iniciando' : 'activo',
       (s.unidad || '') + ' · uptime ' + (s.uptime || '-'));
+    // Con activación por socket el sistema responde aunque el .service esté
+    // parado: systemd lo levanta en la primera petición.
+    if (sk.activo) return badge('ambar', 'socket escuchando',
+      'El .service está ' + (s.estado || 'inactivo') + ' pero ' + (sk.unidad || 'el socket') +
+      ' sigue escuchando: el sitio responde. Para bajarlo hay que detener ambos.');
     if (s.estado === 'no-encontrado') return badge('gris', 'sin unidad', s.error);
     if (s.estado === 'failed') return badge('rojo', 'fallido', s.error);
     return badge('rojo', s.estado || 'inactivo', s.error);
+  }
+
+  function badgeApiCedula(i) {
+    var r = i.resumen || {};
+    if (!r.api_cedula_disponible) return badge('gris', 'n/d',
+      ((i.db || {}).api_cedula || {}).error || 'Esta versión no tiene la opción');
+    return r.api_cedula ? badge('verde', 'activa', r.api_cedula_columna)
+                        : badge('rojo', 'inactiva', r.api_cedula_columna);
   }
   function badgeBase(i) {
     var db = i.db || {};
@@ -119,7 +136,21 @@
     { id: 'actividad', titulo: 'Actividad' }
   ];
 
+  var COLUMNA_VISIBILIDAD = {
+    id: 'visibilidad', titulo: 'En el panel', grupo: 'instancia', soloExcluidos: true,
+    valor: function (i) { return i.oculta ? 1 : 0; },
+    render: function (i) {
+      return '<label class="interruptor" title="' +
+        (i.oculta ? 'Oculta en el panel principal' : 'Visible en el panel principal') + '">' +
+        '<input type="checkbox" class="ver-en-panel" data-id="' + esc(i.id) + '"' +
+        ' data-cliente="' + esc(i.cliente) + '" data-servicio="' + esc(i.servicio || '') + '"' +
+        (i.oculta ? '' : ' checked') + '><span class="pista"></span></label>' +
+        '<div class="sub">' + (i.oculta ? 'oculta' : 'visible') + '</div>';
+    }
+  };
+
   var COLUMNAS = [
+    COLUMNA_VISIBILIDAD,
     { id: 'cliente', titulo: 'Cliente', grupo: 'instancia', fijo: true, sticky: true,
       valor: function (i) { return (i.cliente || '').toLowerCase(); },
       render: function (i) {
@@ -268,6 +299,12 @@
             ? 'total ' + esc(r.facturas_total) : '') +
           (r.facturas_ultimo_mes ? ' · últ. ' + esc(r.facturas_ultimo_mes) : '') + '</div>';
       } },
+    { id: 'api_cedula', titulo: 'API cédula', grupo: 'actividad', requiere: 'bd',
+      valor: function (i) {
+        var r = i.resumen || {};
+        return !r.api_cedula_disponible ? 2 : (r.api_cedula ? 0 : 1);
+      },
+      render: badgeApiCedula },
     { id: 'primera_venta', titulo: 'Primera venta', grupo: 'actividad', requiere: 'bd',
       valor: function (i) { return (i.resumen || {}).primera_venta || ''; },
       render: function (i) { return guion((i.resumen || {}).primera_venta); } },
@@ -283,6 +320,7 @@
   function columnasVisibles() {
     var cap = estado.capacidades || {};
     return COLUMNAS.filter(function (c) {
+      if (c.soloExcluidos && MODO !== 'excluidos') return false;
       if (c.requiere && cap[c.requiere] === false) return false;
       return estado.grupos[c.grupo] !== false;
     });
@@ -317,6 +355,8 @@
     return lista.filter(function (i) {
       var r = i.resumen || {};
       if (tipo && i.tipo !== tipo) return false;
+      if (est === 'oculta' && !i.oculta) return false;
+      if (est === 'visible' && i.oculta) return false;
       if (est === 'servicio-inactivo' && r.servicio_activo) return false;
       if (est === 'db-caida' && r.db_ok !== false) return false;
       if (est === 'sitio-desactivado' && r.apache_habilitado !== false) return false;
@@ -325,6 +365,9 @@
       if (est === 'url-caida' && r.url_responde !== false) return false;
       if (est === 'dominio-viejo' && !r.dominio_desactualizado) return false;
       if (est === 'sin-facturar' && ['detenido', 'sin-facturar-mes'].indexOf(r.facturas_estado) === -1) return false;
+      if (est === 'api-activa' && !r.api_cedula) return false;
+      if (est === 'api-inactiva' && (r.api_cedula !== false)) return false;
+      if (est === 'socket-huerfano' && !(r.socket_activo && !r.servicio_activo)) return false;
       if ((est === 'ok' || est === 'alerta' || est === 'error') && r.salud !== est) return false;
       if (txt) {
         var blob = [i.cliente, i.dominio, i.dominio_credenciales, i.servicio, i.ruta,
@@ -365,7 +408,8 @@
     } else {
       cuerpo.innerHTML = lista.map(function (i) {
         var r = i.resumen || {};
-        return '<tr data-id="' + esc(i.id) + '" class="salud-' + esc(r.salud || '') + '">' +
+        return '<tr data-id="' + esc(i.id) + '" class="salud-' + esc(r.salud || '') +
+          (i.oculta ? ' fila-oculta' : '') + '">' +
           cols.map(function (c) {
             return '<td class="' + (c.num ? 'num ' : '') + (c.sticky ? 'sticky ' : '') +
               (c.ancho ? 'ancho' : '') + '">' + c.render(i) + '</td>';
@@ -374,7 +418,8 @@
       }).join('');
     }
     $('#contador').textContent = lista.length + ' de ' + estado.datos.length + ' instancias';
-    $('#pie-info').textContent = 'Último refresco: ' + (estado.meta.ultimo_refresco || '—') +
+    if (estado.ajustarScroll) estado.ajustarScroll();
+    if ($('#pie-info')) $('#pie-info').textContent = 'Último refresco: ' + (estado.meta.ultimo_refresco || '—') +
       ' · los datos se recargan solos cada 30 s';
   }
 
@@ -518,7 +563,13 @@
       ['CPU ahora', (s.cpu_pct === null || s.cpu_pct === undefined) ? null : s.cpu_pct + '% de un núcleo'],
       ['CPU acumulada', s.cpu_segundos ? s.cpu_segundos + ' s' : null],
       ['Activo desde', s.desde], ['Uptime', s.uptime], ['Reinicios', s.reinicios],
-      ['Puerto (gunicorn)', inst.puerto], ['Archivo .service', s.archivo],
+      ['Puerto (gunicorn)', inst.puerto],
+      ['Socket', (inst.socket || {}).existe
+        ? ((inst.socket.unidad || '') + ' · ' + ((inst.socket.activo) ? 'escuchando' : 'detenido') +
+           ((inst.socket.escucha || (inst.socket.escuchas || []).join(', '))
+             ? ' · ' + esc(inst.socket.escucha || (inst.socket.escuchas || []).join(', ')) : ''))
+        : null],
+      ['Archivo .service', s.archivo],
       ['Servicio creado el', s.creado], ['Error', s.error]
     ]) + '</div>';
 
@@ -537,7 +588,8 @@
     ]) + '</div>';
 
     b += '<div class="bloque"><h3>Certificado SSL</h3>' + dl([
-      ['Estado', badgeSsl(inst), true], ['Válido hasta', cert.valido_hasta],
+      ['Estado', badgeSsl(inst), true], ['Emitido el', cert.emitido],
+      ['Válido hasta', cert.valido_hasta],
       ['Días restantes', cert.dias_restantes], ['Emisor', cert.emisor],
       ['CN del certificado', cert.dominio_certificado],
       ['Coincide con el dominio', cert.coincide_dominio === null || cert.coincide_dominio === undefined
@@ -572,6 +624,17 @@
         ['Sesiones vigentes', ses.sesiones_vigentes], ['Usuarios activos', ses.usuarios_activos],
         ['Última conexión', ses.ultima_conexion], ['Error', ses.error]
       ]) + '</div>';
+      var api = db.api_cedula || {};
+      b += '<div class="bloque"><h3>Búsqueda de cédula por API</h3>' + dl([
+        ['Estado', badgeApiCedula(inst), true], ['Columna', api.columna],
+        ['Error', api.error]
+      ]) + (api.disponible && (estado.capacidades || {}).acciones_datos
+        ? '<div style="margin-top:8px">' +
+          '<button class="boton mini api-cedula" type="button" data-id="' + esc(inst.id) +
+          '" data-activar="' + (api.activa ? '0' : '1') + '">' +
+          (api.activa ? 'Desactivar búsqueda por cédula' : 'Activar búsqueda por cédula') +
+          '</button><span id="resultado-api"></span></div>' : '') + '</div>';
+
       b += '<div class="bloque"><h3>Facturación electrónica</h3>' + dl([
         ['Estado', badgeFacturas(inst), true], ['Facturas totales', fac.total],
         ['Este mes', fac.mes_actual], ['Mes anterior', fac.mes_anterior],
@@ -627,7 +690,8 @@
 
   // ------------------------------------------------------------------ datos
   function cargar() {
-    return fetch('/api/estado', { credentials: 'same-origin' })
+    return fetch('/api/estado' + (MODO === 'excluidos' ? '?ocultas=1' : ''),
+                 { credentials: 'same-origin' })
       .then(function (r) {
         if (r.status === 401) { window.location.href = '/login'; return null; }
         if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -1019,6 +1083,141 @@
       .catch(function (e) { aviso(e.message); });
   }
 
+  function alternarVisibilidad(chk) {
+    var mostrar = chk.checked;
+    var cliente = chk.getAttribute('data-cliente');
+    var servicio = chk.getAttribute('data-servicio');
+    chk.disabled = true;
+    fetch('/api/excluidos/alternar', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cliente: cliente, servicio: servicio, ocultar: !mostrar })
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        chk.disabled = false;
+        if (!d.ok) { aviso(d.error || 'No se pudo guardar'); chk.checked = !mostrar; return; }
+        aviso((mostrar ? 'Se mostrará ' : 'Se ocultará ') + (servicio || cliente) +
+              ' · lista: ' + (d.nombres.length ? d.nombres.join(', ') : 'vacía'), 'aviso-ok');
+        var editor = $('#editor-excluidos');
+        if (editor) editor.value = d.nombres.join(',');
+        cargar();
+      })
+      .catch(function (e) { chk.disabled = false; chk.checked = !mostrar; aviso(e.message); });
+  }
+
+  function guardarListaExcluidos() {
+    var boton = $('#btn-guardar-excluidos');
+    boton.disabled = true;
+    $('#resultado-excluidos').innerHTML = '<p class="tenue">Guardando…</p>';
+    fetch('/api/excluidos', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ texto: $('#editor-excluidos').value })
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        boton.disabled = false;
+        $('#resultado-excluidos').innerHTML = d.ok
+          ? '<div class="aviso-ok">Guardado en ' + esc(d.archivo) + ' · ocultos: ' +
+            esc(d.nombres.join(', ') || 'ninguno') + '</div>'
+          : '<div class="aviso-error">' + esc(d.error) + '</div>';
+        if (d.ok) cargar();
+      })
+      .catch(function (e) {
+        boton.disabled = false;
+        $('#resultado-excluidos').innerHTML = '<div class="aviso-error">' + esc(e.message) + '</div>';
+      });
+  }
+
+  function cambiarApiCedula(id, activar, boton) {
+    var inst = estado.datos.filter(function (i) { return i.id === id; })[0] || {};
+    if (!window.confirm((activar ? 'Activar' : 'Desactivar') +
+        ' la búsqueda de personas por cédula en "' + inst.cliente +
+        '"? Se actualiza seguridad_configuracion en su base.')) return;
+    boton.disabled = true;
+    $('#resultado-api').innerHTML = ' <span class="tenue">Aplicando…</span>';
+    fetch('/api/instancia/' + encodeURIComponent(id) + '/api-cedula', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ activar: activar })
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        boton.disabled = false;
+        if (!d.ok) { $('#resultado-api').innerHTML = ' <span class="aviso-error">' +
+          esc(d.error) + '</span>'; return; }
+        aviso('Búsqueda por cédula ' + (activar ? 'activada' : 'desactivada') +
+              ' en ' + inst.cliente + ' (' + d.columna + ')', 'aviso-ok');
+        cargar().then(function () { abrirDetalle(id); });
+      })
+      .catch(function (e) {
+        boton.disabled = false;
+        $('#resultado-api').innerHTML = ' <span class="aviso-error">' + esc(e.message) + '</span>';
+      });
+  }
+
+  function verCertificados() {
+    var caja = $('#tarea-cuerpo');
+    $('#tarea-titulo').textContent = 'Certificados SSL';
+    caja.innerHTML = '<p class="tenue">Consultando certbot…</p>';
+    $('#modal-tarea').classList.remove('oculto');
+    if (tareaPoll) { clearInterval(tareaPoll); tareaPoll = null; }
+
+    fetch('/api/certificados', { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var cap = estado.capacidades || {};
+        if (d.error && !(d.certificados || []).length) {
+          caja.innerHTML = '<div class="aviso-error">' + esc(d.error) + '</div>';
+          return;
+        }
+        var filas = (d.certificados || []).map(function (c) {
+          var clase = c.estado === 'vigente' ? 'verde'
+                    : (c.estado === 'renovable' ? 'ambar'
+                    : (c.estado === 'por-vencer' ? 'ambar' : 'rojo'));
+          return '<tr><td><strong>' + esc(c.nombre) + '</strong>' +
+            (c.cliente ? '<div class="sub">' + esc(c.cliente) + '</div>' : '') + '</td>' +
+            '<td>' + esc((c.dominios || []).join(', ')) + '</td>' +
+            '<td>' + guion(c.emitido) + '</td>' +
+            '<td>' + guion(c.vence) + '</td>' +
+            '<td>' + badge(clase, (c.dias === null || c.dias === undefined ? '?' : c.dias + 'd') +
+              ' · ' + c.estado) + '</td>' +
+            '<td>' + (cap.acciones_certbot
+              ? '<button class="boton mini renovar-cert" type="button" data-nombre="' +
+                esc(c.nombre) + '">Renovar</button>' : '') + '</td></tr>';
+        }).join('') || '<tr><td colspan="6" class="vacio">No hay certificados</td></tr>';
+
+        caja.innerHTML =
+          '<p class="tenue">' + esc(d.total) + ' certificado(s) · fuente: ' +
+            (d.certbot ? 'certbot certificates' : 'lectura de /etc/letsencrypt/live') + '</p>' +
+          '<table class="tabla-mini"><thead><tr><th>Certificado</th><th>Dominios</th>' +
+            '<th>Emitido</th><th>Vence</th><th>Estado</th><th></th></tr></thead>' +
+            '<tbody>' + filas + '</tbody></table>' +
+          (cap.acciones_certbot
+            ? '<div style="margin-top:14px;text-align:right">' +
+              '<button class="boton mini renovar-cert" type="button" data-simular="1">Probar renovación (dry-run)</button> ' +
+              '<button class="boton renovar-cert" type="button">Renovar los que toquen</button>' +
+              '</div>'
+            : '<p class="tenue">La renovación está desactivada en config.json</p>');
+      })
+      .catch(function (e) {
+        caja.innerHTML = '<div class="aviso-error">' + esc(e.message) + '</div>';
+      });
+  }
+
+  function renovarCertificado(nombre, simular, forzar) {
+    var texto = nombre ? ('el certificado ' + nombre) : 'los certificados que lo necesiten';
+    if (!simular && !window.confirm('¿Renovar ' + texto + ' con certbot?')) return;
+    fetch('/api/certificados/renovar', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nombre: nombre || null, simular: !!simular, forzar: !!forzar })
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) { aviso(d.error || 'No se pudo iniciar'); return; }
+        verTarea(d.tarea);
+      })
+      .catch(function (e) { aviso(e.message); });
+  }
+
   function verHistorial() {
     var caja = $('#caja-historial');
     if (!caja.hidden) { caja.hidden = true; return; }
@@ -1041,6 +1240,54 @@
   }
 
   // --------------------------------------------------------------- eventos
+  function prepararScroll() {
+    var caja = document.querySelector('.tabla-envoltura');
+    var tabla = $('#tabla');
+    if (!caja || !tabla) return;
+
+    // Barra de desplazamiento arriba, sincronizada con la tabla.
+    var barra = $('#scroll-superior');
+    if (!barra) {
+      barra = document.createElement('div');
+      barra.id = 'scroll-superior';
+      barra.innerHTML = '<div></div>';
+      caja.parentNode.insertBefore(barra, caja);
+      barra.addEventListener('scroll', function () { caja.scrollLeft = barra.scrollLeft; });
+      caja.addEventListener('scroll', function () { barra.scrollLeft = caja.scrollLeft; });
+    }
+    var ajustar = function () {
+      barra.firstChild.style.width = tabla.scrollWidth + 'px';
+      barra.style.display = (tabla.scrollWidth > caja.clientWidth) ? '' : 'none';
+    };
+    ajustar();
+    window.addEventListener('resize', ajustar);
+    estado.ajustarScroll = ajustar;
+
+    // Arrastrar con el ratón para desplazar la tabla.
+    var arrastrando = false, inicioX = 0, inicioScroll = 0, movido = false;
+    caja.addEventListener('mousedown', function (e) {
+      if (e.button !== 0 || e.target.closest('a, button, input, label, select, textarea')) return;
+      arrastrando = true; movido = false;
+      inicioX = e.pageX; inicioScroll = caja.scrollLeft;
+      caja.classList.add('arrastrando');
+    });
+    window.addEventListener('mousemove', function (e) {
+      if (!arrastrando) return;
+      var delta = e.pageX - inicioX;
+      if (Math.abs(delta) > 4) movido = true;
+      caja.scrollLeft = inicioScroll - delta;
+      if (movido) e.preventDefault();
+    });
+    window.addEventListener('mouseup', function () {
+      if (!arrastrando) return;
+      arrastrando = false;
+      caja.classList.remove('arrastrando');
+      // Si hubo arrastre no se abre el detalle de la fila.
+      if (movido) caja.dataset.arrastre = '1';
+      setTimeout(function () { delete caja.dataset.arrastre; }, 50);
+    });
+  }
+
   function iniciar() {
     // Un solo manejador delegado: si algo falla, no se cae el resto del panel.
     document.addEventListener('click', function (e) {
@@ -1048,12 +1295,19 @@
       try {
         if (el.id === 'btn-refrescar') return refrescar({}, el);
         if (el.id === 'btn-media') return refrescar({ media: true }, el);
-        if (el.id === 'btn-excel') return descargar('/export.xlsx', 'instancias.xlsx', el);
-        if (el.id === 'btn-csv') return descargar('/export.csv', 'instancias.csv', el);
+        var sufijo = (MODO === 'excluidos') ? '?ocultas=1' : '';
+        if (el.id === 'btn-excel') return descargar('/export.xlsx' + sufijo, 'instancias.xlsx', el);
+        if (el.id === 'btn-csv') return descargar('/export.csv' + sufijo, 'instancias.csv', el);
         if (el.id === 'btn-historial') return verHistorial();
         if (el.id === 'btn-excluidos') { window.location.href = '/excluidos'; return; }
+        if (el.id === 'btn-guardar-excluidos') return guardarListaExcluidos();
         if (el.id === 'btn-nueva') return abrirAsistente();
         if (el.id === 'btn-tareas') return listarTareas();
+        if (el.id === 'btn-certificados') return verCertificados();
+        if (el.classList.contains('renovar-cert')) {
+          return renovarCertificado(el.getAttribute('data-nombre'),
+                                    el.getAttribute('data-simular') === '1', false);
+        }
         if (el.id === 'nueva-cerrar' || el.id === 'modal-nueva') return $('#modal-nueva').classList.add('oculto');
         if (el.id === 'tarea-cerrar' || el.id === 'modal-tarea') {
           if (tareaPoll) { clearInterval(tareaPoll); tareaPoll = null; }
@@ -1080,6 +1334,10 @@
         if (el.id === 'btn-credenciales') return verCredenciales(el.getAttribute('data-id'), false);
         if (el.id === 'btn-credenciales-secretos') return verCredenciales(el.getAttribute('data-id'), true);
         if (el.id === 'btn-credenciales-guardar') return guardarCredenciales(el.getAttribute('data-id'));
+        if (el.classList.contains('api-cedula')) {
+          return cambiarApiCedula(el.getAttribute('data-id'),
+                                  el.getAttribute('data-activar') === '1', el);
+        }
         if (el.classList.contains('accion')) {
           return ejecutarAccion(el.closest('.acciones').getAttribute('data-id'),
                                 el.getAttribute('data-accion'), el);
@@ -1099,7 +1357,11 @@
           return pintarTabla();
         }
         var fila = el.closest('tr[data-id]');
-        if (fila && !el.closest('a')) return abrirDetalle(fila.getAttribute('data-id'));
+        var envoltura = el.closest('.tabla-envoltura');
+        if (envoltura && envoltura.dataset.arrastre) return;   // venía de arrastrar
+        if (fila && !el.closest('a') && !el.closest('label.interruptor')) {
+          return abrirDetalle(fila.getAttribute('data-id'));
+        }
       } catch (ex) {
         aviso('Error procesando la acción: ' + ex.message);
       }
@@ -1109,6 +1371,7 @@
       var el = e.target;
       if (el.id === 'auto-refresco') return programarAuto();
       if (el.id === 'orden') { estado.orden = el.value; return pintarTabla(); }
+      if (el.classList.contains('ver-en-panel')) return alternarVisibilidad(el);
       if (el.hasAttribute && el.hasAttribute('data-grupo')) {
         estado.grupos[el.getAttribute('data-grupo')] = el.checked;
         return pintarTabla();
@@ -1128,6 +1391,7 @@
       }
     });
 
+    prepararScroll();
     cargar();
     programarAuto();
   }

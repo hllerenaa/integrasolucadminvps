@@ -63,6 +63,27 @@ def _puerto_del_unit(fragment_path):
     return None
 
 
+def estado_socket(nombre, timeout=8):
+    """Estado de la unidad <nombre>.socket (activación por socket)."""
+    datos = {'unidad': '%s.socket' % nombre, 'existe': False, 'activo': False,
+             'estado': None, 'escucha': None}
+    codigo, salida, _ = ejecutar(
+        ['systemctl', 'show', '%s.socket' % nombre, '--no-pager',
+         '--property=LoadState,ActiveState,SubState,Listen'], timeout=timeout)
+    if codigo != 0 or not salida:
+        return datos
+    valores = {}
+    for linea in salida.splitlines():
+        if '=' in linea:
+            clave, _, valor = linea.partition('=')
+            valores[clave.strip()] = valor.strip()
+    datos['existe'] = valores.get('LoadState') not in (None, '', 'not-found', 'masked')
+    datos['estado'] = valores.get('ActiveState')
+    datos['activo'] = valores.get('ActiveState') in ('active', 'listening', 'activating')
+    datos['escucha'] = valores.get('Listen') or None
+    return datos
+
+
 def recursos_del_sistema():
     """RAM total, RAM libre, núcleos y carga del servidor."""
     datos = {'ram_total': None, 'ram_disponible': None, 'nucleos': os.cpu_count(),

@@ -16,7 +16,7 @@ _DISCO = {}
 
 
 def _recolectar_instancia(instancia, config, forzar_media=False, vhosts=None, unidades=None,
-                          servidores_web=None):
+                          servidores_web=None, sockets=None):
     """Estado completo de una instancia (servicio + apache + SSL + base + media)."""
     inicio = time.time()
     datos = instancia.as_dict()
@@ -29,15 +29,37 @@ def _recolectar_instancia(instancia, config, forzar_media=False, vhosts=None, un
         datos['servicio'] = unidad['unidad']
         datos['servicio_origen'] = unidad['origen']
         datos['servicio_archivo'] = unidad.get('archivo')
+        datos['socket_unix'] = unidad.get('socket_unix')
     datos['servicio_estado'] = systemd.estado_servicio(
         instancia.servicio, timeout=int(config.get('timeout_systemctl') or 10))
     datos.setdefault('servicio_archivo', (datos['servicio_estado'] or {}).get('archivo'))
 
+    # Activación por socket: si el .socket escucha, el sistema responde aunque
+    # el .service esté inactivo (systemd lo levanta en la primera petición).
+    unidad_socket = units.socket_de(unidad, sockets or {})
+    if unidad_socket or (sockets or {}).get(instancia.servicio):
+        datos['socket'] = systemd.estado_socket(
+            instancia.servicio, timeout=int(config.get('timeout_systemctl') or 10))
+        if unidad_socket:
+            # El archivo .socket existe aunque systemctl no pueda consultarse.
+            datos['socket'].update({'existe': True,
+                                    'archivo': unidad_socket.get('archivo'),
+                                    'escuchas': unidad_socket.get('escuchas'),
+                                    'rutas': unidad_socket.get('rutas'),
+                                    'puertos': unidad_socket.get('puertos')})
+    else:
+        datos['socket'] = {'existe': False}
+
     # 2. Apache: el puerto del gunicorn es la señal más confiable para
     #    emparejar el vhost (el dominio de credenciales.json suele estar viejo).
     puerto = (datos['servicio_estado'] or {}).get('puerto') or (unidad or {}).get('puerto')
+    if not puerto:
+        puertos_socket = (datos.get('socket') or {}).get('puertos') or []
+        puerto = puertos_socket[0] if puertos_socket else None
+    datos['socket_ruta'] = ((datos.get('socket') or {}).get('rutas') or [None])[0] \
+        or (unidad or {}).get('socket_unix')
     datos['puerto'] = puerto
-    vhost = webserver.buscar_vhost(instancia, vhosts or [], puerto)
+    vhost = webserver.buscar_vhost(instancia, vhosts or [], puerto, datos.get('socket_ruta'))
     datos['apache'] = vhost or {'archivo': None, 'habilitado': None,
                                 'error': 'No se encontró el sitio web (Apache/nginx) de esta instancia'}
     servidor = (vhost or {}).get('servidor')
@@ -91,21 +113,25 @@ def _resumen_fila(datos):
     """Campos planos para la tabla del panel."""
     db = datos.get('db') or {}
     servicio = datos.get('servicio_estado') or {}
+    socket_info = datos.get('socket') or {}
     apache = datos.get('apache') or {}
     ssl_info = datos.get('ssl') or {}
     url_estado = datos.get('url_estado') or {}
     venta = dbstats.venta_principal(db)
     facturacion = db.get('facturacion') or {}
+    api_cedula = db.get('api_cedula') or {}
     auditoria = db.get('auditoria') or {}
     sesiones = db.get('sesiones') or {}
     empresa = db.get('empresa') or {}
 
     # La base sólo cuenta para la salud si se está consultando.
     bd_cuenta = not db.get('desactivado')
-    problemas = (not servicio.get('activo')) or (bd_cuenta and not db.get('ok'))
+    # Con activación por socket el sistema atiende aunque el .service esté parado.
+    atiende = bool(servicio.get('activo') or socket_info.get('activo'))
+    problemas = (not atiende) or (bd_cuenta and not db.get('ok'))
     if not problemas and ssl_info.get('estado') in ('vencido',):
         problemas = True
-    if not servicio.get('activo') and (not bd_cuenta or not db.get('ok')):
+    if not atiende and (not bd_cuenta or not db.get('ok')):
         salud = 'error'
     elif problemas or ssl_info.get('estado') == 'por-vencer':
         salud = 'alerta'
@@ -152,6 +178,9 @@ def _resumen_fila(datos):
         'empresa': empresa.get('nombre_empresa') or empresa.get('razonsocial') or '',
         'servicio_activo': bool(servicio.get('activo')),
         'servicio_estado': servicio.get('estado'),
+        'socket_existe': bool(socket_info.get('existe')),
+        'socket_activo': bool(socket_info.get('activo')),
+        'atiende': bool(servicio.get('activo') or socket_info.get('activo')),
         'db_ok': bool(db.get('ok')),
         'db_tamano': db.get('tamano'),
         'db_tamano_bytes': db.get('tamano_bytes'),
@@ -172,6 +201,9 @@ def _resumen_fila(datos):
         'facturas_ultimo_mes': facturacion.get('ultimo_mes'),
         'facturas_meses_sin': facturacion.get('meses_sin_facturar'),
         'facturas_estado': facturacion.get('estado'),
+        'api_cedula': api_cedula.get('activa'),
+        'api_cedula_disponible': bool(api_cedula.get('disponible')),
+        'api_cedula_columna': api_cedula.get('columna'),
         'ruta': datos.get('ruta'),
         'ultima_sesion': sesiones.get('ultimo_login'),
         'ultima_sesion_usuario': sesiones.get('usuario'),
@@ -199,11 +231,12 @@ class Colector(object):
         self._servidores_web = {}
         self._pendientes = 0
         self._recolectadas = 0
+        self._marcadas = {}
         self._hilo = None
         self._parar = threading.Event()
 
     # ---------------------------------------------------------------- lectura
-    def snapshot(self, tipo=None, buscar=None):
+    def snapshot(self, tipo=None, buscar=None, incluir_ocultas=False, solo_ocultas=False):
         with self._lock:
             instancias = [self._datos[i] for i in self._orden if i in self._datos]
             meta = {
@@ -211,10 +244,15 @@ class Colector(object):
                 'refrescando': self._refrescando,
                 'total': len(instancias),
                 'ocultas': self._ocultas,
+                'recolectar_ocultas': bool(self.config.get('recolectar_ocultas', True)),
                 'pendientes': max(0, self._pendientes - self._recolectadas),
                 'recolectadas': self._recolectadas,
                 'esperadas': self._pendientes,
             }
+        if solo_ocultas:
+            instancias = [i for i in instancias if i.get('oculta')]
+        elif not incluir_ocultas:
+            instancias = [i for i in instancias if not i.get('oculta')]
         if tipo:
             instancias = [i for i in instancias if i.get('tipo') == tipo]
         if buscar:
@@ -232,6 +270,24 @@ class Colector(object):
             'recursos': systemd.recursos_del_sistema(),
         }
 
+    def remarcar_ocultas(self):
+        """Recalcula la marca de ocultas sobre lo ya recolectado.
+
+        Permite que el interruptor de /excluidos se refleje al instante, sin
+        esperar a que termine un refresco completo.
+        """
+        ocultos = mod_excluidos.cargar(self.config)
+        with self._lock:
+            total = 0
+            for datos in self._datos.values():
+                oculta = mod_excluidos.excluida(ocultos, datos.get('cliente'),
+                                                datos.get('servicio'))
+                datos['oculta'] = oculta
+                self._marcadas[datos.get('id')] = oculta
+                total += 1 if oculta else 0
+            self._ocultas = total
+        return total
+
     def instancia(self, ident):
         with self._lock:
             return self._datos.get(ident)
@@ -240,7 +296,7 @@ class Colector(object):
     def resumen(instancias):
         """Totales para las tarjetas superiores del panel."""
         total = len(instancias)
-        servicios_ok = sum(1 for i in instancias if (i.get('resumen') or {}).get('servicio_activo'))
+        servicios_ok = sum(1 for i in instancias if (i.get('resumen') or {}).get('atiende'))
         db_ok = sum(1 for i in instancias if (i.get('resumen') or {}).get('db_ok'))
         db_bytes = sum((i.get('db') or {}).get('tamano_bytes') or 0 for i in instancias)
         media_bytes = sum((i.get('media') or {}).get('bytes') or 0 for i in instancias)
@@ -296,25 +352,33 @@ class Colector(object):
             vhosts = webserver.cargar_vhosts(self.config)
             unidades = units.cargar_unidades(self.config)
             self._servidores_web = webserver.estado_servidores_web(self.config)
+            sockets = units.cargar_sockets(self.config)
             # Totales del servidor, para poder expresar el consumo en porcentaje.
             _RECURSOS.clear()
             _RECURSOS.update(systemd.recursos_del_sistema())
             _DISCO.clear()
             _DISCO.update(storage.uso_disco('/'))
 
-            # excluidos.txt puede nombrar el cliente o su servicio systemd,
-            # así que se filtra recién con la unidad ya resuelta.
+            # excluidos.txt puede nombrar el cliente o su servicio systemd, así
+            # que se resuelve con la unidad ya identificada. Las ocultas se
+            # recolectan igual (la página /excluidos muestra sus datos y permite
+            # actuar sobre ellas); sólo quedan marcadas para no salir en el panel.
             ocultos = mod_excluidos.cargar(self.config)
-            visibles, omitidas = [], 0
+            recolectar_ocultas = self.config.get('recolectar_ocultas', True)
+            marcadas, visibles, omitidas = {}, [], 0
             for inst in instancias:
                 unidad = units.buscar_unidad(inst, unidades, inst.servicio)
                 nombre_servicio = (unidad or {}).get('unidad') or inst.servicio
-                if mod_excluidos.excluida(ocultos, inst.cliente, nombre_servicio):
+                oculta = mod_excluidos.excluida(ocultos, inst.cliente, nombre_servicio)
+                if oculta:
                     omitidas += 1
-                    continue
+                    if not recolectar_ocultas:
+                        continue
+                marcadas[inst.id] = oculta
                 visibles.append(inst)
             instancias = visibles
             self._ocultas = omitidas
+            self._marcadas = marcadas
             workers = max(1, int(self.config.get('workers') or 8))
             with self._lock:
                 if not solo:
@@ -329,7 +393,7 @@ class Colector(object):
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futuros = {
                     pool.submit(self._seguro, inst, forzar_media, vhosts, unidades,
-                                self._servidores_web): inst
+                                self._servidores_web, sockets): inst
                     for inst in instancias
                 }
                 for futuro in as_completed(futuros):
@@ -337,10 +401,18 @@ class Colector(object):
                     try:
                         datos = futuro.result()
                     except Exception as ex:  # pragma: no cover - defensivo
-                        datos = {'id': inst.id, 'cliente': inst.cliente, 'tipo': inst.tipo,
-                                 'error': str(ex)}
+                        datos = inst.as_dict()
+                        datos['error'] = 'Fallo recolectando: %s' % ex
+                        datos['servicio_estado'] = {'activo': False, 'estado': 'desconocido'}
+                        datos['db'] = {'ok': False, 'error': str(ex)}
+                        for clave in ('apache', 'ssl', 'url_estado', 'media', 'logs',
+                                      'git', 'socket'):
+                            datos.setdefault(clave, {})
+                        datos['actualizado'] = ahora_iso()
+                        datos['resumen'] = _resumen_fila(datos)
                     # Cada instancia se publica apenas está lista: el panel se
                     # va llenando en vez de quedarse vacío hasta el final.
+                    datos['oculta'] = bool(self._marcadas.get(inst.id))
                     with self._lock:
                         self._datos[inst.id] = datos
                         self._recolectadas += 1
@@ -353,10 +425,11 @@ class Colector(object):
             with self._lock:
                 self._refrescando = False
 
-    def _seguro(self, instancia, forzar_media, vhosts=None, unidades=None, servidores_web=None):
+    def _seguro(self, instancia, forzar_media, vhosts=None, unidades=None,
+                servidores_web=None, sockets=None):
         try:
             return _recolectar_instancia(instancia, self.config, forzar_media,
-                                         vhosts, unidades, servidores_web)
+                                         vhosts, unidades, servidores_web, sockets)
         except Exception as ex:  # pragma: no cover - defensivo
             datos = instancia.as_dict()
             datos['error'] = 'Fallo recolectando: %s' % ex

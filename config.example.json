@@ -28,6 +28,7 @@
   "medir_media": true,
   "medir_logs": true,
   "verificar_url": true,
+  "recolectar_ocultas": true,
   "intervalo_refresco": 300,
   "ttl_datos": 300,
   "ttl_media": 21600,
@@ -41,7 +42,9 @@
   "acciones": {
     "enabled": true,
     "servicios": true,
-    "apache": true
+    "apache": true,
+    "datos": true,
+    "certbot": true
   },
   "credenciales": {
     "ver": true,

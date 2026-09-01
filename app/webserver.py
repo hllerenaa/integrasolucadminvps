@@ -35,6 +35,7 @@ _RE_DIRECTIVA = {
     'cert': re.compile(r'^\s*SSLCertificateFile\s+(\S+)', re.I | re.M),
     'documentroot': re.compile(r'^\s*DocumentRoot\s+"?([^"\s]+)', re.I | re.M),
     'proxy': re.compile(r'^\s*ProxyPass\s+\S+\s+\S+?://[\w\.\-]+:(\d+)', re.I | re.M),
+    'proxy_unix': re.compile(r'^\s*ProxyPass\s+\S+\s+unix:(\S+?)\|', re.I | re.M),
     'redirect': re.compile(r'^\s*Redirect\s+permanent', re.I | re.M),
 }
 
@@ -66,13 +67,24 @@ def cargar_vhosts(config=None):
     if config and config.get('apache_dirs'):
         directorios = [tuple(par) for par in config['apache_dirs']]
     vhosts = []
+    vistos = set()
     for disponibles, habilitados in directorios:
         if not os.path.isdir(disponibles):
             continue
         activos = set()
         if os.path.isdir(habilitados):
             activos = {os.path.basename(p) for p in glob.glob(os.path.join(habilitados, '*'))}
-        for archivo in sorted(glob.glob(os.path.join(disponibles, '*.conf'))):
+        # Se leen los de sites-available y, además, los archivos reales que
+        # sólo existan en sites-enabled (algunos servidores los crean ahí).
+        archivos = sorted(glob.glob(os.path.join(disponibles, '*.conf')))
+        if os.path.isdir(habilitados) and habilitados != disponibles:
+            for enlace in sorted(glob.glob(os.path.join(habilitados, '*.conf'))):
+                if not os.path.islink(enlace):
+                    archivos.append(enlace)
+        for archivo in archivos:
+            if os.path.realpath(archivo) in vistos:
+                continue
+            vistos.add(os.path.realpath(archivo))
             contenido = _leer(archivo)
             if not contenido:
                 continue
@@ -80,6 +92,7 @@ def cargar_vhosts(config=None):
             for linea in _RE_DIRECTIVA['serveralias'].findall(contenido):
                 alias.extend(linea.split())
             proxies = [int(p) for p in _RE_DIRECTIVA['proxy'].findall(contenido)]
+            sockets_unix = _RE_DIRECTIVA['proxy_unix'].findall(contenido)
             nombre_archivo = os.path.basename(archivo)
             certificado = _uno('cert', contenido)
             try:
@@ -101,6 +114,7 @@ def cargar_vhosts(config=None):
                 'certificado': certificado,
                 'documentroot': _uno('documentroot', contenido),
                 'puertos_proxy': proxies,
+                'sockets_unix': sockets_unix,
                 'ssl': bool(certificado),
                 'errorlog': [r for r in _RE_ERRORLOG.findall(contenido) if not r.startswith('|')],
                 'customlog': [r for r in _RE_CUSTOMLOG.findall(contenido) if not r.startswith('|')],
@@ -119,6 +133,7 @@ VHOSTS_GENERICOS = ('000-default', 'default-ssl', 'default', '000-default-le-ssl
 _RE_NG_SERVER_NAME = re.compile(r'^\s*server_name\s+([^;]+);', re.I | re.M)
 _RE_NG_CERT = re.compile(r'^\s*ssl_certificate\s+([^;]+);', re.I | re.M)
 _RE_NG_PROXY = re.compile(r'proxy_pass\s+\S+?://[\w\.\-]+:(\d+)', re.I)
+_RE_NG_PROXY_UNIX = re.compile(r'proxy_pass\s+http://unix:([^;:]+)', re.I)
 _RE_NG_ROOT = re.compile(r'^\s*root\s+([^;]+);', re.I | re.M)
 _RE_NG_ACCESS = re.compile(r'^\s*access_log\s+([^;\s]+)', re.I | re.M)
 _RE_NG_ERROR = re.compile(r'^\s*error_log\s+([^;\s]+)', re.I | re.M)
@@ -169,11 +184,13 @@ def _vhosts_nginx(config=None):
             nombres = []
             certificado = None
             proxies = []
+            sockets_unix = []
             for bloque in _bloques_server(contenido):
                 for linea in _RE_NG_SERVER_NAME.findall(bloque):
                     nombres.extend([n for n in linea.split() if n not in ('_', 'localhost')])
                 certificado = certificado or _uno_re(_RE_NG_CERT, bloque)
                 proxies.extend(int(p) for p in _RE_NG_PROXY.findall(bloque))
+                sockets_unix.extend(_RE_NG_PROXY_UNIX.findall(bloque))
             if not nombres and not proxies:
                 continue
             try:
@@ -196,6 +213,7 @@ def _vhosts_nginx(config=None):
                 'certificado': (certificado or '').strip() or None,
                 'documentroot': (_uno_re(_RE_NG_ROOT, contenido) or '').strip().rstrip(';') or None,
                 'puertos_proxy': sorted(set(proxies)),
+                'sockets_unix': [r.strip() for r in sockets_unix],
                 'ssl': bool(certificado),
                 'errorlog': [r for r in _RE_NG_ERROR.findall(contenido) if not r.startswith('|')],
                 'customlog': [r for r in _RE_NG_ACCESS.findall(contenido) if not r.startswith('|')],
@@ -222,7 +240,7 @@ def estado_servidores_web(config=None):
     return salida
 
 
-def buscar_vhost(instancia, vhosts, puerto_servicio=None):
+def buscar_vhost(instancia, vhosts, puerto_servicio=None, socket_unix=None):
     """Empareja una instancia con su vhost de Apache.
 
     Se puntúa por señales fuertes primero (el puerto al que hace ProxyPass el
@@ -240,6 +258,19 @@ def buscar_vhost(instancia, vhosts, puerto_servicio=None):
         if puerto_servicio and puerto_servicio in vhost['puertos_proxy']:
             puntaje += 100
             motivos.append('proxy al puerto %s' % puerto_servicio)
+        socks = vhost.get('sockets_unix') or []
+        if socket_unix and socket_unix in socks:
+            puntaje += 100
+            motivos.append('proxy al socket %s' % socket_unix)
+        elif socks and any(instancia.cliente.lower() in s.lower() for s in socks):
+            puntaje += 80
+            motivos.append('socket unix con el nombre del cliente')
+        # El primer segmento del ServerName suele ser el cliente
+        # (elmaestro.integrasoluc.net), señal fiable cuando credenciales.json
+        # quedó con el dominio del template.
+        if any(n.split('.')[0] == instancia.cliente.lower() for n in nombres):
+            puntaje += 60
+            motivos.append('el ServerName empieza por el nombre del cliente')
         if instancia.ruta and instancia.ruta in vhost['contenido']:
             puntaje += 80
             motivos.append('ruta de la instalación en el vhost')
@@ -329,7 +360,7 @@ def _ruta_certificado(instancia, vhost, dominio=None):
 def info_certificado(instancia, vhost, dominio=None):
     """Datos del certificado SSL instalado (leído con openssl, sin dependencias)."""
     datos = {'tiene_ssl': False, 'archivo': None, 'emisor': None, 'valido_hasta': None,
-             'dias_restantes': None, 'estado': 'sin-certificado', 'autofirmado': False,
+             'dias_restantes': None, 'emitido': None, 'estado': 'sin-certificado', 'autofirmado': False,
              'coincide_dominio': None, 'error': None}
 
     ruta = _ruta_certificado(instancia, vhost, dominio)
@@ -340,14 +371,24 @@ def info_certificado(instancia, vhost, dominio=None):
 
     datos['archivo'] = ruta
     codigo, salida, error = ejecutar(
-        ['openssl', 'x509', '-in', ruta, '-noout', '-enddate', '-issuer', '-subject'], timeout=10)
+        ['openssl', 'x509', '-in', ruta, '-noout', '-startdate', '-enddate', '-issuer', '-subject'],
+        timeout=10)
     if codigo != 0:
         datos['error'] = error or 'no se pudo leer el certificado'
         return datos
 
     datos['tiene_ssl'] = True
     for linea in salida.splitlines():
-        if linea.startswith('notAfter='):
+        if linea.startswith('notBefore='):
+            texto = linea.split('=', 1)[1].strip()
+            for formato in ('%b %d %H:%M:%S %Y %Z', '%b %d %H:%M:%S %Y'):
+                try:
+                    datos['emitido'] = datetime.datetime.strptime(
+                        texto.replace(' GMT', ''), formato.replace(' %Z', '')).strftime('%Y-%m-%d')
+                    break
+                except ValueError:
+                    continue
+        elif linea.startswith('notAfter='):
             texto = linea.split('=', 1)[1].strip()
             try:
                 vence = datetime.datetime.strptime(texto, '%b %d %H:%M:%S %Y %Z')

@@ -28,6 +28,11 @@ TABLA_SESIONES = 'django_session'
 TABLA_USUARIOS = 'auth_user'
 TABLA_CONECTADOS = 'seguridad_usuarioconectado'
 
+# Búsqueda de personas por cédula vía API externa: la columna cambia según el
+# sistema (inventario / restaurante) y la versión, así que se detecta.
+COLUMNAS_API_CEDULA = ('usar_api_persona', 'traer_api_cliente', 'usar_api_personas',
+                       'usar_api_cliente', 'traer_api_persona')
+
 # Tablas de ventas por tipo de sistema, en orden de prioridad.
 # (tabla, etiqueta) -> la columna de fecha se detecta entre COLUMNAS_FECHA.
 VENTAS = {
@@ -107,6 +112,31 @@ def _estimado(cur, tabla):
         return int(cur.fetchone()[0])
     except Exception:
         return estimado
+
+
+def columna_api_cedula(columnas):
+    """Nombre real de la columna de búsqueda por API, si existe."""
+    for columna in COLUMNAS_API_CEDULA:
+        if columna in (columnas or set()):
+            return columna
+    return None
+
+
+def _api_cedula(cur, esquema):
+    """Si la instancia consulta la API de personas (cédula) y con qué columna."""
+    columnas = esquema.get(TABLA_CONFIGURACION)
+    if not columnas:
+        return {'disponible': False, 'error': 'Sin tabla de configuración'}
+    columna = columna_api_cedula(columnas)
+    if not columna:
+        return {'disponible': False, 'error': 'Esta versión no tiene la opción'}
+    try:
+        cur.execute('SELECT %s FROM %s ORDER BY id LIMIT 1' % (columna, TABLA_CONFIGURACION))
+        fila = cur.fetchone()
+    except Exception as ex:
+        return {'disponible': False, 'columna': columna, 'error': str(ex).strip()}
+    return {'disponible': True, 'columna': columna,
+            'activa': bool(fila[0]) if fila else None}
 
 
 def _empresa(cur, esquema):
@@ -332,6 +362,7 @@ def consultar(instancia, config):
         'sesiones': {},
         'ventas': [],
         'facturacion': {},
+        'api_cedula': {},
         'empresa': {},
         'tablas_grandes': [],
     }
@@ -381,6 +412,7 @@ def consultar(instancia, config):
         datos['sesiones'] = _sesiones(cur, esquema)
         datos['ventas'] = _ventas(cur, esquema, instancia.tipo)
         datos['facturacion'] = _facturacion(cur, esquema)
+        datos['api_cedula'] = _api_cedula(cur, esquema)
         datos['tablas_grandes'] = _tablas_grandes(cur)
         cur.close()
     except Exception as ex:
@@ -395,6 +427,48 @@ def consultar(instancia, config):
 
     datos['duracion_ms'] = int((time.time() - inicio) * 1000)
     return datos
+
+
+def cambiar_api_cedula(instancia, config, activar):
+    """Activa o desactiva la búsqueda de personas por cédula en esa instancia."""
+    if psycopg2 is None:
+        return {'ok': False, 'error': 'psycopg2 no está instalado'}
+    conexion = instancia.base_datos()
+    if not conexion.get('dbname'):
+        return {'ok': False, 'error': 'Sin datos de PostgreSQL en credenciales.json'}
+    conn = None
+    try:
+        conn = psycopg2.connect(
+            host=conexion['host'], port=int(conexion.get('port') or 5432),
+            dbname=conexion['dbname'], user=conexion.get('user'),
+            password=conexion.get('password'),
+            connect_timeout=int(config.get('db_connect_timeout') or 6),
+            application_name='integrasolucadminvps')
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("SET statement_timeout = %s", (int(config.get('db_statement_timeout') or 15000),))
+        cur.execute(
+            """
+            SELECT column_name FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = %s AND column_name = ANY(%s)
+            """,
+            (TABLA_CONFIGURACION, list(COLUMNAS_API_CEDULA)))
+        fila = cur.fetchone()
+        if not fila:
+            return {'ok': False, 'error': 'La base no tiene la columna de búsqueda por API'}
+        columna = fila[0]
+        cur.execute('UPDATE %s SET %s = %%s' % (TABLA_CONFIGURACION, columna), (bool(activar),))
+        afectadas = cur.rowcount
+        cur.close()
+        return {'ok': True, 'columna': columna, 'activa': bool(activar), 'filas': afectadas}
+    except Exception as ex:
+        return {'ok': False, 'error': str(ex).strip().splitlines()[0]}
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def venta_principal(datos_db):

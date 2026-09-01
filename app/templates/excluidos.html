@@ -5,51 +5,84 @@
   <div class="cabecera-izq">
     <h1>{{ titulo }}</h1>
     <span class="etiqueta-version">excluidos</span>
+    <span id="estado-refresco" class="estado-refresco">Cargando…</span>
   </div>
   <div class="cabecera-der">
-    <a class="boton secundario" href="/">Volver al panel</a>
+    <a class="boton" href="/">Volver al panel</a>
+    <button id="btn-refrescar" class="boton secundario" type="button">Refrescar</button>
+    <button id="btn-media" class="boton secundario" type="button"
+            title="Recalcula el tamaño de las carpetas media (puede tardar)">Recalcular media</button>
+    <button id="btn-excel" class="boton secundario" type="button">Excel</button>
+    <button id="btn-csv" class="boton secundario" type="button">CSV</button>
+    <button id="btn-certificados" class="boton secundario" type="button"
+            title="Certificados de Let's Encrypt: vigencia y renovación">Certificados</button>
+    <button id="btn-tareas" class="boton secundario" type="button">Tareas</button>
+    <button id="btn-historial" class="boton secundario" type="button">Historial</button>
     {% if auth_activa %}<a class="boton secundario" href="/logout">Salir</a>{% endif %}
   </div>
 </header>
 
 <div id="avisos"></div>
 
+<section class="aviso aviso-info" style="margin:12px 18px 0">
+  Esta página muestra <strong>todas</strong> las instalaciones del servidor, ocultas y visibles,
+  con los mismos datos y las mismas acciones que el panel principal.
+  Usa el interruptor de la primera columna para sacar o devolver un sistema al listado.
+</section>
+
+<section class="tarjetas" id="tarjetas"></section>
+
 <section class="barra">
-  <input type="search" id="filtro-texto" placeholder="Buscar instalación…">
+  <input type="search" id="filtro-texto" placeholder="Buscar por cliente, empresa, dominio, ruta, servicio o base…">
+  <select id="filtro-tipo" title="Sistema">
+    <option value="">Todos los sistemas</option>
+    <option value="inventario">Inventario</option>
+    <option value="restaurante">Restaurante</option>
+  </select>
+  <select id="filtro-estado" title="Estado">
+    <option value="">Todos los estados</option>
+    <option value="oculta">Sólo las ocultas</option>
+    <option value="visible">Sólo las visibles</option>
+    <option value="ok">Sin novedades</option>
+    <option value="alerta">Con alerta</option>
+    <option value="error">Caídos</option>
+    <option value="servicio-inactivo">Servicio inactivo</option>
+    <option value="db-caida">Base caída</option>
+    <option value="sitio-desactivado">Sitio Apache desactivado</option>
+    <option value="ssl-problema">SSL vencido / por vencer / autofirmado</option>
+    <option value="url-caida">URL no responde</option>
+    <option value="sin-facturar">Dejó de facturar</option>
+    <option value="socket-huerfano">Servicio parado pero socket escuchando</option>
+    <option value="api-activa">Búsqueda por cédula activa</option>
+    <option value="api-inactiva">Búsqueda por cédula inactiva</option>
+  </select>
+  <select id="orden" title="Ordenar por"></select>
+  <button id="btn-orden-dir" class="boton mini" type="button" title="Invertir orden">▲</button>
+  <div class="menu">
+    <button id="btn-columnas" class="boton mini" type="button">Columnas ▾</button>
+    <div class="menu-caja oculto" id="menu-columnas"></div>
+  </div>
+  <label class="check"><input type="checkbox" id="auto-refresco" checked> Auto</label>
   <span class="crece"></span>
-  <span class="tenue">{{ instalaciones|length }} instalaciones detectadas · {{ nombres|length }} en la lista</span>
+  <span id="contador" class="tenue"></span>
 </section>
 
 <div class="tabla-envoltura">
-  <table class="tabla" id="tabla-excluidos" style="min-width:auto">
+  <table class="tabla" id="tabla">
     <thead>
-      <tr>
-        <th>Mostrar en el panel</th>
-        <th>Cliente</th>
-        <th>Sistema</th>
-        <th>Servicio</th>
-        <th>Dominio</th>
-        <th>Ruta</th>
-      </tr>
+      <tr id="fila-grupos"></tr>
+      <tr id="fila-cabecera"></tr>
     </thead>
-    <tbody>
-      {% for i in instalaciones %}
-      <tr data-buscar="{{ (i.cliente ~ ' ' ~ i.servicio ~ ' ' ~ (i.dominio or '') ~ ' ' ~ i.ruta)|lower }}">
-        <td>
-          <label class="check">
-            <input type="checkbox" class="ver" data-cliente="{{ i.cliente }}"
-                   data-servicio="{{ i.servicio }}" {% if not i.oculta %}checked{% endif %}>
-            {% if i.oculta %}<span class="badge gris">oculta</span>{% else %}<span class="badge verde">visible</span>{% endif %}
-          </label>
-        </td>
-        <td class="cliente">{{ i.cliente }}</td>
-        <td><span class="chip {{ i.tipo }}">{{ i.tipo }}</span></td>
-        <td>{{ i.servicio }}</td>
-        <td>{{ i.dominio or '' }}</td>
-        <td><code class="ruta" title="{{ i.ruta }}">{{ i.ruta }}</code></td>
-      </tr>
-      {% endfor %}
+    <tbody id="cuerpo-tabla">
+      <tr><td class="vacio">Cargando instalaciones…</td></tr>
     </tbody>
+  </table>
+</div>
+
+<div class="tabla-envoltura" id="caja-historial" hidden>
+  <table class="tabla" style="min-width:auto">
+    <thead><tr><th>Fecha</th><th>Usuario</th><th>Acción</th><th>Objetivo</th><th>Resultado</th><th>Salida</th></tr></thead>
+    <tbody id="cuerpo-historial"></tbody>
   </table>
 </div>
 
@@ -58,7 +91,7 @@
     <h3>excluidos.txt</h3>
     <p class="tenue" style="margin:0 0 8px">
       {{ archivo }} · una sola línea, nombres separados por comas. Sirve el nombre del
-      cliente o el del servicio systemd. Se aplica en el siguiente refresco.
+      cliente o el del servicio systemd.
     </p>
     <textarea id="editor-excluidos" rows="3" spellcheck="false">{{ texto }}</textarea>
     {% if huerfanos %}
@@ -67,13 +100,45 @@
     </p>
     {% endif %}
     <div style="margin-top:10px;text-align:right">
-      <button class="boton" type="button" id="btn-guardar">Guardar y refrescar</button>
+      <button class="boton" type="button" id="btn-guardar-excluidos">Guardar lista y refrescar</button>
     </div>
-    <div id="resultado"></div>
+    <div id="resultado-excluidos"></div>
   </div>
 </section>
+
+<footer class="pie"><span id="pie-info"></span></footer>
+
+<div class="modal oculto" id="modal-tarea">
+  <div class="modal-caja">
+    <div class="modal-cabecera">
+      <h2 id="tarea-titulo"></h2>
+      <button class="cerrar" id="tarea-cerrar" type="button">&times;</button>
+    </div>
+    <div class="modal-cuerpo" id="tarea-cuerpo"></div>
+  </div>
+</div>
+
+<div class="modal oculto" id="modal-nueva"><div class="modal-caja">
+  <div class="modal-cabecera"><h2>Nueva instancia</h2>
+    <button class="cerrar" id="nueva-cerrar" type="button">&times;</button></div>
+  <div class="modal-cuerpo" id="nueva-cuerpo"></div>
+</div></div>
+
+<div class="modal oculto" id="modal">
+  <div class="modal-caja">
+    <div class="modal-cabecera">
+      <h2 id="modal-titulo"></h2>
+      <button class="cerrar" id="modal-cerrar" type="button">&times;</button>
+    </div>
+    <div class="modal-cuerpo" id="modal-cuerpo"></div>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ url_for('static', filename='excluidos.js') }}?v={{ version }}"></script>
+<script>
+  window.PANEL_INTERVALO = {{ intervalo }};
+  window.PANEL_MODO = 'excluidos';
+</script>
+<script src="{{ url_for('static', filename='app.js') }}?v={{ version }}"></script>
 {% endblock %}
