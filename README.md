@@ -20,6 +20,7 @@ los certificados y (opcionalmente) la base PostgreSQL de cada cliente.
 | Servicio systemd: activo, arranque, PID, uptime, puerto de gunicorn | El `.service` que apunta a la carpeta (`WorkingDirectory`/`ExecStart`) + `systemctl show` |
 | **Activación por socket**: si el `.service` está parado pero su `.socket` sigue escuchando (el sitio responde igual) | La unidad `<cliente>.socket` y su `ListenStream` |
 | **Búsqueda de cédula por API** activada o no en cada sistema | `seguridad_configuracion` (`usar_api_persona` en inventario, `traer_api_cliente` en restaurante; la columna se detecta) |
+| **Días sin uso**: cuánto lleva la instancia sin actividad real | La más reciente entre la última auditoría, el último inicio de sesión y la última venta |
 | **Consumo de CPU y RAM de cada instancia**, con barra y % sobre el total del servidor | `CPUUsageNSec` (diferencia entre dos muestras) y `MemoryCurrent` de su unidad |
 | **Cuánto ocupa cada instancia frente al disco**: BD, media y logs en % del disco | Tamaños medidos + `statvfs` del servidor |
 | Sitio web: si es **Apache o nginx**, archivo, si está habilitado, ServerName, proxy, y si el demonio (`apache2`/`nginx`) está activo | `/etc/apache2/sites-*` y `/etc/nginx/sites-*` + `conf.d` |
@@ -134,7 +135,9 @@ venv/bin/python run.py --quitar-usuario mochoa
 - Ver de un vistazo el consumo: columnas **CPU**, **RAM** y **Ocupa (BD+media+logs)**
   con barras, y tarjetas con la RAM, la carga y el disco del servidor indicando
   cuánto de eso se llevan las instancias.
-- Buscar por cliente, empresa, dominio, ruta, servicio o base de datos.
+- Buscar por cliente, empresa, dominio, ruta, servicio o base de datos, y filtrar
+  por sistema, estado, **búsqueda de cédula por API** (activa / desactivada / sin
+  la opción) y **tiempo sin uso** (más de 30, 60, 90, 180 días o un año).
 - Desplazar la tabla en horizontal **arrastrándola con el ratón** o con la barra
   que aparece encima de la tabla, sincronizada con ella.
 - Ordenar por cualquier columna: fecha de implementación, tamaño de la base,

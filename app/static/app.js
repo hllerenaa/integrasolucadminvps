@@ -289,6 +289,18 @@
         return fechaAviso(r.ultima_sesion, r.ultima_sesion_dias, 30) +
           '<div class="sub">' + esc(r.ultima_sesion_usuario || '') + '</div>';
       } },
+    { id: 'sin_uso', titulo: 'Sin uso', grupo: 'actividad', requiere: 'bd', num: true,
+      valor: function (i) {
+        var d = (i.resumen || {}).dias_sin_uso;
+        return (d === null || d === undefined) ? -1 : d;
+      },
+      render: function (i) {
+        var d = (i.resumen || {}).dias_sin_uso;
+        if (d === null || d === undefined) return '<span class="tenue">—</span>';
+        var clase = d > 90 ? 'rojo' : (d > 30 ? 'ambar' : 'verde');
+        return badge(clase, d + ' d',
+          'Días desde la última auditoría, sesión o venta (la más reciente)');
+      } },
     { id: 'facturas', titulo: 'Facturación', grupo: 'actividad', requiere: 'bd',
       valor: function (i) {
         var m = (i.resumen || {}).facturas_meses_sin;
@@ -354,9 +366,18 @@
     var txt = ($('#filtro-texto').value || '').toLowerCase().trim();
     var tipo = $('#filtro-tipo').value;
     var est = $('#filtro-estado').value;
+    var api = $('#filtro-api') ? $('#filtro-api').value : '';
+    var uso = $('#filtro-uso') ? parseInt($('#filtro-uso').value, 10) : 0;
     return lista.filter(function (i) {
       var r = i.resumen || {};
       if (tipo && i.tipo !== tipo) return false;
+      if (api === 'si' && !r.api_cedula) return false;
+      if (api === 'no' && r.api_cedula !== false) return false;
+      if (api === 'nd' && r.api_cedula_disponible) return false;
+      if (uso) {
+        if (r.dias_sin_uso === null || r.dias_sin_uso === undefined) return false;
+        if (r.dias_sin_uso <= uso) return false;
+      }
       if (est === 'oculta' && !i.oculta) return false;
       if (est === 'visible' && i.oculta) return false;
       if (est === 'servicio-inactivo' && r.servicio_activo) return false;
@@ -443,6 +464,17 @@
     if (r.dominios_desactualizados) t.push({ rotulo: 'Dominios desactualizados',
       valor: r.dominios_desactualizados, clase: 'mal', filtro: 'dominio-viejo',
       extra: 'credenciales.json vs Apache' });
+    if (cap.bd && r.sin_uso_90) {
+      t.push({ rotulo: 'Sin uso > 90 días', valor: r.sin_uso_90, clase: 'mal',
+        filtroUso: '90', extra: 'sin auditoría, sesión ni ventas' });
+    }
+    if (cap.bd && (r.api_cedula_activas || r.api_cedula_inactivas)) {
+      t.push({ rotulo: 'API cédula activa',
+        valor: (r.api_cedula_activas || 0) + '/' +
+               ((r.api_cedula_activas || 0) + (r.api_cedula_inactivas || 0)),
+        filtroApi: 'no',
+        extra: (r.api_cedula_inactivas || 0) + ' con la búsqueda desactivada' });
+    }
     if (cap.bd) {
       t.push({ rotulo: 'Bases activas', valor: (r.db_activas || 0) + '/' + (r.total || 0),
         clase: r.db_caidas ? 'mal' : 'ok', filtro: 'db-caida' });
@@ -476,7 +508,10 @@
                         (r.ocupa_tamano ? ' · instancias ' + r.ocupa_tamano : '')) : '' });
 
     $('#tarjetas').innerHTML = t.map(function (x) {
-      return '<div class="tarjeta ' + (x.clase || '') + (x.filtro ? ' clicable" data-filtro="' + x.filtro : '') + '">' +
+      var extraAttr = x.filtro ? ' clicable" data-filtro="' + x.filtro
+                    : (x.filtroApi ? ' clicable" data-filtro-api="' + x.filtroApi
+                    : (x.filtroUso ? ' clicable" data-filtro-uso="' + x.filtroUso : ''));
+      return '<div class="tarjeta ' + (x.clase || '') + extraAttr + '">' +
         '<div class="rotulo">' + esc(x.rotulo) + '</div>' +
         '<div class="valor">' + esc(x.valor) + '</div>' +
         (x.extra ? '<div class="rotulo">' + esc(x.extra) + '</div>' : '') + '</div>';
@@ -1707,7 +1742,13 @@
         }
         var tarjeta = el.closest('.tarjeta.clicable');
         if (tarjeta) {
-          $('#filtro-estado').value = tarjeta.getAttribute('data-filtro');
+          if (tarjeta.getAttribute('data-filtro-api') && $('#filtro-api')) {
+            $('#filtro-api').value = tarjeta.getAttribute('data-filtro-api');
+          } else if (tarjeta.getAttribute('data-filtro-uso') && $('#filtro-uso')) {
+            $('#filtro-uso').value = tarjeta.getAttribute('data-filtro-uso');
+          } else if (tarjeta.getAttribute('data-filtro')) {
+            $('#filtro-estado').value = tarjeta.getAttribute('data-filtro');
+          }
           return pintarTabla();
         }
         var th = el.closest('th[data-col]');
@@ -1734,6 +1775,7 @@
       var el = e.target;
       if (el.id === 'auto-refresco') return programarAuto();
       if (el.id === 'orden') { estado.orden = el.value; return pintarTabla(); }
+      if (el.id === 'filtro-api' || el.id === 'filtro-uso') return pintarTabla();
       if (el.id === 'filtro-backup-estado') return pintarBackups();
       if (el.id === 'solo-sin-uso') return pintarBases();
       if (el.id === 'filtro-cert-estado') { estadoCert.estado = el.value; return pintarFilasCert(); }
@@ -1745,7 +1787,10 @@
     });
 
     document.addEventListener('input', function (e) {
-      if (['filtro-texto', 'filtro-tipo', 'filtro-estado'].indexOf(e.target.id) !== -1) pintarTabla();
+      if (['filtro-texto', 'filtro-tipo', 'filtro-estado', 'filtro-api',
+           'filtro-uso'].indexOf(e.target.id) !== -1) {
+        pintarTabla();
+      }
       if (['filtro-backups', 'filtro-backup-estado'].indexOf(e.target.id) !== -1) pintarBackups();
       if (e.target.id === 'filtro-cert') { estadoCert.filtro = e.target.value; pintarFilasCert(); }
     });

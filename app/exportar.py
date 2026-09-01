@@ -43,6 +43,8 @@ COLUMNAS = [
     ('ocupa_legible', 'Ocupa total', 13),
     ('ocupa_pct_disco', 'Ocupa % del disco', 17),
     ('logs_archivos', 'Archivos de log', 15),
+    ('dias_sin_uso', 'Días sin uso', 13),
+    ('api_cedula', 'API cédula', 12),
     ('auditoria_fecha', 'Última auditoría', 17),
     ('auditoria_usuario', 'Usuario auditoría', 18),
     ('auditoria_accion', 'Acción auditoría', 16),
@@ -102,6 +104,9 @@ def fila(inst):
         'ocupa_pct_disco': r.get('ocupa_pct_disco'),
         'logs_tamano': r.get('logs_tamano'),
         'logs_archivos': r.get('logs_archivos'),
+        'dias_sin_uso': r.get('dias_sin_uso'),
+        'api_cedula': ('activa' if r.get('api_cedula') else
+                       ('inactiva' if r.get('api_cedula') is False else '-')),
         'auditoria_fecha': r.get('auditoria_fecha'),
         'auditoria_usuario': r.get('auditoria_usuario'),
         'auditoria_accion': {'A': 'Adición', 'M': 'Modificación', 'E': 'Eliminación'}

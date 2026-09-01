@@ -145,8 +145,15 @@ def _resumen_fila(datos):
     media_bytes = (datos.get('media') or {}).get('bytes') or 0
     logs_bytes = (datos.get('logs') or {}).get('bytes') or 0
 
+    # "Sin uso": días desde la última señal de actividad real (auditoría,
+    # inicio de sesión o venta). Se toma la más reciente de las tres.
+    senales = [auditoria.get('dias'), sesiones.get('dias'), venta.get('dias_sin_ventas')]
+    senales = [d for d in senales if isinstance(d, int) and d >= 0]
+    dias_sin_uso = min(senales) if senales else None
+
     return {
         'salud': salud,
+        'dias_sin_uso': dias_sin_uso,
         'cpu_pct': servicio.get('cpu_pct'),
         'ram_bytes': servicio.get('memoria_bytes'),
         'ram_legible': servicio.get('memoria'),
@@ -309,6 +316,12 @@ class Colector(object):
                          if (i.get('ssl') or {}).get('estado') in ('vencido', 'por-vencer'))
         urls_ok = sum(1 for i in instancias if (i.get('url_estado') or {}).get('responde'))
         dominios_viejos = sum(1 for i in instancias if i.get('dominio_desactualizado'))
+        sin_uso_90 = sum(1 for i in instancias
+                         if isinstance((i.get('resumen') or {}).get('dias_sin_uso'), int)
+                         and (i.get('resumen') or {}).get('dias_sin_uso') > 90)
+        api_activas = sum(1 for i in instancias if (i.get('resumen') or {}).get('api_cedula'))
+        api_inactivas = sum(1 for i in instancias
+                            if (i.get('resumen') or {}).get('api_cedula') is False)
         por_tipo = {}
         for i in instancias:
             por_tipo[i.get('tipo')] = por_tipo.get(i.get('tipo'), 0) + 1
@@ -321,6 +334,9 @@ class Colector(object):
             'ssl_alerta': ssl_alerta,
             'urls_ok': urls_ok,
             'dominios_desactualizados': dominios_viejos,
+            'sin_uso_90': sin_uso_90,
+            'api_cedula_activas': api_activas,
+            'api_cedula_inactivas': api_inactivas,
             'db_activas': db_ok,
             'db_caidas': total - db_ok,
             'db_bytes': db_bytes,

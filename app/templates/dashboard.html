@@ -46,6 +46,20 @@
     <option value="api-activa">Búsqueda por cédula activa</option>
     <option value="api-inactiva">Búsqueda por cédula inactiva</option>
   </select>
+  <select id="filtro-uso" title="Tiempo sin actividad">
+    <option value="">Actividad: todas</option>
+    <option value="30">Sin uso &gt; 30 días</option>
+    <option value="60">Sin uso &gt; 60 días</option>
+    <option value="90">Sin uso &gt; 90 días</option>
+    <option value="180">Sin uso &gt; 180 días</option>
+    <option value="365">Sin uso &gt; 1 año</option>
+  </select>
+  <select id="filtro-api" title="Búsqueda de cédula por API">
+    <option value="">API cédula: todas</option>
+    <option value="si">Con API activa</option>
+    <option value="no">Con API desactivada</option>
+    <option value="nd">Sin esa opción</option>
+  </select>
   <select id="orden" title="Ordenar por"></select>
   <button id="btn-orden-dir" class="boton mini" type="button" title="Invertir orden">▲</button>
   <div class="menu">
