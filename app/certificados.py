@@ -10,6 +10,7 @@ import datetime
 import glob
 import os
 import re
+import shutil
 
 from .utils import ejecutar
 
@@ -106,14 +107,57 @@ def reanudar_renovacion(nombre, config=None):
             'mensaje': 'La renovación automática de %s vuelve a estar activa' % nombre}
 
 
-def eliminar(nombre, config=None):
-    """Elimina el certificado con certbot delete (borra los archivos)."""
+def _restos(nombre, config=None):
+    """Carpetas y archivos que quedan de un certificado."""
+    posibles = [
+        os.path.join(RUTA_LIVE, nombre),
+        os.path.join(os.path.dirname(RUTA_LIVE), 'archive', nombre),
+        os.path.join(_dir_renovacion(config), '%s.conf' % nombre),
+        os.path.join(_dir_renovacion(config), '%s.conf%s' % (nombre, SUFIJO_PAUSA)),
+    ]
+    return [r for r in posibles if os.path.exists(r)]
+
+
+def eliminar(nombre, config=None, forzar=False):
+    """Elimina el certificado con certbot delete y comprueba que se fue.
+
+    Si certbot no lo quita (versiones que ignoran --non-interactive, o
+    restos en disco), se informa qué quedó; con forzar=True se borran esos
+    restos a mano.
+    """
     codigo, salida, error = ejecutar(
         ['certbot', 'delete', '--cert-name', nombre, '--non-interactive'], timeout=300)
     mensaje = (salida or error or '').strip()
-    if codigo != 0:
-        return {'ok': False, 'error': mensaje or 'certbot devolvió el código %s' % codigo}
-    return {'ok': True, 'mensaje': mensaje or 'Certificado %s eliminado' % nombre,
+
+    restos = _restos(nombre, config)
+    borrados = []
+    if restos and forzar:
+        for resto in restos:
+            try:
+                if os.path.isdir(resto):
+                    shutil.rmtree(resto)
+                else:
+                    os.remove(resto)
+                borrados.append(resto)
+            except OSError as ex:
+                return {'ok': False, 'error': 'No se pudo borrar %s: %s' % (resto, ex),
+                        'salida': mensaje, 'restos': restos}
+        restos = _restos(nombre, config)
+
+    if restos:
+        return {
+            'ok': False,
+            'error': ('certbot terminó con código %s pero el certificado sigue en disco.'
+                      % codigo),
+            'salida': mensaje,
+            'restos': restos,
+            'puede_forzar': True,
+        }
+
+    return {'ok': True,
+            'mensaje': 'Certificado %s eliminado%s'
+                       % (nombre, ' (restos borrados a mano)' if borrados else ''),
+            'salida': mensaje,
             'aviso': 'Revisa el vhost: si apuntaba a ese certificado, Apache/nginx no arrancará '
                      'hasta corregirlo o emitir uno nuevo.'}
 

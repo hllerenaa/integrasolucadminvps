@@ -62,7 +62,7 @@ eso funciona aunque el esquema varíe entre inventario y restaurante.
 | Sección | Para qué |
 |---|---|
 | **Instancias** (`/`) | El listado completo con todos los datos y las acciones sobre cada instalación |
-| **Certificados** (`/certificados`) | Certificados de Let's Encrypt: emisión, vencimiento, renovar, pausar la renovación o eliminar |
+| **Certificados** (`/certificados`) | Certificados de Let's Encrypt: emisión, vencimiento, renovar, pausar la renovación o eliminar, con buscador y tabla ordenable |
 | **Backups** (`/backups`) | Respaldos por instancia o de cualquier base, descarga, retención y las bases del servidor sin instancia |
 | **Nueva instancia** (`/nueva`) | El asistente de creación |
 | **Excluidos** (`/excluidos`) | El mismo panel con todas las instalaciones y el interruptor para ocultarlas o mostrarlas |
@@ -120,9 +120,17 @@ venv/bin/python run.py --quitar-usuario mochoa
   restantes y a qué instancia pertenece cada uno, con renovación por
   certificado o de todos, y una opción de prueba (`--dry-run`). La renovación
   corre en segundo plano con log en vivo y recarga el servidor web al terminar.
+  También se puede **pausar la renovación automática** de un certificado
+  (reversible: se renombra su archivo en `/etc/letsencrypt/renewal`) o
+  **eliminarlo**; tras `certbot delete` se comprueba que realmente desapareció
+  y, si quedan restos en disco, se ofrece borrarlos.
 - Activar o desactivar el **sitio web**: `a2ensite`/`a2dissite` en Apache o el
-  enlace en `sites-enabled` en nginx. Antes de recargar se valida la
-  configuración (`apache2ctl configtest` / `nginx -t`) y sólo se recarga si pasa.
+  enlace en `sites-enabled` en nginx. Si `a2dissite` falla (por ejemplo cuando
+  el archivo está directamente en `sites-enabled` en vez de ser un enlace), el
+  panel lo resuelve él mismo: quita el enlace o mueve el archivo a
+  `sites-available`. Antes de recargar valida la configuración
+  (`apache2ctl configtest` / `nginx -t`) y sólo recarga si pasa; la respuesta
+  incluye la salida exacta de cada comando.
 - Ver de un vistazo el consumo: columnas **CPU**, **RAM** y **Ocupa (BD+media+logs)**
   con barras, y tarjetas con la RAM, la carga y el disco del servidor indicando
   cuánto de eso se llevan las instancias.

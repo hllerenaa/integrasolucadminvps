@@ -527,11 +527,8 @@ def crear_app(config=None):
         elif accion == 'reanudar':
             resultado = mod_certificados.reanudar_renovacion(nombre, config)
         elif accion == 'eliminar':
-            # Borrar un certificado es irreversible: se exige repetir el nombre.
-            if (cuerpo.get('confirmacion') or '').strip() != nombre:
-                return jsonify({'ok': False,
-                                'error': 'Para eliminar hay que repetir el nombre exacto'}), 400
-            resultado = mod_certificados.eliminar(nombre, config)
+            resultado = mod_certificados.eliminar(nombre, config,
+                                                  forzar=bool(cuerpo.get('forzar')))
         else:
             return jsonify({'ok': False, 'error': 'Acción no permitida: %s' % accion}), 400
 

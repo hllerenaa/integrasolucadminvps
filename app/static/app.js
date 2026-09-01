@@ -1160,8 +1160,22 @@
       });
   }
 
+  var estadoCert = { datos: [], orden: 'dias', asc: true, destino: null };
+
+  var COLUMNAS_CERT = [
+    { id: 'nombre', titulo: 'Certificado', valor: function (c) { return (c.nombre || '').toLowerCase(); } },
+    { id: 'cliente', titulo: 'Instancia', valor: function (c) { return (c.cliente || 'zzz').toLowerCase(); } },
+    { id: 'dominios', titulo: 'Dominios', valor: function (c) { return (c.dominios || []).join(','); } },
+    { id: 'emitido', titulo: 'Emitido', valor: function (c) { return c.emitido || ''; } },
+    { id: 'vence', titulo: 'Vence', valor: function (c) { return c.vence || ''; } },
+    { id: 'dias', titulo: 'Días', num: true,
+      valor: function (c) { return (c.dias === null || c.dias === undefined) ? 999999 : c.dias; } },
+    { id: 'estado', titulo: 'Estado', valor: function (c) { return c.estado || ''; } }
+  ];
+
   function verCertificados(destino) {
-    var caja = $(destino || '#tarea-cuerpo');
+    estadoCert.destino = destino || '#tarea-cuerpo';
+    var caja = $(estadoCert.destino);
     if (!destino) {
       $('#tarea-titulo').textContent = 'Certificados SSL';
       $('#modal-tarea').classList.remove('oculto');
@@ -1169,68 +1183,125 @@
     }
     caja.innerHTML = '<p class="tenue">Consultando certbot…</p>';
 
-    fetch('/api/certificados', { credentials: 'same-origin' })
+    return fetch('/api/certificados', { credentials: 'same-origin' })
       .then(function (r) { return r.json(); })
       .then(function (d) {
-        var cap = estado.capacidades || {};
         if (d.error && !(d.certificados || []).length) {
           caja.innerHTML = '<div class="aviso-error">' + esc(d.error) + '</div>';
           return;
         }
-        var filas = (d.certificados || []).map(function (c) {
-          var clase = c.estado === 'vigente' ? 'verde'
-                    : (['renovable', 'por-vencer', 'renovacion-pausada'].indexOf(c.estado) !== -1
-                       ? 'ambar' : 'rojo');
-          var pausada = c.renovacion === 'pausada';
-          var acciones = '';
-          if (cap.acciones_certbot) {
-            acciones =
-              '<button class="boton mini renovar-cert" type="button" data-nombre="' +
-                esc(c.nombre) + '">Renovar</button> ' +
-              '<button class="boton mini cert-accion" type="button" data-nombre="' + esc(c.nombre) +
-                '" data-accion="' + (pausada ? 'reanudar' : 'pausar') + '">' +
-                (pausada ? 'Reanudar renovación' : 'Pausar renovación') + '</button> ' +
-              '<button class="boton mini peligro cert-accion" type="button" data-nombre="' +
-                esc(c.nombre) + '" data-accion="eliminar" style="color:#fff">Eliminar</button>';
-          }
-          return '<tr><td><strong>' + esc(c.nombre) + '</strong>' +
-            (c.cliente ? '<div class="sub">' + esc(c.cliente) + '</div>' : '') + '</td>' +
-            '<td>' + esc((c.dominios || []).join(', ')) + '</td>' +
-            '<td>' + guion(c.emitido) + '</td>' +
-            '<td>' + guion(c.vence) + '</td>' +
-            '<td>' + badge(clase, (c.dias === null || c.dias === undefined ? '?' : c.dias + 'd')) +
-              '<div class="sub">' + esc(c.estado) + '</div>' +
-              (pausada ? '<div class="sub aviso-inline">sin renovación automática</div>' : '') +
-            '</td>' +
-            '<td>' + acciones + '</td></tr>';
-        }).join('') || '<tr><td colspan="6" class="vacio">No hay certificados</td></tr>';
-
-        caja.innerHTML =
-          '<p class="tenue">' + esc(d.total) + ' certificado(s) · fuente: ' +
-            (d.certbot ? 'certbot certificates' : 'lectura de /etc/letsencrypt/live') + '</p>' +
-          '<table class="tabla-mini"><thead><tr><th>Certificado</th><th>Dominios</th>' +
-            '<th>Emitido</th><th>Vence</th><th>Estado</th><th></th></tr></thead>' +
-            '<tbody>' + filas + '</tbody></table>' +
-          (cap.acciones_certbot
-            ? '<div style="margin-top:14px;text-align:right">' +
-              '<button class="boton mini renovar-cert" type="button" data-simular="1">Probar renovación (dry-run)</button> ' +
-              '<button class="boton renovar-cert" type="button">Renovar los que toquen</button>' +
-              '</div>'
-            : '<p class="tenue">La renovación está desactivada en config.json</p>');
+        estadoCert.datos = d.certificados || [];
+        estadoCert.meta = d;
+        pintarCertificados();
       })
       .catch(function (e) {
         caja.innerHTML = '<div class="aviso-error">' + esc(e.message) + '</div>';
       });
   }
 
-  function accionCertificado(nombre, accion) {
-    var cuerpo = { nombre: nombre, accion: accion };
-    if (accion === 'eliminar') {
-      var escrito = window.prompt('Eliminar el certificado "' + nombre +
-        '" borra sus archivos y su configuración de renovación. Si algún vhost lo usa, ' +
-        'el servidor web no arrancará hasta corregirlo.\n\nEscribe el nombre exacto para confirmar:');
-      if (!escrito) return;
-      cuerpo.confirmacion = escrito.trim();
+  function pintarCertificados() {
+    var d = estadoCert.meta || {}, cap = estado.capacidades || {};
+    var caja = $(estadoCert.destino);
+    caja.innerHTML =
+      '<div class="barra" style="padding-left:0;padding-right:0">' +
+        '<input type="search" id="filtro-cert" placeholder="Buscar certificado, dominio o cliente…"' +
+          ' value="' + esc(estadoCert.filtro || '') + '">' +
+        '<select id="filtro-cert-estado">' +
+          ['', 'vigente', 'renovable', 'por-vencer', 'vencido', 'renovacion-pausada', 'sin-instancia']
+            .map(function (v) {
+              var etiquetas = { '': 'Todos los estados', 'sin-instancia': 'Sin instancia asociada',
+                                'renovacion-pausada': 'Renovación pausada' };
+              return '<option value="' + esc(v) + '"' +
+                (estadoCert.estado === v ? ' selected' : '') + '>' +
+                esc(etiquetas[v] || v) + '</option>';
+            }).join('') +
+        '</select>' +
+        '<span class="crece"></span>' +
+        '<span class="tenue" id="contador-cert"></span>' +
+        (cap.acciones_certbot
+          ? ' <button class="boton mini renovar-cert" type="button" data-simular="1">Probar renovación</button>' +
+            ' <button class="boton renovar-cert" type="button">Renovar los que toquen</button>'
+          : '') +
+      '</div>' +
+      '<p class="tenue">Fuente: ' + (d.certbot ? 'certbot certificates' : '/etc/letsencrypt/live') +
+        ' · ' + esc(d.total || 0) + ' certificado(s)</p>' +
+      '<div class="tabla-envoltura"><table class="tabla" id="tabla-cert" style="min-width:auto">' +
+        '<thead><tr id="cabecera-cert"></tr></thead>' +
+        '<tbody id="cuerpo-cert"></tbody></table></div>';
+    pintarFilasCert();
+  }
+
+  function pintarFilasCert() {
+    var cap = estado.capacidades || {};
+    var txt = (estadoCert.filtro || '').toLowerCase().trim();
+    var filtroEstado = estadoCert.estado || '';
+
+    var lista = (estadoCert.datos || []).filter(function (c) {
+      if (filtroEstado === 'sin-instancia' && c.cliente) return false;
+      if (filtroEstado && filtroEstado !== 'sin-instancia' && c.estado !== filtroEstado) return false;
+      if (txt) {
+        var blob = [c.nombre, (c.dominios || []).join(' '), c.cliente, c.emisor, c.estado]
+          .join(' ').toLowerCase();
+        if (blob.indexOf(txt) === -1) return false;
+      }
+      return true;
+    });
+
+    var col = COLUMNAS_CERT.filter(function (c) { return c.id === estadoCert.orden; })[0]
+              || COLUMNAS_CERT[5];
+    var dir = estadoCert.asc ? 1 : -1;
+    lista = lista.slice().sort(function (a, b) {
+      var va = col.valor(a), vb = col.valor(b);
+      if (va === vb) return (a.nombre || '').localeCompare(b.nombre || '');
+      if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * dir;
+      return String(va).localeCompare(String(vb)) * dir;
+    });
+
+    $('#cabecera-cert').innerHTML = COLUMNAS_CERT.map(function (c) {
+      return '<th data-cert="' + c.id + '" class="' + (c.num ? 'num ' : '') +
+        (estadoCert.orden === c.id ? 'ordenada' : '') + '">' + esc(c.titulo) +
+        (estadoCert.orden === c.id ? (estadoCert.asc ? ' ▲' : ' ▼') : '') + '</th>';
+    }).join('') + '<th></th>';
+
+    $('#cuerpo-cert').innerHTML = lista.map(function (c) {
+      var clase = c.estado === 'vigente' ? 'verde'
+                : (['renovable', 'por-vencer', 'renovacion-pausada'].indexOf(c.estado) !== -1
+                   ? 'ambar' : 'rojo');
+      var pausada = c.renovacion === 'pausada';
+      var acciones = '';
+      if (cap.acciones_certbot) {
+        acciones =
+          '<button class="boton mini renovar-cert" type="button" data-nombre="' +
+            esc(c.nombre) + '">Renovar</button> ' +
+          '<button class="boton mini cert-accion" type="button" data-nombre="' + esc(c.nombre) +
+            '" data-accion="' + (pausada ? 'reanudar' : 'pausar') + '">' +
+            (pausada ? 'Reanudar' : 'Pausar') + '</button> ' +
+          '<button class="boton mini peligro cert-accion" type="button" style="color:#fff" ' +
+            'data-nombre="' + esc(c.nombre) + '" data-accion="eliminar">Eliminar</button>';
+      }
+      return '<tr><td><strong>' + esc(c.nombre) + '</strong>' +
+        (c.emisor ? '<div class="sub">' + esc(c.emisor) + '</div>' : '') + '</td>' +
+        '<td>' + (c.cliente ? esc(c.cliente) : '<span class="tenue">sin instancia</span>') + '</td>' +
+        '<td class="sub">' + esc((c.dominios || []).join(', ')) + '</td>' +
+        '<td>' + guion(c.emitido) + '</td>' +
+        '<td>' + guion(c.vence) + '</td>' +
+        '<td class="num">' + badge(clase, (c.dias === null || c.dias === undefined ? '?' : c.dias + 'd')) + '</td>' +
+        '<td>' + esc(c.estado) +
+          (pausada ? '<div class="sub aviso-inline">sin renovación automática</div>' : '') + '</td>' +
+        '<td>' + acciones + '</td></tr>';
+    }).join('') || '<tr><td colspan="8" class="vacio">Sin certificados que coincidan</td></tr>';
+
+    if ($('#contador-cert')) {
+      $('#contador-cert').textContent = lista.length + ' de ' + (estadoCert.datos || []).length;
+    }
+  }
+
+  function accionCertificado(nombre, accion, forzar) {
+    var cuerpo = { nombre: nombre, accion: accion, forzar: !!forzar };
+    if (accion === 'eliminar' && !forzar) {
+      if (!window.confirm('¿Eliminar el certificado "' + nombre + '"?\n\n' +
+          'Se borran sus archivos y su configuración de renovación. Si algún vhost lo usa, ' +
+          'el servidor web no arrancará hasta corregirlo o emitir uno nuevo.')) return;
     } else if (accion === 'pausar' &&
                !window.confirm('Pausar la renovación automática de "' + nombre +
                  '"? El certificado sigue funcionando hasta que venza, pero certbot dejará ' +
@@ -1243,9 +1314,17 @@
       body: JSON.stringify(cuerpo)
     }).then(function (r) { return r.json(); })
       .then(function (d) {
-        if (!d.ok) { aviso(d.error || 'No se pudo aplicar'); return; }
+        if (!d.ok) {
+          if (d.puede_forzar && window.confirm(
+              (d.error || '') + '\n\nQuedaron en disco:\n' + (d.restos || []).join('\n') +
+              '\n\n¿Borrar esos restos a mano?')) {
+            return accionCertificado(nombre, 'eliminar', true);
+          }
+          aviso((d.error || 'No se pudo aplicar') + (d.salida ? ' · ' + d.salida : ''));
+          return;
+        }
         aviso((d.mensaje || 'Listo') + (d.aviso ? ' · ' + d.aviso : ''), 'aviso-ok');
-        verCertificados(MODO === 'certificados' ? '#contenido' : null);
+        verCertificados(estadoCert.destino === '#contenido' ? '#contenido' : null);
       })
       .catch(function (e) { aviso(e.message); });
   }
@@ -1569,6 +1648,13 @@
         if (el.id === 'btn-tareas') return listarTareas();
         if (el.id === 'btn-certificados') return verCertificados();
         if (el.id === 'btn-cert-recargar') return verCertificados('#contenido');
+        var thCert = el.closest('th[data-cert]');
+        if (thCert) {
+          var campo = thCert.getAttribute('data-cert');
+          estadoCert.asc = (estadoCert.orden === campo) ? !estadoCert.asc : true;
+          estadoCert.orden = campo;
+          return pintarFilasCert();
+        }
         if (el.id === 'btn-backups-recargar') { verBackups(); return verBases(); }
         if (el.id === 'btn-backup-todos') return crearBackup(null);
         if (el.classList.contains('backup-crear')) return crearBackup([el.getAttribute('data-id')]);
@@ -1650,6 +1736,7 @@
       if (el.id === 'orden') { estado.orden = el.value; return pintarTabla(); }
       if (el.id === 'filtro-backup-estado') return pintarBackups();
       if (el.id === 'solo-sin-uso') return pintarBases();
+      if (el.id === 'filtro-cert-estado') { estadoCert.estado = el.value; return pintarFilasCert(); }
       if (el.classList.contains('ver-en-panel')) return alternarVisibilidad(el);
       if (el.hasAttribute && el.hasAttribute('data-grupo')) {
         estado.grupos[el.getAttribute('data-grupo')] = el.checked;
@@ -1660,6 +1747,7 @@
     document.addEventListener('input', function (e) {
       if (['filtro-texto', 'filtro-tipo', 'filtro-estado'].indexOf(e.target.id) !== -1) pintarTabla();
       if (['filtro-backups', 'filtro-backup-estado'].indexOf(e.target.id) !== -1) pintarBackups();
+      if (e.target.id === 'filtro-cert') { estadoCert.filtro = e.target.value; pintarFilasCert(); }
     });
 
     document.addEventListener('keydown', function (e) {

@@ -290,7 +290,10 @@ def buscar_vhost(instancia, vhosts, puerto_servicio=None, socket_unix=None):
             puntaje -= 200   # el vhost por defecto de Apache nunca es la respuesta
         if not puntaje:
             continue
-        candidatos.append((puntaje, 1 if vhost['ssl'] else 0, vhost, motivos))
+        # Ante empate manda el que está habilitado y luego el que tiene SSL:
+        # a2dissite sólo puede con el que realmente está activo.
+        candidatos.append((puntaje, (1 if vhost['habilitado'] else 0, 1 if vhost['ssl'] else 0),
+                           vhost, motivos))
 
     # Por debajo del umbral no se afirma nada, pero si hay una coincidencia
     # débil se devuelve marcada para no dejar la instancia "sin vhost" a ciegas.

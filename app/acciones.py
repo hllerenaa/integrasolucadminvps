@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
 
 from .utils import ahora_iso, ejecutar
 
@@ -86,18 +87,7 @@ def ejecutar_accion(config, instancia_datos, accion, usuario=None):
         sitio = web.get('sitio')
         if not sitio:
             return {'ok': False, 'error': 'No se detectó el sitio web (vhost) de esta instancia'}
-        if (web.get('servidor') or 'apache') == 'nginx':
-            enlace = os.path.join(web.get('dir_habilitados') or '/etc/nginx/sites-enabled',
-                                  web.get('sitio_archivo') or sitio)
-            origen = os.path.join(web.get('dir_disponibles') or '/etc/nginx/sites-available',
-                                  web.get('sitio_archivo') or sitio)
-            if accion == 'apache_activar':
-                comando = ['ln', '-sfn', origen, enlace]
-            else:
-                comando = ['rm', '-f', enlace]
-        else:
-            comando = ['a2ensite' if accion == 'apache_activar' else 'a2dissite', sitio]
-        objetivo = sitio
+        return _accion_sitio_web(config, usuario, accion, web, sitio)
     else:  # apache_recargar
         servidor = ((instancia_datos.get('apache') or {}).get('servidor') or 'apache')
         comando = ['systemctl', 'reload', 'nginx' if servidor == 'nginx' else 'apache2']
@@ -116,26 +106,95 @@ def ejecutar_accion(config, instancia_datos, accion, usuario=None):
         'codigo': codigo,
     }
 
-    # Activar o desactivar un sitio sólo surte efecto tras recargar el servidor.
-    if resultado['ok'] and accion in ACCIONES_APACHE:
-        es_nginx = ((instancia_datos.get('apache') or {}).get('servidor') or 'apache') == 'nginx'
-        demonio = 'nginx' if es_nginx else 'apache2'
-        # Antes de recargar se valida la configuración para no tumbar el servidor.
-        prueba = ['nginx', '-t'] if es_nginx else ['apache2ctl', 'configtest']
-        codigo_prueba, salida_prueba, error_prueba = ejecutar(prueba, timeout=60)
-        resultado['configtest'] = {'ok': codigo_prueba == 0,
-                                   'salida': (salida_prueba or error_prueba or '').strip()}
-        if codigo_prueba != 0:
-            resultado['ok'] = False
-            resultado['salida'] = ('La configuración de %s no valida, no se recargó: %s'
-                                   % (demonio, (salida_prueba or error_prueba or '').strip()))
-            _registrar(config, usuario, 'configtest', demonio, codigo_prueba,
-                       salida_prueba or error_prueba)
-            return resultado
-        codigo2, salida2, error2 = ejecutar(['systemctl', 'reload', demonio], timeout=60)
-        resultado['recarga'] = {'ok': codigo2 == 0, 'salida': (salida2 or error2 or '').strip()}
-        _registrar(config, usuario, 'recargar_web', demonio, codigo2, salida2 or error2)
+    return resultado
 
+
+def _accion_sitio_web(config, usuario, accion, web, sitio):
+    """Activa o desactiva un sitio, con respaldo si a2ensite/a2dissite falla.
+
+    En nginx (y en Apache cuando el archivo no está en sites-available) se
+    gestiona el enlace de sites-enabled directamente, que es lo mismo que
+    hacen a2ensite y a2dissite.
+    """
+    es_nginx = (web.get('servidor') or 'apache') == 'nginx'
+    activar = accion == 'apache_activar'
+    archivo = web.get('sitio_archivo') or ('%s.conf' % sitio)
+    dir_disponibles = web.get('dir_disponibles') or (
+        '/etc/nginx/sites-available' if es_nginx else '/etc/apache2/sites-available')
+    dir_habilitados = web.get('dir_habilitados') or (
+        '/etc/nginx/sites-enabled' if es_nginx else '/etc/apache2/sites-enabled')
+    origen = os.path.join(dir_disponibles, archivo)
+    enlace = os.path.join(dir_habilitados, archivo)
+
+    pasos = []
+    ok = False
+    salida_final = ''
+
+    def paso(comando, timeout=60):
+        codigo, salida, error = ejecutar(comando, timeout=timeout)
+        texto = (salida or error or '').strip()
+        pasos.append({'comando': ' '.join(shlex.quote(p) for p in comando),
+                      'codigo': codigo, 'salida': texto})
+        _registrar(config, usuario, accion, ' '.join(comando), codigo, texto)
+        return codigo, texto
+
+    if not es_nginx and shutil.which('a2ensite' if activar else 'a2dissite'):
+        codigo, salida_final = paso(['a2ensite' if activar else 'a2dissite', sitio])
+        ok = codigo == 0
+
+    if not ok:
+        # Respaldo: se maneja el enlace a mano.
+        if activar:
+            if not os.path.isfile(origen) and os.path.isfile(enlace):
+                ok, salida_final = True, 'El archivo ya está en %s' % dir_habilitados
+            elif os.path.isfile(origen):
+                codigo, salida_final = paso(['ln', '-sfn', origen, enlace])
+                ok = codigo == 0
+            else:
+                salida_final = 'No existe %s' % origen
+        else:
+            if os.path.islink(enlace):
+                codigo, salida_final = paso(['rm', '-f', enlace])
+                ok = codigo == 0
+            elif os.path.isfile(enlace):
+                # Archivo real dentro de sites-enabled: se mueve a
+                # sites-available para dejarlo desactivado sin perderlo.
+                try:
+                    os.makedirs(dir_disponibles, exist_ok=True)
+                    shutil.move(enlace, origen)
+                    ok = True
+                    salida_final = ('El archivo estaba directamente en %s (a2dissite no puede '
+                                    'con eso): se movió a %s' % (dir_habilitados, origen))
+                    _registrar(config, usuario, accion, enlace, 0, salida_final)
+                except OSError as ex:
+                    salida_final = 'No se pudo mover %s: %s' % (enlace, ex)
+            elif os.path.isfile(origen):
+                ok, salida_final = True, 'El sitio ya estaba desactivado'
+            else:
+                salida_final = 'No se encontró %s ni %s' % (enlace, origen)
+
+    resultado = {'ok': ok, 'accion': accion, 'objetivo': sitio, 'servidor': web.get('servidor'),
+                 'comando': ' && '.join(p['comando'] for p in pasos) or '(sin comandos)',
+                 'pasos': pasos, 'salida': salida_final}
+    if not ok:
+        resultado['error'] = salida_final or 'No se pudo cambiar el estado del sitio'
+        return resultado
+
+    # Validar y recargar
+    demonio = 'nginx' if es_nginx else 'apache2'
+    codigo, salida = paso(['nginx', '-t'] if es_nginx else ['apache2ctl', 'configtest'])
+    resultado['configtest'] = {'ok': codigo == 0, 'salida': salida}
+    if codigo != 0:
+        resultado['ok'] = False
+        resultado['error'] = ('La configuración de %s no valida, no se recargó: %s'
+                              % (demonio, salida))
+        return resultado
+
+    codigo, salida = paso(['systemctl', 'reload', demonio])
+    resultado['recarga'] = {'ok': codigo == 0, 'salida': salida}
+    if codigo != 0:
+        resultado['ok'] = False
+        resultado['error'] = 'No se pudo recargar %s: %s' % (demonio, salida)
     return resultado
 
 
