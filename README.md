@@ -20,7 +20,7 @@ los certificados y (opcionalmente) la base PostgreSQL de cada cliente.
 | Servicio systemd: activo, arranque, PID, uptime, puerto de gunicorn | El `.service` que apunta a la carpeta (`WorkingDirectory`/`ExecStart`) + `systemctl show` |
 | **Activación por socket**: si el `.service` está parado pero su `.socket` sigue escuchando (el sitio responde igual) | La unidad `<cliente>.socket` y su `ListenStream` |
 | **Búsqueda de cédula por API** activada o no en cada sistema | `seguridad_configuracion` (`usar_api_persona` en inventario, `traer_api_cliente` en restaurante; la columna se detecta) |
-| **RUC facturador** (`rucproveedor`), editable con un clic en su columna, indicando además qué bases todavía no tienen el campo | `seguridad_configuracion.rucproveedor` |
+| **RUC facturador**, editable con un clic en su columna, indicando además qué bases todavía no tienen el campo | `seguridad_configuracion`: `rucproveedor` en inventario y `ruc_proveedor` en restaurante (la columna se detecta) |
 | **Emisión por año** de cada origen de ventas y de las facturas electrónicas | `GROUP BY` del año sobre la tabla correspondiente, en la misma pasada que los totales |
 | **Días sin uso**: cuánto lleva la instancia sin actividad real | La más reciente entre la última auditoría, el último inicio de sesión y la última venta |
 | **Consumo de CPU y RAM de cada instancia**, con barra y % sobre el total del servidor | `CPUUsageNSec` (diferencia entre dos muestras) y `MemoryCurrent` de su unidad |
@@ -151,8 +151,9 @@ venv/bin/python run.py --quitar-usuario mochoa
 - Buscar por cliente, empresa, RUC, dominio, ruta, servicio o base de datos, y
   filtrar por sistema, **estado del servicio** (activo, inactivo, fallido, sin
   unidad o parado con el socket escuchando), estado general, **búsqueda de cédula
-  por API** (activa / desactivada / sin la opción) y **tiempo sin uso** (más de
-  30, 60, 90, 180 días o un año).
+  por API** (activa / desactivada / sin la opción), **tiempo sin uso** (más de
+  30, 60, 90, 180 días o un año) y, para quien tiene permiso de verlas,
+  **instancias ocultas** (todas / sólo visibles / sólo ocultas).
 - La tabla es compacta: el cliente lleva su empresa y las fechas de implementación
   y del servicio; la columna de URL lleva el dominio, la respuesta y la ruta de
   instalación; CPU y RAM van juntas; y BD, media y logs comparten una columna,

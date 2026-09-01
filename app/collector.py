@@ -193,6 +193,7 @@ def _resumen_fila(datos):
         'ruc': empresa.get('ruc'),
         'ruc_proveedor': empresa.get('rucproveedor'),
         'ruc_proveedor_disponible': bool(empresa.get('_rucproveedor_disponible')),
+        'ruc_proveedor_columna': empresa.get('_rucproveedor_columna'),
         'servicio_activo': bool(servicio.get('activo')),
         'servicio_estado': servicio.get('estado'),
         'socket_existe': bool(socket_info.get('existe')),

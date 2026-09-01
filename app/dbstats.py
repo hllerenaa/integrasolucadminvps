@@ -33,8 +33,21 @@ TABLA_CONECTADOS = 'seguridad_usuarioconectado'
 COLUMNAS_API_CEDULA = ('usar_api_persona', 'traer_api_cliente', 'usar_api_personas',
                        'usar_api_cliente', 'traer_api_persona')
 
+# RUC del facturador: el nombre de la columna cambia entre sistemas
+# (rucproveedor en inventario, ruc_proveedor en restaurante).
+COLUMNAS_RUC_PROVEEDOR = ('rucproveedor', 'ruc_proveedor', 'ruc_facturador', 'rucfacturador')
+
 # Campos de seguridad_configuracion que se pueden editar desde el panel.
+# 'rucproveedor' es el alias: se resuelve a la columna real de cada base.
 CAMPOS_CONFIGURACION_EDITABLES = ('rucproveedor', 'ruc', 'nombre_empresa', 'telefono_empresa')
+
+
+def columna_ruc_proveedor(columnas):
+    """Nombre real de la columna del RUC facturador en esa base."""
+    for columna in COLUMNAS_RUC_PROVEEDOR:
+        if columna in (columnas or set()):
+            return columna
+    return None
 
 # Tablas de ventas por tipo de sistema, en orden de prioridad.
 # (tabla, etiqueta) -> la columna de fecha se detecta entre COLUMNAS_FECHA.
@@ -146,9 +159,12 @@ def _empresa(cur, esquema):
     columnas = esquema.get(TABLA_CONFIGURACION)
     if not columnas:
         return {}
-    campos = [c for c in ('nombre_empresa', 'ruc', 'rucproveedor', 'web',
+    columna_ruc = columna_ruc_proveedor(columnas)
+    campos = [c for c in ('nombre_empresa', 'ruc', 'web',
                           'razonsocial', 'alias', 'telefono_empresa')
               if c in columnas]
+    if columna_ruc:
+        campos.append(columna_ruc)
     if not campos:
         return {}
     try:
@@ -158,9 +174,12 @@ def _empresa(cur, esquema):
         if not fila:
             return {}
         datos = {campo: fila[i] for i, campo in enumerate(campos)}
-        # Qué campos existen en esta versión (para saber dónde falta migrar)
+        # El RUC del facturador se normaliza a una sola clave, venga de la
+        # columna que venga.
+        datos['rucproveedor'] = datos.get(columna_ruc) if columna_ruc else None
+        datos['_rucproveedor_columna'] = columna_ruc
+        datos['_rucproveedor_disponible'] = bool(columna_ruc)
         datos['_campos'] = campos
-        datos['_rucproveedor_disponible'] = 'rucproveedor' in columnas
         return datos
     except Exception as ex:
         return {'error': str(ex).strip()}
@@ -517,16 +536,20 @@ def cambiar_configuracion(instancia, config, campo, valor):
         conn.autocommit = True
         cur = conn.cursor()
         cur.execute("SET statement_timeout = %s", (int(config.get('db_statement_timeout') or 15000),))
+        candidatos = (list(COLUMNAS_RUC_PROVEEDOR)
+                      if campo in COLUMNAS_RUC_PROVEEDOR else [campo])
         cur.execute(
             """
-            SELECT 1 FROM information_schema.columns
-            WHERE table_schema = 'public' AND table_name = %s AND column_name = %s
+            SELECT column_name FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = %s AND column_name = ANY(%s)
             """,
-            (TABLA_CONFIGURACION, campo))
-        if not cur.fetchone():
+            (TABLA_CONFIGURACION, candidatos))
+        fila = cur.fetchone()
+        if not fila:
             return {'ok': False,
                     'error': 'Esta base todavía no tiene la columna %s '
                              '(falta aplicar la migración)' % campo}
+        campo = fila[0]     # la columna real de esta base
 
         cur.execute('SELECT COUNT(*) FROM %s' % TABLA_CONFIGURACION)
         if not cur.fetchone()[0]:

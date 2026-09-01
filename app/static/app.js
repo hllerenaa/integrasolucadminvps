@@ -193,7 +193,8 @@
         var r = i.resumen || {};
         if (!r.ruc_proveedor_disponible) {
           return badge('gris', 'sin columna',
-            'Esta base todavía no tiene el campo rucproveedor: falta aplicar la migración');
+            'Esta base no tiene la columna del RUC facturador ' +
+            '(rucproveedor / ruc_proveedor): falta aplicar la migración');
         }
         var etiqueta = r.ruc_proveedor
           ? '<span>' + esc(r.ruc_proveedor) + '</span>'
@@ -465,9 +466,12 @@
     var api = $('#filtro-api') ? $('#filtro-api').value : '';
     var uso = $('#filtro-uso') ? parseInt($('#filtro-uso').value, 10) : 0;
     var serv = $('#filtro-servicio') ? $('#filtro-servicio').value : '';
+    var ocultos = $('#filtro-ocultos') ? $('#filtro-ocultos').value : '';
     return lista.filter(function (i) {
       var r = i.resumen || {};
       if (tipo && i.tipo !== tipo) return false;
+      if (ocultos === 'si' && !i.oculta) return false;
+      if (ocultos === 'no' && i.oculta) return false;
       if (serv) {
         var se = (i.servicio_estado || {});
         var sk = (i.socket || {});
@@ -640,6 +644,12 @@
   }
 
   function pintarControles() {
+    var selectOcultas = $('#filtro-ocultos');
+    if (selectOcultas) {
+      // Sólo tiene sentido para quien ve las instancias ocultas.
+      selectOcultas.hidden = !((estado.capacidades || {}).ver_excluidos ||
+                               MODO === 'excluidos');
+    }
     var select = $('#orden');
     if (select.options.length === 0) {
       select.innerHTML = COLUMNAS.map(function (c) {
@@ -1325,7 +1335,8 @@
     $('#campo-titulo').textContent = etiqueta + ' · ' + inst.cliente;
     $('#campo-cuerpo').innerHTML =
       '<p class="tenue">' + esc((inst.resumen || {}).empresa || '') +
-        ' · campo <code>' + esc(campo) + '</code> de seguridad_configuracion</p>' +
+        ' · columna <code>' + esc((inst.resumen || {}).ruc_proveedor_columna || campo) +
+        '</code> de seguridad_configuracion</p>' +
       '<input id="campo-valor" value="' + esc(valor) + '" maxlength="20" ' +
         'placeholder="sin cargar" style="width:100%;padding:9px 10px;border:1px solid var(--borde);' +
         'border-radius:7px;font:inherit">' +
@@ -2015,7 +2026,8 @@
       var el = e.target;
       if (el.id === 'auto-refresco') return programarAuto();
       if (el.id === 'orden') { estado.orden = el.value; return pintarTabla(); }
-      if (['filtro-api', 'filtro-uso', 'filtro-servicio'].indexOf(el.id) !== -1) return pintarTabla();
+      if (['filtro-api', 'filtro-uso', 'filtro-servicio',
+           'filtro-ocultos'].indexOf(el.id) !== -1) return pintarTabla();
       if (el.id === 'filtro-backup-estado') return pintarBackups();
       if (el.id === 'solo-sin-uso') return pintarBases();
       if (el.id === 'filtro-cert-estado') { estadoCert.estado = el.value; return pintarFilasCert(); }
@@ -2028,7 +2040,7 @@
 
     document.addEventListener('input', function (e) {
       if (['filtro-texto', 'filtro-tipo', 'filtro-estado', 'filtro-api', 'filtro-servicio',
-           'filtro-uso'].indexOf(e.target.id) !== -1) {
+           'filtro-uso', 'filtro-ocultos'].indexOf(e.target.id) !== -1) {
         pintarTabla();
       }
       if (['filtro-backups', 'filtro-backup-estado'].indexOf(e.target.id) !== -1) pintarBackups();
