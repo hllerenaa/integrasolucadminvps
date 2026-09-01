@@ -56,10 +56,11 @@ def logs_de_instancia(instancia, vhost=None, unidad=None, limite=60):
                 if os.path.isfile(archivo):
                     candidatos.append((archivo, 'proyecto'))
 
+    origen_web = (vhost or {}).get('servidor') or 'web'
     for clave in ('errorlog', 'customlog'):
         for destino in (vhost or {}).get(clave) or []:
             for archivo in _rotaciones(destino):
-                candidatos.append((archivo, 'apache'))
+                candidatos.append((archivo, origen_web))
 
     ejecutar = (unidad or {}).get('execstart') or ''
     for destino in _RE_GUNICORN_LOG.findall(ejecutar):

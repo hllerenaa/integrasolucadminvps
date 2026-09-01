@@ -73,6 +73,17 @@
     return a.habilitado ? badge('verde', 'habilitado', a.nombre)
                         : badge('rojo', 'deshabilitado', a.nombre);
   }
+
+  function badgeServidorWeb(i) {
+    var w = i.servidor_web || {};
+    if (!w.tipo) return '';
+    if (w.activo === null || w.activo === undefined) {
+      return '<span class="chip">' + esc(w.tipo) + '</span>';
+    }
+    return '<span class="chip">' + esc(w.tipo) + '</span> ' +
+      badge(w.activo ? 'verde' : 'rojo', w.activo ? 'activo' : (w.estado || 'inactivo'),
+            (w.demonio || '') + ': ' + (w.estado || ''));
+  }
   function badgeFacturas(i) {
     var f = (i.db || {}).facturacion || {};
     if (!f.disponible) return badge('gris', 'sin datos', f.error || '');
@@ -138,17 +149,24 @@
         }
         return html;
       } },
-    { id: 'ssl', titulo: 'SSL', grupo: 'servicio',
+    { id: 'ssl', titulo: 'SSL (vence)', grupo: 'servicio',
       valor: function (i) {
         var d = (i.ssl || {}).dias_restantes;
         return (d === null || d === undefined) ? 999999 : d;
       },
-      render: badgeSsl },
-    { id: 'apache', titulo: 'Apache', grupo: 'servicio',
+      render: function (i) {
+        var c = i.ssl || {};
+        return badgeSsl(i) +
+          (c.valido_hasta ? '<div class="sub">vence ' + esc(c.valido_hasta) + '</div>' : '') +
+          (c.emisor ? '<div class="sub">' + esc(c.emisor) + '</div>' : '');
+      } },
+    { id: 'apache', titulo: 'Sitio web', grupo: 'servicio',
       valor: function (i) { return (i.apache || {}).habilitado ? 0 : 1; },
       render: function (i) {
         var a = i.apache || {};
-        return badgeApache(i) + (a.nombre ? '<div class="sub">' + esc(a.nombre) + '</div>' : '');
+        return badgeApache(i) +
+          '<div class="sub">' + badgeServidorWeb(i) + '</div>' +
+          (a.nombre ? '<div class="sub">' + esc(a.nombre) + '</div>' : '');
       } },
 
     { id: 'base', titulo: 'Base', grupo: 'datos', requiere: 'bd',
@@ -304,7 +322,8 @@
     }
     $('#contador').textContent = lista.length + ' de ' + estado.datos.length + ' instancias';
     $('#pie-info').textContent = 'Último refresco: ' + (estado.meta.ultimo_refresco || '—') +
-      ' · los datos se recargan solos cada 30 s';
+      ' · los datos se recargan solos cada 30 s' +
+      (estado.meta.ocultas ? ' · ' + estado.meta.ocultas + ' sistema(s) oculto(s) por excluidos.txt' : '');
   }
 
   function pintarTarjetas() {
@@ -329,6 +348,13 @@
       t.push({ rotulo: 'Bases activas', valor: (r.db_activas || 0) + '/' + (r.total || 0),
         clase: r.db_caidas ? 'mal' : 'ok', filtro: 'db-caida' });
       t.push({ rotulo: 'Tamaño total BD', valor: r.db_tamano || '-' });
+    }
+    var web = estado.servidoresWeb || {};
+    var demonios = Object.keys(web);
+    if (demonios.length) {
+      t.push({ rotulo: 'Servidor web',
+        valor: demonios.map(function (d) { return d + ': ' + (web[d].activo ? 'activo' : 'CAÍDO'); }).join(' · '),
+        clase: demonios.every(function (d) { return web[d].activo; }) ? 'ok' : 'mal' });
     }
     if (cap.media) t.push({ rotulo: 'Tamaño total media', valor: r.media_tamano || '-' });
     if (cap.logs) t.push({ rotulo: 'Tamaño total logs', valor: r.logs_tamano || '-' });
@@ -381,9 +407,10 @@
         : '<button class="boton mini accion" type="button" data-accion="habilitar">Activar en arranque</button> ';
     }
     if (cap.acciones_apache && a.sitio) {
+      var nombreServidor = (a.servidor === 'nginx') ? 'nginx' : 'Apache';
       html += a.habilitado
-        ? '<button class="boton peligro accion" type="button" data-accion="apache_desactivar">Desactivar sitio Apache</button> '
-        : '<button class="boton accion" type="button" data-accion="apache_activar">Activar sitio Apache</button> ';
+        ? '<button class="boton peligro accion" type="button" data-accion="apache_desactivar">Desactivar sitio en ' + nombreServidor + '</button> '
+        : '<button class="boton accion" type="button" data-accion="apache_activar">Activar sitio en ' + nombreServidor + '</button> ';
     }
     return html || '<p class="tenue">Sin acciones disponibles para esta instancia</p>';
   }
@@ -424,8 +451,10 @@
       ['Servicio creado el', s.creado], ['Error', s.error]
     ]) + '</div>';
 
-    b += '<div class="bloque"><h3>Apache</h3>' + dl([
-      ['Estado', badgeApache(inst), true], ['Archivo', ap.archivo], ['Sitio (a2ensite)', ap.sitio],
+    b += '<div class="bloque"><h3>Sitio web (' + esc((ap.servidor || 'sin detectar')) + ')</h3>' + dl([
+      ['Estado', badgeApache(inst), true],
+      ['Servidor', badgeServidorWeb(inst) || (ap.servidor || null), true],
+      ['Archivo', ap.archivo], ['Sitio', ap.sitio],
       ['ServerName', ap.servername], ['ServerAlias', (ap.alias || []).join(', ')],
       ['DocumentRoot', ap.documentroot], ['Proxy a puerto', (ap.puertos_proxy || []).join(', ')],
       ['Vhost modificado', ap.modificado],
@@ -537,6 +566,7 @@
         estado.resumen = d.resumen || {};
         estado.disco = d.disco || {};
         estado.capacidades = d.capacidades || {};
+        estado.servidoresWeb = d.servidores_web || {};
         $('#estado-refresco').textContent = estado.meta.refrescando
           ? 'Actualizando datos…' : 'Actualizado ' + (estado.meta.ultimo_refresco || '');
         pintarControles();
@@ -599,7 +629,7 @@
     iniciar: 'INICIAR el servicio', detener: 'DETENER el servicio',
     reiniciar: 'REINICIAR el servicio', habilitar: 'activar el servicio en el arranque',
     deshabilitar: 'quitar el servicio del arranque',
-    apache_activar: 'ACTIVAR el sitio en Apache', apache_desactivar: 'DESACTIVAR el sitio en Apache'
+    apache_activar: 'ACTIVAR el sitio web', apache_desactivar: 'DESACTIVAR el sitio web'
   };
 
   function ejecutarAccion(id, accion, boton) {

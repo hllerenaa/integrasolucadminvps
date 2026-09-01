@@ -22,6 +22,13 @@ DIRECTORIOS_APACHE = (
     ('/etc/httpd/conf.d', '/etc/httpd/conf.d'),                       # CentOS / RHEL
 )
 
+DIRECTORIOS_NGINX = (
+    ('/etc/nginx/sites-available', '/etc/nginx/sites-enabled'),
+    ('/etc/nginx/conf.d', '/etc/nginx/conf.d'),
+)
+
+SERVICIOS_WEB = ('apache2', 'nginx', 'httpd')
+
 _RE_DIRECTIVA = {
     'servername': re.compile(r'^\s*ServerName\s+(\S+)', re.I | re.M),
     'serveralias': re.compile(r'^\s*ServerAlias\s+(.+)$', re.I | re.M),
@@ -73,6 +80,7 @@ def cargar_vhosts(config=None):
             for linea in _RE_DIRECTIVA['serveralias'].findall(contenido):
                 alias.extend(linea.split())
             proxies = [int(p) for p in _RE_DIRECTIVA['proxy'].findall(contenido)]
+            nombre_archivo = os.path.basename(archivo)
             certificado = _uno('cert', contenido)
             try:
                 modificado = datetime.datetime.fromtimestamp(
@@ -80,8 +88,12 @@ def cargar_vhosts(config=None):
             except OSError:
                 modificado = None
             vhosts.append({
+                'servidor': 'apache',
                 'archivo': archivo,
-                'nombre': os.path.basename(archivo),
+                'nombre': nombre_archivo,
+                'sitio_archivo': nombre_archivo,
+                'dir_disponibles': disponibles,
+                'dir_habilitados': habilitados,
                 'sitio': os.path.basename(archivo)[:-5],   # sin .conf, para a2ensite
                 'habilitado': os.path.basename(archivo) in activos,
                 'servername': _uno('servername', contenido),
@@ -95,10 +107,119 @@ def cargar_vhosts(config=None):
                 'modificado': modificado,
                 'contenido': contenido,
             })
+    vhosts.extend(_vhosts_nginx(config))
     return vhosts
 
 
 VHOSTS_GENERICOS = ('000-default', 'default-ssl', 'default', '000-default-le-ssl')
+
+
+
+# ---------------------------------------------------------------------- nginx
+_RE_NG_SERVER_NAME = re.compile(r'^\s*server_name\s+([^;]+);', re.I | re.M)
+_RE_NG_CERT = re.compile(r'^\s*ssl_certificate\s+([^;]+);', re.I | re.M)
+_RE_NG_PROXY = re.compile(r'proxy_pass\s+\S+?://[\w\.\-]+:(\d+)', re.I)
+_RE_NG_ROOT = re.compile(r'^\s*root\s+([^;]+);', re.I | re.M)
+_RE_NG_ACCESS = re.compile(r'^\s*access_log\s+([^;\s]+)', re.I | re.M)
+_RE_NG_ERROR = re.compile(r'^\s*error_log\s+([^;\s]+)', re.I | re.M)
+
+
+def _bloques_server(contenido):
+    """Extrae el texto de cada bloque `server { ... }` contando llaves."""
+    bloques = []
+    for encontrado in re.finditer(r'\bserver\s*\{', contenido):
+        inicio = encontrado.end()
+        nivel, i = 1, inicio
+        while i < len(contenido) and nivel:
+            if contenido[i] == '{':
+                nivel += 1
+            elif contenido[i] == '}':
+                nivel -= 1
+            i += 1
+        bloques.append(contenido[inicio:i - 1])
+    return bloques
+
+
+def _vhosts_nginx(config=None):
+    """Lee los server blocks de nginx con la misma forma que los de Apache."""
+    directorios = DIRECTORIOS_NGINX
+    if config and config.get('nginx_dirs'):
+        directorios = [tuple(par) for par in config['nginx_dirs']]
+
+    sitios = []
+    vistos = set()
+    for disponibles, habilitados in directorios:
+        if not os.path.isdir(disponibles):
+            continue
+        activos = set()
+        if os.path.isdir(habilitados):
+            for enlace in glob.glob(os.path.join(habilitados, '*')):
+                activos.add(os.path.basename(enlace))
+                try:
+                    activos.add(os.path.basename(os.path.realpath(enlace)))
+                except OSError:
+                    pass
+        for archivo in sorted(glob.glob(os.path.join(disponibles, '*'))):
+            if not os.path.isfile(archivo) or archivo in vistos:
+                continue
+            vistos.add(archivo)
+            contenido = _leer(archivo)
+            if 'server' not in contenido:
+                continue
+            nombres = []
+            certificado = None
+            proxies = []
+            for bloque in _bloques_server(contenido):
+                for linea in _RE_NG_SERVER_NAME.findall(bloque):
+                    nombres.extend([n for n in linea.split() if n not in ('_', 'localhost')])
+                certificado = certificado or _uno_re(_RE_NG_CERT, bloque)
+                proxies.extend(int(p) for p in _RE_NG_PROXY.findall(bloque))
+            if not nombres and not proxies:
+                continue
+            try:
+                modificado = datetime.datetime.fromtimestamp(
+                    os.stat(archivo).st_mtime).strftime('%Y-%m-%d %H:%M')
+            except OSError:
+                modificado = None
+            nombre = os.path.basename(archivo)
+            sitios.append({
+                'servidor': 'nginx',
+                'archivo': archivo,
+                'nombre': nombre,
+                'sitio': nombre[:-5] if nombre.endswith('.conf') else nombre,
+                'sitio_archivo': nombre,
+                'dir_disponibles': disponibles,
+                'dir_habilitados': habilitados,
+                'habilitado': (nombre in activos) or (disponibles == habilitados),
+                'servername': nombres[0] if nombres else None,
+                'alias': nombres[1:],
+                'certificado': (certificado or '').strip() or None,
+                'documentroot': (_uno_re(_RE_NG_ROOT, contenido) or '').strip().rstrip(';') or None,
+                'puertos_proxy': sorted(set(proxies)),
+                'ssl': bool(certificado),
+                'errorlog': [r for r in _RE_NG_ERROR.findall(contenido) if not r.startswith('|')],
+                'customlog': [r for r in _RE_NG_ACCESS.findall(contenido) if not r.startswith('|')],
+                'modificado': modificado,
+                'contenido': contenido,
+            })
+    return sitios
+
+
+def _uno_re(expresion, contenido):
+    encontrado = expresion.search(contenido)
+    return encontrado.group(1) if encontrado else None
+
+
+def estado_servidores_web(config=None):
+    """Estado de los demonios web instalados (apache2 / nginx)."""
+    from . import systemd
+    salida = {}
+    for unidad in SERVICIOS_WEB:
+        estado = systemd.estado_servicio(unidad, timeout=8)
+        if estado.get('existe'):
+            salida[unidad] = {'activo': estado.get('activo'), 'estado': estado.get('estado'),
+                              'uptime': estado.get('uptime'), 'desde': estado.get('desde')}
+    return salida
 
 
 def buscar_vhost(instancia, vhosts, puerto_servicio=None):
@@ -152,7 +273,7 @@ def buscar_vhost(instancia, vhosts, puerto_servicio=None):
     elegido['motivos'] = motivos
     elegido['otros'] = [
         {'nombre': v['nombre'], 'habilitado': v['habilitado'], 'ssl': v['ssl'],
-         'servername': v.get('servername')}
+         'servername': v.get('servername'), 'servidor': v.get('servidor')}
         for p, _s, v, _m in candidatos[1:4]
     ]
     return elegido

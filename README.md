@@ -16,9 +16,9 @@ los certificados y (opcionalmente) la base PostgreSQL de cada cliente.
 | Cliente, sistema (inventario/restaurante) y ruta de instalación | Escaneo de `/home/*/pryinventario` y `/home/*/pryrestaurante` |
 | URL pública y si responde (código HTTP) | **ServerName del vhost de Apache** (con `DOMINIO_GENERAL` como respaldo) + petición en vivo |
 | Aviso de `DOMINIO_GENERAL` desactualizado | Comparación entre `credenciales.json` y el vhost |
-| Certificado SSL: vigente / por vencer / vencido, días restantes, emisor | `SSLCertificateFile` del vhost o `/etc/letsencrypt/live/<dominio>/` |
+| Certificado SSL: vigente / por vencer / vencido / autofirmado, **fecha de vencimiento**, días restantes y emisor | `SSLCertificateFile` (Apache) o `ssl_certificate` (nginx) del sitio, o `/etc/letsencrypt/live/<dominio>/` |
 | Servicio systemd: activo, arranque, PID, memoria, uptime, puerto de gunicorn | El `.service` que apunta a la carpeta (`WorkingDirectory`/`ExecStart`) + `systemctl show` |
-| Vhost de Apache: archivo, sitio, si está habilitado, ServerName, proxy | `/etc/apache2/sites-available` + `sites-enabled` |
+| Sitio web: si es **Apache o nginx**, archivo, si está habilitado, ServerName, proxy, y si el demonio (`apache2`/`nginx`) está activo | `/etc/apache2/sites-*` y `/etc/nginx/sites-*` + `conf.d` |
 | Fecha de creación de la instancia y del archivo `.service` | `stat` de la carpeta y del unit file |
 | Base de datos: activa/caída, tamaño, versión, tablas más grandes | PostgreSQL de la instancia (`credenciales.json`) |
 | Tamaño de la carpeta `media` | `du -sb` con caché |
@@ -39,8 +39,9 @@ eso funciona aunque el esquema varíe entre inventario y restaurante.
   de `/etc/systemd/system` y se toma el que tenga `WorkingDirectory` (o
   `ExecStart`) apuntando a esa carpeta. Así aparecen también los servicios que
   se llaman distinto al cliente.
-- **El vhost de Apache** se empareja por el puerto al que hace `ProxyPass`
-  (el mismo del gunicorn) y por la ruta de la instalación dentro del archivo.
+- **El sitio web** se busca en Apache y en nginx: se empareja por el puerto al
+  que hace `ProxyPass` / `proxy_pass` (el mismo del gunicorn) y por la ruta de
+  la instalación dentro del archivo.
   Si no hay una señal fuerte se muestra "sin vhost" en vez de atribuirle a un
   cliente el vhost de otro. Los `000-default*` quedan descartados.
 - **El dominio** sale del `ServerName` de ese vhost, porque el
@@ -62,7 +63,9 @@ eso funciona aunque el esquema varíe entre inventario y restaurante.
   historial. Si editas sin revelar las claves, los valores enmascarados se
   conservan tal cual.
 - Iniciar, detener, reiniciar, habilitar o deshabilitar el **servicio systemd**.
-- Activar o desactivar el **sitio de Apache** (`a2ensite` / `a2dissite` + reload).
+- Activar o desactivar el **sitio web**: `a2ensite`/`a2dissite` en Apache o el
+  enlace en `sites-enabled` en nginx. Antes de recargar se valida la
+  configuración (`apache2ctl configtest` / `nginx -t`) y sólo se recarga si pasa.
 - Buscar por cliente, empresa, dominio, ruta, servicio o base de datos.
 - Ordenar por cualquier columna: fecha de implementación, tamaño de la base,
   tamaño de media, última venta, meses sin facturar, etc.
@@ -153,6 +156,23 @@ sudo ./uninstall.sh
 
 ---
 
+## Ocultar sistemas del listado (`excluidos.txt`)
+
+En la raíz del proyecto, un archivo `excluidos.txt` con **una sola línea** y los
+nombres separados por comas:
+
+```
+onepc,elgringo
+```
+
+Sirve el nombre del cliente (la carpeta en `/home`) o el del **servicio
+systemd**. Acepta espacios, varias líneas y comentarios con `#`. Se relee en
+cada refresco, así que no hay que reiniciar el panel, y el pie de la tabla
+avisa cuántos sistemas quedaron ocultos.
+
+El archivo está en `.gitignore` (es tuyo, no se sube). Hay un
+`excluidos.example.txt` con el formato.
+
 ## Configuración (`config.json`)
 
 | Clave | Para qué sirve |
@@ -166,7 +186,8 @@ sudo ./uninstall.sh
 | `consultar_bd` | `false` deja el panel 100 % sin tocar PostgreSQL |
 | `medir_media` | `false` desactiva el cálculo del tamaño de `media` |
 | `verificar_url` | `false` no golpea las URLs públicas |
-| `apache_dirs` | Directorios de vhosts si no son los de Debian/Ubuntu |
+| `apache_dirs`, `nginx_dirs` | Directorios de sitios si no son los de Debian/Ubuntu |
+| `excluidos_archivo` | Ruta alternativa del `excluidos.txt` |
 | `intervalo_refresco` | Segundos entre refrescos automáticos en segundo plano |
 | `medir_logs` | `false` no busca ni suma los archivos de log |
 | `acciones` | `enabled`, `servicios`, `apache`: permite o bloquea cada tipo de acción |

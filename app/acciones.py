@@ -20,10 +20,8 @@ ACCIONES_SERVICIO = {
     'deshabilitar': ['systemctl', 'disable', '{unidad}'],
 }
 
-ACCIONES_APACHE = {
-    'apache_activar':    ['a2ensite', '{sitio}'],
-    'apache_desactivar': ['a2dissite', '{sitio}'],
-}
+# Sitios web: el comando depende de si la instancia está en Apache o en nginx.
+ACCIONES_APACHE = ('apache_activar', 'apache_desactivar')
 
 ACCIONES = sorted(list(ACCIONES_SERVICIO) + list(ACCIONES_APACHE) + ['apache_recargar'])
 
@@ -74,15 +72,26 @@ def ejecutar_accion(config, instancia_datos, accion, usuario=None):
         comando = [p.format(unidad=unidad) for p in ACCIONES_SERVICIO[accion]]
         objetivo = unidad
     elif accion in ACCIONES_APACHE:
-        apache = instancia_datos.get('apache') or {}
-        sitio = apache.get('sitio')
+        web = instancia_datos.get('apache') or {}
+        sitio = web.get('sitio')
         if not sitio:
-            return {'ok': False, 'error': 'No se detectó el vhost de Apache de esta instancia'}
-        comando = [p.format(sitio=sitio) for p in ACCIONES_APACHE[accion]]
+            return {'ok': False, 'error': 'No se detectó el sitio web (vhost) de esta instancia'}
+        if (web.get('servidor') or 'apache') == 'nginx':
+            enlace = os.path.join(web.get('dir_habilitados') or '/etc/nginx/sites-enabled',
+                                  web.get('sitio_archivo') or sitio)
+            origen = os.path.join(web.get('dir_disponibles') or '/etc/nginx/sites-available',
+                                  web.get('sitio_archivo') or sitio)
+            if accion == 'apache_activar':
+                comando = ['ln', '-sfn', origen, enlace]
+            else:
+                comando = ['rm', '-f', enlace]
+        else:
+            comando = ['a2ensite' if accion == 'apache_activar' else 'a2dissite', sitio]
         objetivo = sitio
     else:  # apache_recargar
-        comando = ['systemctl', 'reload', 'apache2']
-        objetivo = 'apache2'
+        servidor = ((instancia_datos.get('apache') or {}).get('servidor') or 'apache')
+        comando = ['systemctl', 'reload', 'nginx' if servidor == 'nginx' else 'apache2']
+        objetivo = comando[-1]
 
     codigo, salida, error = ejecutar(comando, timeout=int(config.get('timeout_accion') or 60))
     mensaje = salida or error or ''
@@ -97,14 +106,25 @@ def ejecutar_accion(config, instancia_datos, accion, usuario=None):
         'codigo': codigo,
     }
 
-    # a2ensite / a2dissite necesitan recargar Apache para surtir efecto.
+    # Activar o desactivar un sitio sólo surte efecto tras recargar el servidor.
     if resultado['ok'] and accion in ACCIONES_APACHE:
-        codigo2, salida2, error2 = ejecutar(['systemctl', 'reload', 'apache2'], timeout=60)
-        resultado['recarga_apache'] = {
-            'ok': codigo2 == 0,
-            'salida': (salida2 or error2 or '').strip(),
-        }
-        _registrar(config, usuario, 'apache_recargar', 'apache2', codigo2, salida2 or error2)
+        es_nginx = ((instancia_datos.get('apache') or {}).get('servidor') or 'apache') == 'nginx'
+        demonio = 'nginx' if es_nginx else 'apache2'
+        # Antes de recargar se valida la configuración para no tumbar el servidor.
+        prueba = ['nginx', '-t'] if es_nginx else ['apache2ctl', 'configtest']
+        codigo_prueba, salida_prueba, error_prueba = ejecutar(prueba, timeout=60)
+        resultado['configtest'] = {'ok': codigo_prueba == 0,
+                                   'salida': (salida_prueba or error_prueba or '').strip()}
+        if codigo_prueba != 0:
+            resultado['ok'] = False
+            resultado['salida'] = ('La configuración de %s no valida, no se recargó: %s'
+                                   % (demonio, (salida_prueba or error_prueba or '').strip()))
+            _registrar(config, usuario, 'configtest', demonio, codigo_prueba,
+                       salida_prueba or error_prueba)
+            return resultado
+        codigo2, salida2, error2 = ejecutar(['systemctl', 'reload', demonio], timeout=60)
+        resultado['recarga'] = {'ok': codigo2 == 0, 'salida': (salida2 or error2 or '').strip()}
+        _registrar(config, usuario, 'recargar_web', demonio, codigo2, salida2 or error2)
 
     return resultado
 

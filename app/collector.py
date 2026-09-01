@@ -6,11 +6,13 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from . import dbstats, discovery, logs as mod_logs, storage, systemd, units, webserver
+from . import (dbstats, discovery, excluidos as mod_excluidos, logs as mod_logs,
+               storage, systemd, units, webserver)
 from .utils import ahora_iso, bytes_legible
 
 
-def _recolectar_instancia(instancia, config, forzar_media=False, vhosts=None, unidades=None):
+def _recolectar_instancia(instancia, config, forzar_media=False, vhosts=None, unidades=None,
+                          servidores_web=None):
     """Estado completo de una instancia (servicio + apache + SSL + base + media)."""
     inicio = time.time()
     datos = instancia.as_dict()
@@ -33,7 +35,15 @@ def _recolectar_instancia(instancia, config, forzar_media=False, vhosts=None, un
     datos['puerto'] = puerto
     vhost = webserver.buscar_vhost(instancia, vhosts or [], puerto)
     datos['apache'] = vhost or {'archivo': None, 'habilitado': None,
-                                'error': 'No se encontró vhost de Apache para esta instancia'}
+                                'error': 'No se encontró el sitio web (Apache/nginx) de esta instancia'}
+    servidor = (vhost or {}).get('servidor')
+    demonio = {'nginx': 'nginx', 'apache': 'apache2'}.get(servidor)
+    datos['servidor_web'] = {
+        'tipo': servidor,
+        'demonio': demonio,
+        'activo': (servidores_web or {}).get(demonio, {}).get('activo') if demonio else None,
+        'estado': (servidores_web or {}).get(demonio, {}).get('estado') if demonio else None,
+    }
 
     # 3. Dominio real: manda el ServerName del vhost.
     dominios = webserver.dominio_efectivo(instancia, vhost)
@@ -109,9 +119,13 @@ def _resumen_fila(datos):
         'apache_sitio': apache.get('sitio'),
         'apache_archivo': apache.get('archivo'),
         'apache_habilitado': apache.get('habilitado'),
+        'servidor_web': (datos.get('servidor_web') or {}).get('tipo'),
+        'servidor_web_activo': (datos.get('servidor_web') or {}).get('activo'),
+        'servidor_web_demonio': (datos.get('servidor_web') or {}).get('demonio'),
         'ssl_estado': ssl_info.get('estado'),
         'ssl_dias': ssl_info.get('dias_restantes'),
         'ssl_hasta': ssl_info.get('valido_hasta'),
+        'ssl_emisor': ssl_info.get('emisor'),
         'url_responde': url_estado.get('responde'),
         'url_codigo': url_estado.get('codigo'),
         'empresa': empresa.get('nombre_empresa') or empresa.get('razonsocial') or '',
@@ -160,6 +174,8 @@ class Colector(object):
         self._orden = []          # ids en orden de descubrimiento
         self._ultimo_refresco = None
         self._refrescando = False
+        self._ocultas = 0
+        self._servidores_web = {}
         self._hilo = None
         self._parar = threading.Event()
 
@@ -171,6 +187,7 @@ class Colector(object):
                 'ultimo_refresco': self._ultimo_refresco,
                 'refrescando': self._refrescando,
                 'total': len(instancias),
+                'ocultas': self._ocultas,
             }
         if tipo:
             instancias = [i for i in instancias if i.get('tipo') == tipo]
@@ -185,6 +202,7 @@ class Colector(object):
             'resumen': self.resumen(instancias),
             'instancias': instancias,
             'disco': storage.uso_disco('/'),
+            'servidores_web': dict(self._servidores_web),
         }
 
     def instancia(self, ident):
@@ -240,14 +258,30 @@ class Colector(object):
             instancias = discovery.descubrir(self.config)
             if solo:
                 instancias = [i for i in instancias if i.id == solo]
-            # Los vhost de Apache se leen una sola vez por refresco.
+            # Los vhost y las unidades se leen una sola vez por refresco.
             vhosts = webserver.cargar_vhosts(self.config)
             unidades = units.cargar_unidades(self.config)
+            self._servidores_web = webserver.estado_servidores_web(self.config)
+
+            # excluidos.txt puede nombrar el cliente o su servicio systemd,
+            # así que se filtra recién con la unidad ya resuelta.
+            ocultos = mod_excluidos.cargar(self.config)
+            visibles, omitidas = [], 0
+            for inst in instancias:
+                unidad = units.buscar_unidad(inst, unidades, inst.servicio)
+                nombre_servicio = (unidad or {}).get('unidad') or inst.servicio
+                if mod_excluidos.excluida(ocultos, inst.cliente, nombre_servicio):
+                    omitidas += 1
+                    continue
+                visibles.append(inst)
+            instancias = visibles
+            self._ocultas = omitidas
             workers = max(1, int(self.config.get('workers') or 8))
             resultados = {}
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futuros = {
-                    pool.submit(self._seguro, inst, forzar_media, vhosts, unidades): inst
+                    pool.submit(self._seguro, inst, forzar_media, vhosts, unidades,
+                                self._servidores_web): inst
                     for inst in instancias
                 }
                 for futuro, inst in futuros.items():
@@ -265,10 +299,10 @@ class Colector(object):
             with self._lock:
                 self._refrescando = False
 
-    def _seguro(self, instancia, forzar_media, vhosts=None, unidades=None):
+    def _seguro(self, instancia, forzar_media, vhosts=None, unidades=None, servidores_web=None):
         try:
             return _recolectar_instancia(instancia, self.config, forzar_media,
-                                         vhosts, unidades)
+                                         vhosts, unidades, servidores_web)
         except Exception as ex:  # pragma: no cover - defensivo
             datos = instancia.as_dict()
             datos['error'] = 'Fallo recolectando: %s' % ex
