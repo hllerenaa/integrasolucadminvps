@@ -2,6 +2,7 @@
 """Orquestador: recolecta el estado de todas las instancias en paralelo."""
 from __future__ import annotations
 
+import datetime
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -229,6 +230,10 @@ def _resumen_fila(datos):
         'primera_venta': venta.get('primera'),
         'ultima_venta': venta.get('ultima'),
         'ventas_total': venta.get('total'),
+        'ventas_anio': venta.get('anio_actual'),
+        'ventas_anio_anterior': venta.get('anio_anterior'),
+        'facturas_anio': next((a['total'] for a in (facturacion.get('por_anio') or [])
+                               if a.get('anio') == datetime.date.today().year), 0),
         'dias_sin_ventas': venta.get('dias_sin_ventas'),
     }
 

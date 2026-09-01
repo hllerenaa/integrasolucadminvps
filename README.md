@@ -20,7 +20,8 @@ los certificados y (opcionalmente) la base PostgreSQL de cada cliente.
 | Servicio systemd: activo, arranque, PID, uptime, puerto de gunicorn | El `.service` que apunta a la carpeta (`WorkingDirectory`/`ExecStart`) + `systemctl show` |
 | **Activación por socket**: si el `.service` está parado pero su `.socket` sigue escuchando (el sitio responde igual) | La unidad `<cliente>.socket` y su `ListenStream` |
 | **Búsqueda de cédula por API** activada o no en cada sistema | `seguridad_configuracion` (`usar_api_persona` en inventario, `traer_api_cliente` en restaurante; la columna se detecta) |
-| **RUC del proveedor** (`rucproveedor`), editable desde el panel, indicando además qué bases todavía no tienen el campo | `seguridad_configuracion.rucproveedor` |
+| **RUC facturador** (`rucproveedor`), editable con un clic en su columna, indicando además qué bases todavía no tienen el campo | `seguridad_configuracion.rucproveedor` |
+| **Emisión por año** de cada origen de ventas y de las facturas electrónicas | `GROUP BY` del año sobre la tabla correspondiente, en la misma pasada que los totales |
 | **Días sin uso**: cuánto lleva la instancia sin actividad real | La más reciente entre la última auditoría, el último inicio de sesión y la última venta |
 | **Consumo de CPU y RAM de cada instancia**, con barra y % sobre el total del servidor | `CPUUsageNSec` (diferencia entre dos muestras) y `MemoryCurrent` de su unidad |
 | **Cuánto ocupa cada instancia frente al disco**: BD, media y logs en % del disco | Tamaños medidos + `statvfs` del servidor |
@@ -124,9 +125,10 @@ venv/bin/python run.py --quitar-usuario mochoa
   el servicio deja el socket activo y la primera petición lo vuelve a levantar.
 - Activar o desactivar la **búsqueda de personas por cédula (API)** de cada
   instancia, con la columna que corresponda a su versión.
-- Editar el **RUC del proveedor** (`rucproveedor`) de cada instancia desde el
-  detalle. Si la base todavía no tiene la columna, el panel lo dice en vez de
-  fallar, y hay un filtro para ver justo esas instalaciones pendientes de migrar.
+- Editar el **RUC facturador** (`rucproveedor`) de cada instancia: se hace clic
+  en su celda de la tabla y se abre un modal para actualizarlo (también está en
+  el detalle). Si la base todavía no tiene la columna, el panel lo dice en vez
+  de fallar, y hay un filtro para ver esas instalaciones pendientes de migrar.
 - Ver y renovar los **certificados de Let's Encrypt** (botón *Certificados*):
   lista `certbot certificates` con fecha de emisión, de vencimiento, días
   restantes y a qué instancia pertenece cada uno, con renovación por
@@ -153,7 +155,12 @@ venv/bin/python run.py --quitar-usuario mochoa
   30, 60, 90, 180 días o un año).
 - La tabla es compacta: el cliente lleva su empresa y las fechas de implementación
   y del servicio; la columna de URL lleva el dominio, la respuesta y la ruta de
-  instalación. Esas columnas siguen disponibles en el selector "Ordenar por".
+  instalación; CPU y RAM van juntas; y BD, media y logs comparten una columna,
+  con "Ocupa" aparte como suma. Todas esas columnas siguen disponibles en el
+  selector "Ordenar por" para ordenar por cualquiera de ellas por separado.
+- El detalle muestra **cuántas ventas y facturas se emiten por año** (además del
+  total, el mes actual y el anterior), y la columna de última venta indica
+  cuántas van este año y cuántas fueron el anterior.
 - Desplazar la tabla en horizontal **arrastrándola con el ratón** o con la barra
   que aparece encima de la tabla, sincronizada con ella.
 - Ordenar por cualquier columna: fecha de implementación, tamaño de la base,

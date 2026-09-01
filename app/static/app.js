@@ -123,6 +123,21 @@
       '<span class="medidor-texto">' + esc(etiqueta) + '</span></div>';
   }
 
+
+  function porAnio(lista, limite) {
+    if (!lista || !lista.length) return '<span class="tenue">—</span>';
+    var completo = lista.map(function (a) { return a.anio + ': ' + a.total; }).join(' · ');
+    var visibles = lista.slice(0, limite || 5);
+    return '<span class="anios" title="' + esc(completo) + '">' +
+      visibles.map(function (a, i) {
+        return '<span class="chip-anio' + (i === 0 ? ' actual' : '') + '">' +
+          esc(a.anio) + ': <strong>' + esc(a.total) + '</strong></span>';
+      }).join(' ') +
+      (lista.length > visibles.length
+        ? ' <span class="tenue">+' + (lista.length - visibles.length) + ' años</span>' : '') +
+      '</span>';
+  }
+
   function fechaAviso(valor, dias, limite) {
     if (!valor) return '<span class="tenue">—</span>';
     var clase = (dias !== null && dias !== undefined && dias > limite) ? ' class="viejo"' : '';
@@ -172,7 +187,7 @@
     { id: 'ruta', titulo: 'Ruta de instalación', grupo: 'instancia', oculta: true, ancho: 'ancho',
       valor: function (i) { return i.ruta || ''; },
       render: function (i) { return '<code class="ruta" title="' + esc(i.ruta) + '">' + esc(i.ruta) + '</code>'; } },
-    { id: 'ruc_proveedor', titulo: 'RUC proveedor', grupo: 'instancia', requiere: 'bd',
+    { id: 'ruc_proveedor', titulo: 'RUC facturador', grupo: 'instancia', requiere: 'bd',
       valor: function (i) { return ((i.resumen || {}).ruc_proveedor || 'zzz').toLowerCase(); },
       render: function (i) {
         var r = i.resumen || {};
@@ -180,8 +195,13 @@
           return badge('gris', 'sin columna',
             'Esta base todavía no tiene el campo rucproveedor: falta aplicar la migración');
         }
-        if (!r.ruc_proveedor) return badge('ambar', 'vacío', 'Sin RUC de proveedor cargado');
-        return '<span>' + esc(r.ruc_proveedor) + '</span>';
+        var etiqueta = r.ruc_proveedor
+          ? '<span>' + esc(r.ruc_proveedor) + '</span>'
+          : badge('ambar', 'vacío', 'Sin RUC de facturador cargado');
+        if (!(estado.capacidades || {}).acciones_datos) return etiqueta;
+        return '<button class="celda-editable editar-campo" type="button" data-id="' + esc(i.id) +
+          '" data-campo="rucproveedor" data-etiqueta="RUC facturador"' +
+          ' title="Clic para actualizarlo (campo rucproveedor)">' + etiqueta + ' ✎</button>';
       } },
     { id: 'implementacion', titulo: 'Implementado', grupo: 'instancia', oculta: true,
       valor: function (i) { return (i.resumen || {}).fecha_instalacion || ''; },
@@ -236,7 +256,25 @@
           (a.nombre ? '<div class="sub">' + esc(a.nombre) + '</div>' : '');
       } },
 
-    { id: 'cpu', titulo: 'CPU', grupo: 'servicio', num: true,
+    { id: 'consumo', titulo: 'CPU / RAM', grupo: 'servicio', num: true,
+      valor: function (i) { return (i.resumen || {}).cpu_pct || 0; },
+      render: function (i) {
+        var r = i.resumen || {}, s = i.servicio_estado || {};
+        if ((r.cpu_pct === null || r.cpu_pct === undefined) && !r.ram_bytes) {
+          return '<span class="tenue">—</span>';
+        }
+        var cpu = (r.cpu_pct === null || r.cpu_pct === undefined)
+          ? '<span class="tenue">CPU —</span>'
+          : barra(r.cpu_pct, 'CPU ' + r.cpu_pct + '%',
+                  '% de un núcleo · CPU acumulada: ' + (s.cpu_segundos || 0) + ' s', 50, 90);
+        var ram = !r.ram_bytes
+          ? '<span class="tenue">RAM —</span>'
+          : barra((r.ram_pct || 0) * 4, 'RAM ' + r.ram_legible,
+                  (r.ram_pct || 0) + '% de la RAM del servidor' +
+                  (s.memoria_pico ? ' · pico ' + s.memoria_pico : ''), 50, 80);
+        return cpu + '<div style="height:3px"></div>' + ram;
+      } },
+    { id: 'cpu', titulo: 'CPU', grupo: 'servicio', num: true, oculta: true,
       valor: function (i) { return (i.resumen || {}).cpu_pct || 0; },
       render: function (i) {
         var r = i.resumen || {}, s = i.servicio_estado || {};
@@ -244,7 +282,7 @@
         return barra(r.cpu_pct, r.cpu_pct + '%',
           '% de un núcleo · CPU acumulada: ' + (s.cpu_segundos || 0) + ' s', 50, 90);
       } },
-    { id: 'ram', titulo: 'RAM', grupo: 'servicio', num: true,
+    { id: 'ram', titulo: 'RAM', grupo: 'servicio', num: true, oculta: true,
       valor: function (i) { return (i.resumen || {}).ram_bytes || 0; },
       render: function (i) {
         var r = i.resumen || {}, s = i.servicio_estado || {};
@@ -259,7 +297,36 @@
       render: function (i) {
         return badgeBase(i) + '<div class="sub">' + esc((i.db || {}).dbname || '') + '</div>';
       } },
-    { id: 'db_tamano', titulo: 'Tamaño BD', grupo: 'datos', requiere: 'bd', num: true,
+    { id: 'almacenamiento', titulo: 'BD / media / logs', grupo: 'datos', num: true,
+      valor: function (i) { return (i.resumen || {}).db_tamano_bytes || 0; },
+      render: function (i) {
+        var r = i.resumen || {}, cap = estado.capacidades || {};
+        var lineas = [];
+        if (cap.bd !== false) {
+          lineas.push('<div class="linea-dato"><span class="tenue">BD</span> ' +
+            (r.db_tamano_bytes
+              ? barra((r.db_pct_disco || 0) * 5, r.db_tamano,
+                      (r.db_pct_disco || 0) + '% del disco', 50, 80)
+              : '<span class="tenue">—</span>') + '</div>');
+        }
+        if (cap.media !== false) {
+          lineas.push('<div class="linea-dato"><span class="tenue">Media</span> ' +
+            (r.media_bytes
+              ? barra((r.media_pct_disco || 0) * 5, r.media_tamano,
+                      (r.media_pct_disco || 0) + '% del disco', 50, 80)
+              : '<span class="tenue">—</span>') + '</div>');
+        }
+        if (cap.logs !== false) {
+          lineas.push('<div class="linea-dato"><span class="tenue">Logs</span> ' +
+            (r.logs_archivos
+              ? '<span' + (r.logs_bytes > 524288000 ? ' class="viejo"' : '') + '>' +
+                esc(r.logs_tamano) + '</span> <span class="tenue">(' +
+                esc(r.logs_archivos) + ')</span>'
+              : '<span class="tenue">—</span>') + '</div>');
+        }
+        return lineas.join('');
+      } },
+    { id: 'db_tamano', titulo: 'Tamaño BD', grupo: 'datos', requiere: 'bd', num: true, oculta: true,
       valor: function (i) { return (i.resumen || {}).db_tamano_bytes || 0; },
       render: function (i) {
         var r = i.resumen || {};
@@ -267,7 +334,7 @@
         return barra((r.db_pct_disco || 0) * 5, r.db_tamano,
           (r.db_pct_disco || 0) + '% del disco del servidor', 50, 80);
       } },
-    { id: 'media', titulo: 'Media', grupo: 'datos', requiere: 'media', num: true,
+    { id: 'media', titulo: 'Media', grupo: 'datos', requiere: 'media', num: true, oculta: true,
       valor: function (i) { return (i.resumen || {}).media_bytes || 0; },
       render: function (i) {
         var r = i.resumen || {};
@@ -275,7 +342,7 @@
         return barra((r.media_pct_disco || 0) * 5, r.media_tamano,
           (r.media_pct_disco || 0) + '% del disco del servidor', 50, 80);
       } },
-    { id: 'logs', titulo: 'Logs', grupo: 'datos', requiere: 'logs', num: true,
+    { id: 'logs', titulo: 'Logs', grupo: 'datos', requiere: 'logs', num: true, oculta: true,
       valor: function (i) { return (i.resumen || {}).logs_bytes || 0; },
       render: function (i) {
         var r = i.resumen || {};
@@ -335,6 +402,7 @@
         return badgeFacturas(i) + '<div class="sub">' +
           (r.facturas_total !== null && r.facturas_total !== undefined
             ? 'total ' + esc(r.facturas_total) : '') +
+          (r.facturas_anio ? ' · ' + esc(r.facturas_anio) + ' este año' : '') +
           (r.facturas_ultimo_mes ? ' · últ. ' + esc(r.facturas_ultimo_mes) : '') + '</div>';
       } },
     { id: 'api_cedula', titulo: 'API cédula', grupo: 'actividad', requiere: 'bd',
@@ -351,7 +419,10 @@
       render: function (i) {
         var r = i.resumen || {};
         return fechaAviso(r.ultima_venta, r.dias_sin_ventas, 15) +
-          (r.venta_tabla ? '<div class="sub">' + esc(r.venta_tabla) + '</div>' : '');
+          (r.venta_tabla ? '<div class="sub">' + esc(r.venta_tabla) + '</div>' : '') +
+          ((r.ventas_anio !== null && r.ventas_anio !== undefined)
+            ? '<div class="sub">' + esc(r.ventas_anio) + ' este año · ' +
+              esc(r.ventas_anio_anterior || 0) + ' el anterior</div>' : '');
       } }
   ];
 
@@ -629,7 +700,7 @@
     b += '<div class="bloque"><h3>Instancia</h3>' + dl([
       ['Cliente', inst.cliente], ['Sistema', inst.tipo],
       ['Empresa', emp.nombre_empresa || emp.razonsocial], ['RUC', emp.ruc],
-      ['RUC proveedor', rucProvOk
+      ['RUC facturador', rucProvOk
         ? (puedeEditar
             ? '<span class="campo-editable">' +
               '<input id="campo-rucproveedor" value="' + esc(rucProv || '') +
@@ -743,6 +814,7 @@
         ['Estado', badgeFacturas(inst), true], ['Facturas totales', fac.total],
         ['Este mes', fac.mes_actual], ['Mes anterior', fac.mes_anterior],
         ['Primera factura', fac.primera], ['Última factura', fac.ultima],
+        ['Emitidas por año', porAnio(fac.por_anio, 8), true],
         ['Último mes facturado', fac.ultimo_mes],
         ['Meses sin facturar', fac.meses_sin_facturar], ['Error', fac.error]
       ]) + '</div>';
@@ -768,12 +840,15 @@
     if (cap.bd) {
       var filas = (db.ventas || []).map(function (v) {
         return '<tr><td>' + esc(v.etiqueta) + '<div class="sub">' + esc(v.tabla) + '</div></td>' +
-          '<td>' + guion(v.primera) + '</td><td>' + guion(v.ultima) + '</td><td>' + guion(v.total) + '</td>' +
+          '<td>' + guion(v.primera) + '</td><td>' + guion(v.ultima) + '</td>' +
+          '<td class="num">' + guion(v.total) + '</td>' +
+          '<td>' + porAnio(v.por_anio, 6) + '</td>' +
           '<td>' + (v.error ? badge('rojo', 'error', v.error) : '') + '</td></tr>';
-      }).join('') || '<tr><td colspan="5" class="tenue">Sin tablas de ventas detectadas</td></tr>';
+      }).join('') || '<tr><td colspan="6" class="tenue">Sin tablas de ventas detectadas</td></tr>';
       ventas = '<div class="bloque" style="margin-top:14px"><h3>Ventas por origen</h3>' +
         '<table class="tabla-mini"><thead><tr><th>Origen</th><th>Primera</th><th>Última</th>' +
-        '<th>Registros</th><th></th></tr></thead><tbody>' + filas + '</tbody></table></div>';
+        '<th class="num">Registros</th><th>Por año</th><th></th></tr></thead><tbody>' +
+        filas + '</tbody></table></div>';
     }
 
     $('#modal-titulo').innerHTML = esc(inst.cliente) + ' <span class="chip ' + esc(inst.tipo) + '">' +
@@ -1229,6 +1304,63 @@
       .catch(function (e) {
         boton.disabled = false;
         $('#resultado-excluidos').innerHTML = '<div class="aviso-error">' + esc(e.message) + '</div>';
+      });
+  }
+
+
+  function abrirModalCampo(id, campo, etiqueta) {
+    var inst = estado.datos.filter(function (i) { return i.id === id; })[0] || {};
+    var valor = (inst.resumen || {})[campo === 'rucproveedor' ? 'ruc_proveedor' : campo] || '';
+    var caja = $('#modal-campo');
+    if (!caja) {
+      caja = document.createElement('div');
+      caja.id = 'modal-campo';
+      caja.className = 'modal oculto';
+      caja.innerHTML = '<div class="modal-caja" style="max-width:460px">' +
+        '<div class="modal-cabecera"><h2 id="campo-titulo"></h2>' +
+        '<button class="cerrar" id="campo-cerrar" type="button">&times;</button></div>' +
+        '<div class="modal-cuerpo" id="campo-cuerpo"></div></div>';
+      document.body.appendChild(caja);
+    }
+    $('#campo-titulo').textContent = etiqueta + ' · ' + inst.cliente;
+    $('#campo-cuerpo').innerHTML =
+      '<p class="tenue">' + esc((inst.resumen || {}).empresa || '') +
+        ' · campo <code>' + esc(campo) + '</code> de seguridad_configuracion</p>' +
+      '<input id="campo-valor" value="' + esc(valor) + '" maxlength="20" ' +
+        'placeholder="sin cargar" style="width:100%;padding:9px 10px;border:1px solid var(--borde);' +
+        'border-radius:7px;font:inherit">' +
+      '<div style="margin-top:12px;text-align:right">' +
+        '<button class="boton mini" type="button" id="campo-cancelar">Cancelar</button> ' +
+        '<button class="boton" type="button" id="campo-guardar" data-id="' + esc(id) +
+        '" data-campo="' + esc(campo) + '">Guardar</button></div>' +
+      '<div id="campo-resultado"></div>';
+    caja.classList.remove('oculto');
+    setTimeout(function () { var e = $('#campo-valor'); if (e) { e.focus(); e.select(); } }, 30);
+  }
+
+  function guardarModalCampo(id, campo, boton) {
+    var valor = ($('#campo-valor').value || '').trim();
+    boton.disabled = true;
+    $('#campo-resultado').innerHTML = '<p class="tenue">Guardando…</p>';
+    fetch('/api/instancia/' + encodeURIComponent(id) + '/configuracion', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ campo: campo, valor: valor })
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        boton.disabled = false;
+        if (!d.ok) {
+          $('#campo-resultado').innerHTML = '<div class="aviso-error">' + esc(d.error) + '</div>';
+          return;
+        }
+        $('#campo-resultado').innerHTML = '<div class="aviso-ok">Guardado</div>';
+        cargar().then(function () {
+          setTimeout(function () { $('#modal-campo').classList.add('oculto'); }, 600);
+        });
+      })
+      .catch(function (e) {
+        boton.disabled = false;
+        $('#campo-resultado').innerHTML = '<div class="aviso-error">' + esc(e.message) + '</div>';
       });
   }
 
@@ -1821,6 +1953,18 @@
         if (el.classList.contains('diagnostico-vhost')) {
           return diagnosticoVhost(el.getAttribute('data-id'));
         }
+        var editable = el.closest('.editar-campo');
+        if (editable) {
+          return abrirModalCampo(editable.getAttribute('data-id'),
+                                 editable.getAttribute('data-campo'),
+                                 editable.getAttribute('data-etiqueta'));
+        }
+        if (el.id === 'campo-guardar') {
+          return guardarModalCampo(el.getAttribute('data-id'), el.getAttribute('data-campo'), el);
+        }
+        if (el.id === 'campo-cancelar' || el.id === 'campo-cerrar' || el.id === 'modal-campo') {
+          return $('#modal-campo').classList.add('oculto');
+        }
         if (el.classList.contains('guardar-config')) {
           return guardarConfiguracion(el.getAttribute('data-id'),
                                       el.getAttribute('data-campo'), el);
@@ -1858,7 +2002,8 @@
         var fila = el.closest('tr[data-id]');
         var envoltura = el.closest('.tabla-envoltura');
         if (envoltura && envoltura.dataset.arrastre) return;   // venía de arrastrar
-        if (fila && !el.closest('a') && !el.closest('label.interruptor')) {
+        if (fila && !el.closest('a') && !el.closest('label.interruptor') &&
+            !el.closest('.editar-campo')) {
           return abrirDetalle(fila.getAttribute('data-id'));
         }
       } catch (ex) {
@@ -1893,6 +2038,7 @@
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape') {
         $('#modal').classList.add('oculto');
+        if ($('#modal-campo')) $('#modal-campo').classList.add('oculto');
         $('#modal-nueva').classList.add('oculto');
         if (tareaPoll) { clearInterval(tareaPoll); tareaPoll = null; }
         $('#modal-tarea').classList.add('oculto');

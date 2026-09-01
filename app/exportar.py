@@ -11,7 +11,7 @@ COLUMNAS = [
     ('tipo', 'Sistema', 12),
     ('empresa', 'Empresa', 30),
     ('ruc', 'RUC', 16),
-    ('ruc_proveedor', 'RUC proveedor', 18),
+    ('ruc_proveedor', 'RUC facturador', 18),
     ('url', 'URL', 34),
     ('url_estado', 'URL responde', 14),
     ('dominio_credenciales', 'DOMINIO_GENERAL (credenciales)', 30),

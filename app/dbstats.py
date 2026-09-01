@@ -264,13 +264,25 @@ def _ventas(cur, esquema, tipo):
             continue
         registro = {'tabla': tabla, 'etiqueta': etiqueta, 'columna': columna}
         try:
-            cur.execute('SELECT MIN(%s), MAX(%s), COUNT(*) FROM %s%s'
-                        % (columna, columna, tabla, _filtro_status(columnas)))
-            fila = cur.fetchone()
-            registro['primera'] = fecha_iso(fila[0])
-            registro['ultima'] = fecha_iso(fila[1])
-            registro['total'] = fila[2]
-            registro['dias_sin_ventas'] = dias_desde(fila[1])
+            # Una sola pasada por la tabla: totales y desglose por año.
+            consulta = ('SELECT EXTRACT(YEAR FROM {c})::int AS anio, COUNT(*), '
+                        'MIN({c}), MAX({c}) FROM {t}{f} GROUP BY 1 ORDER BY 1'
+                        ).format(c=columna, t=tabla, f=_filtro_status(columnas))
+            cur.execute(consulta)
+            filas = cur.fetchall()
+            por_anio = [{'anio': f[0], 'total': int(f[1])} for f in filas if f[0] is not None]
+            registro['por_anio'] = list(reversed(por_anio))   # el más reciente primero
+            registro['total'] = sum(int(f[1]) for f in filas)
+            minimos = [f[2] for f in filas if f[2] is not None]
+            maximos = [f[3] for f in filas if f[3] is not None]
+            registro['primera'] = fecha_iso(min(minimos)) if minimos else None
+            registro['ultima'] = fecha_iso(max(maximos)) if maximos else None
+            registro['dias_sin_ventas'] = dias_desde(max(maximos)) if maximos else None
+            anio = datetime.date.today().year
+            registro['anio_actual'] = next(
+                (a['total'] for a in por_anio if a['anio'] == anio), 0)
+            registro['anio_anterior'] = next(
+                (a['total'] for a in por_anio if a['anio'] == anio - 1), 0)
         except Exception as ex:
             registro['error'] = str(ex).strip()
             registro['total'] = _estimado(cur, tabla)
@@ -291,6 +303,15 @@ def _facturacion(cur, esquema):
         return {'disponible': False, 'error': 'Sin columna de fecha en %s' % TABLA_FACTURAS}
 
     datos = {'disponible': True, 'tabla': TABLA_FACTURAS}
+    try:
+        consulta = ('SELECT EXTRACT(YEAR FROM {c})::int, COUNT(*) FROM {t}{f} '
+                    'GROUP BY 1 ORDER BY 1 DESC'
+                    ).format(c=columna, t=TABLA_FACTURAS, f=_filtro_status(columnas))
+        cur.execute(consulta)
+        datos['por_anio'] = [{'anio': f[0], 'total': int(f[1])}
+                             for f in cur.fetchall() if f[0] is not None]
+    except Exception:
+        datos['por_anio'] = []
     try:
         cur.execute("""
             SELECT COUNT(*),
