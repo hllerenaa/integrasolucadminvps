@@ -1,6 +1,9 @@
 # Configuración local (contiene credenciales del panel)
 config.json
 
+# Lista local de sistemas que no se muestran en el panel
+excluidos.txt
+
 # Entorno virtual e instalación
 venv/
 .venv/
