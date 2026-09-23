@@ -39,10 +39,15 @@
     <option value="ok">Sin novedades</option>
     <option value="alerta">Con alerta</option>
     <option value="error">Caídos</option>
+    <option value="db-ok">Base accesible</option>
     <option value="db-caida">Base caída</option>
-    <option value="sitio-desactivado">Sitio Apache desactivado</option>
+    <option value="sitio-activo">Sitio web habilitado</option>
+    <option value="sitio-desactivado">Sitio web deshabilitado o sin sitio</option>
+    <option value="ssl-vigente">SSL vigente</option>
+    <option value="ssl-no-vigente">SSL no vigente (incluye sin SSL)</option>
     <option value="ssl-problema">SSL vencido / por vencer / autofirmado</option>
-    <option value="url-caida">URL no responde</option>
+    <option value="url-ok">URL responde</option>
+    <option value="url-caida">URL no responde (o sin dominio)</option>
     <option value="dominio-viejo">Dominio desactualizado</option>
     <option value="dominio-compartido">Dominio compartido (template)</option>
     <option value="sin-ruc-proveedor">Sin RUC facturador</option>
@@ -58,11 +63,16 @@
   </select>
   <select id="filtro-servicio" title="Estado del servicio">
     <option value="">Servicio: todos</option>
-    <option value="activo">Activo</option>
-    <option value="inactivo">Inactivo</option>
-    <option value="fallido">Fallido</option>
-    <option value="sin-unidad">Sin unidad</option>
-    <option value="socket">Parado pero con socket escuchando</option>
+    <option value="activo">✔ Activos (atienden)</option>
+    <option value="no-activo">✖ No activos (todos)</option>
+    <optgroup label="Por qué no está activo">
+      <option value="inactivo">Detenido</option>
+      <option value="fallido">Fallido</option>
+      <option value="sin-unidad">Sin servicio systemd</option>
+    </optgroup>
+    <optgroup label="Detalle de los activos">
+      <option value="socket">Activo sólo por socket</option>
+    </optgroup>
   </select>
   <select id="filtro-uso" title="Tiempo sin actividad">
     <option value="">Actividad: todas</option>
