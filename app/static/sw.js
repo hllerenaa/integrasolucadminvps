@@ -1,7 +1,7 @@
 /* Service worker del panel: app instalable, pantalla sin conexión y notificaciones push. */
 'use strict';
 
-var CACHE = 'panel-vps-v3';
+var CACHE = 'panel-vps-v4';
 var ESTATICOS = [
   '/static/app.css',
   '/static/app.js',

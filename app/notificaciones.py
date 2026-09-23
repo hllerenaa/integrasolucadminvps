@@ -18,6 +18,7 @@ El historial (la campana) se guarda en var/notificaciones.json.
 from __future__ import annotations
 
 import copy
+import datetime
 import html
 import json
 import os
@@ -94,6 +95,9 @@ class Notificador(object):
         self._suscripciones = None
         self.url_detectada = ''
         self.ultima_revision = None
+        self._cache_alertas = None       # (momento, lista) para el modal del panel
+        self._vistas = {}                # clave -> desde cuándo está activa
+        self._vence_cert = {}            # ruta -> (mtime, vencimiento)
 
     # ------------------------------------------------------------ configuración
     def cfg(self):
@@ -468,6 +472,32 @@ class Notificador(object):
                                               else 'vence en %s días' % dias, r.get('ssl_hasta')),
                        nivel='error' if dias < 3 else 'aviso', ruta='/certificados')
 
+        # Certificados de Let's Encrypt que no están ligados a una instancia
+        # alertada (p. ej. el del propio panel o uno cuyo vhost no se detectó).
+        limite = int(reglas.get('ssl_dias') or 0)
+        if limite and os.path.isdir(certificados.RUTA_LIVE):
+            ya_alertados = {(i.get('dominio') or '').lower() for i in instantanea['instancias']
+                            if 'ssl:%s' % i['id'] in alertas}
+            ocultos = {(i.get('dominio') or '').lower()
+                       for i in self.colector.snapshot(incluir_ocultas=True)['instancias']
+                       if i.get('oculta')}
+            for nombre, vence in self._vencimientos():
+                segundos = (vence - datetime.datetime.utcnow()).total_seconds()
+                # Días completos: «vence en 3» y «venció hace 4» (sin redondear hacia afuera).
+                dias = int(segundos // 86400) if segundos >= 0 else -int(-segundos // 86400) - 1
+                dominio = nombre.lower()
+                if dias > limite or dominio in ya_alertados or dominio in ocultos:
+                    continue
+                if certificados.estado_renovacion(nombre, self.config).get('renovacion') == 'pausada':
+                    continue     # se dejó vencer a propósito
+                alerta('cert:%s' % nombre,
+                       ('Certificado VENCIDO: %s' if dias < 0 else 'Certificado por vencer: %s') % nombre,
+                       ('Venció el %s (%s).' % (vence.strftime('%Y-%m-%d'),
+                                                'hoy' if dias == -1 else 'hace %s días' % (-dias - 1))
+                        if dias < 0
+                        else 'Vence el %s (en %s días).' % (vence.strftime('%Y-%m-%d'), dias)),
+                       nivel='error' if dias < 3 else 'aviso', ruta='/certificados')
+
         if reglas.get('servidor_web_caido'):
             for demonio, datos in (instantanea.get('servidores_web') or {}).items():
                 if not datos.get('activo'):
@@ -511,12 +541,67 @@ class Notificador(object):
                        nivel='aviso', ruta='/certificados')
         return alertas
 
+    def _vencimientos(self):
+        """(nombre, vencimiento) de cada certificado en /etc/letsencrypt/live.
+
+        openssl sólo se ejecuta cuando el archivo cambió (se renovó).
+        """
+        from . import certificados
+        salida = []
+        for nombre in sorted(os.listdir(certificados.RUTA_LIVE)):
+            ruta = os.path.join(certificados.RUTA_LIVE, nombre, 'fullchain.pem')
+            try:
+                marca = os.stat(ruta).st_mtime
+            except OSError:
+                continue
+            previo = self._vence_cert.get(ruta)
+            if not previo or previo[0] != marca:
+                previo = (marca, certificados._fechas_openssl(ruta).get('vence'))
+                self._vence_cert[ruta] = previo
+            if previo[1]:
+                salida.append((nombre, previo[1]))
+        return salida
+
+    def alertas_actuales(self, ttl=30):
+        """Lo que está mal AHORA, sin esperar confirmaciones: para el modal del panel.
+
+        A diferencia de las notificaciones (que esperan a que el problema se
+        repita para no molestar por un reinicio), aquí se muestra al momento.
+        """
+        ahora = time.time()
+        cache = self._cache_alertas
+        if cache and ahora - cache[0] < ttl:
+            return cache[1]
+        try:
+            actuales = self.evaluar()
+        except Exception as ex:  # pragma: no cover - el panel no debe caerse por esto
+            actuales = {'panel:error': {'titulo': 'No se pudieron revisar las alertas',
+                                        'mensaje': str(ex), 'nivel': 'aviso', 'ruta': '/'}}
+        if actuales is None:
+            return None          # el colector todavía no terminó el primer refresco
+        with self._lock:
+            self._cargar()
+            estado = dict(self._estado or {})
+        momento = ahora_iso()
+        for clave in list(self._vistas):
+            if clave not in actuales:
+                del self._vistas[clave]
+        lista = []
+        for clave, datos in actuales.items():
+            desde = (estado.get(clave) or {}).get('desde') or self._vistas.setdefault(clave, momento)
+            lista.append(dict(datos, clave=clave, desde=desde))
+        orden = {'error': 0, 'aviso': 1}
+        lista.sort(key=lambda a: (orden.get(a.get('nivel'), 2), a.get('titulo') or ''))
+        self._cache_alertas = (ahora, lista)
+        return lista
+
     def revisar(self):
         """Una vuelta: compara las alertas con la anterior y notifica los cambios."""
         cfg = self.cfg()
         actuales = self.evaluar()
         if actuales is None:
             return
+        self._cache_alertas = None
         self.ultima_revision = ahora_iso()
         ahora = time.time()
         confirmaciones = int(cfg.get('confirmaciones') or 1)

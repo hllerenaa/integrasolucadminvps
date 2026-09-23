@@ -932,7 +932,10 @@ def crear_app(config=None):
             limite = min(300, int(request.args.get('limite') or 50))
         except ValueError:
             limite = 50
-        return jsonify(notificador.historial(limite))
+        datos = notificador.historial(limite)
+        # Lo que está caído en este momento, para el modal de alertas.
+        datos['alertas_actuales'] = notificador.alertas_actuales()
+        return jsonify(datos)
 
     @app.route('/api/notificaciones/leidas', methods=['POST'])
     @requiere_login
