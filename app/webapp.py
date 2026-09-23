@@ -10,7 +10,7 @@ from flask import (Flask, Response, jsonify, redirect, render_template,
                    request, session, url_for)
 
 from . import (__version__, acciones as mod_acciones, aprovisionar,
-               backups as mod_backups, certificados as mod_certificados,
+               backups as mod_backups, certificados as mod_certificados, consumo,
                credenciales as mod_credenciales, cron as mod_cron, dbstats,
                discovery, excluidos as mod_excluidos, exportar, units)
 from flask import send_file
@@ -144,6 +144,26 @@ def crear_app(config=None):
         return render_template('backups.html', seccion='backups', permisos=permisos(),
                                titulo=config.get('titulo'), version=__version__,
                                auth_activa=bool((config.get('auth') or {}).get('enabled')))
+
+    @app.route('/consumo')
+    @requiere_login
+    def pagina_consumo():
+        return render_template('consumo.html', seccion='consumo', permisos=permisos(),
+                               titulo=config.get('titulo'), version=__version__,
+                               auth_activa=bool((config.get('auth') or {}).get('enabled')))
+
+    @app.route('/api/consumo')
+    @requiere_login
+    def api_consumo():
+        incluir, _solo = ambito_ocultas('')
+        instantanea = colector.snapshot(incluir_ocultas=incluir)
+        return jsonify(consumo.resumen(config, instantanea['instancias']))
+
+    @app.route('/api/consumo/carpetas')
+    @requiere_login
+    def api_consumo_carpetas():
+        forzar = request.args.get('forzar') in ('1', 'true', 'si')
+        return jsonify(consumo.carpetas(config, forzar=forzar))
 
     @app.route('/nueva')
     @requiere_login
@@ -317,6 +337,13 @@ def crear_app(config=None):
         revisiones = aprovisionar.validar(config, colector, cuerpo)
         return jsonify({'revisiones': revisiones,
                         'ok': not any(r['critico'] for r in revisiones)})
+
+    @app.route('/api/aprovisionar/diagnostico')
+    @requiere_login
+    def api_aprovisionar_diagnostico():
+        if not _aprovisionamiento_activo():
+            return jsonify({'error': 'Creación de instancias desactivada'}), 403
+        return jsonify(aprovisionar.diagnostico_entorno(config))
 
     @app.route('/api/aprovisionar/crear', methods=['POST'])
     @requiere_login
@@ -569,6 +596,47 @@ def crear_app(config=None):
             resultado.get('mensaje') or resultado.get('error') or '')
         return jsonify(resultado), (200 if resultado.get('ok') else 400)
 
+    @app.route('/api/certificados/emitir', methods=['POST'])
+    @requiere_login
+    def api_certificados_emitir():
+        cfg = config.get('acciones') or {}
+        if not cfg.get('enabled', True) or not cfg.get('certbot', True):
+            return jsonify({'ok': False, 'error': 'Las acciones sobre certificados están desactivadas'}), 403
+        cuerpo = request.get_json(silent=True) or {}
+        dominio = (cuerpo.get('dominio') or '').strip().lower()
+        if not mod_certificados.RE_DOMINIO.match(dominio):
+            return jsonify({'ok': False, 'error': 'Dominio inválido: %s' % dominio}), 400
+        servidor = 'nginx' if cuerpo.get('servidor') == 'nginx' else 'apache'
+        correo = ((config.get('aprovisionamiento') or {}).get('certbot') or {}).get('email') or ''
+        tarea = tareas.crear('certbot', 'Emitir certificado de %s' % dominio,
+                             {'dominio': dominio, 'servidor': servidor},
+                             usuario=session.get('usuario') or 'api')
+        mod_acciones.registrar_evento(config, tarea.creado_por, 'certbot_emitir', dominio, 0,
+                                      'tarea %s' % tarea.id)
+        tareas.lanzar(tarea, lambda t: mod_certificados.emitir(
+            t, config, dominio, servidor=servidor, correo=correo,
+            redirigir=cuerpo.get('redirigir', True) is not False))
+        return jsonify({'ok': True, 'tarea': tarea.id}), 202
+
+    @app.route('/api/servidor-web', methods=['POST'])
+    @requiere_login
+    def api_servidor_web():
+        """Recarga o reinicia Apache/nginx, siempre validando antes la configuración."""
+        cfg = config.get('acciones') or {}
+        if not cfg.get('enabled', True) or not cfg.get('apache', True):
+            return jsonify({'ok': False, 'error': 'Las acciones sobre el servidor web están desactivadas'}), 403
+        cuerpo = request.get_json(silent=True) or {}
+        modo = 'reiniciar' if cuerpo.get('modo') == 'reiniciar' else 'recargar'
+        servidor = cuerpo.get('servidor') if cuerpo.get('servidor') in ('apache2', 'nginx') else None
+        titulo = '%s %s' % ('Reiniciar' if modo == 'reiniciar' else 'Recargar',
+                            servidor or 'el servidor web')
+        tarea = tareas.crear('servidor_web', titulo, {'modo': modo, 'servidor': servidor},
+                             usuario=session.get('usuario') or 'api')
+        mod_acciones.registrar_evento(config, tarea.creado_por, 'servidor_web_%s' % modo,
+                                      servidor or 'apache2/nginx', 0, 'tarea %s' % tarea.id)
+        tareas.lanzar(tarea, lambda t: mod_certificados.recargar_web(t, config, modo, servidor))
+        return jsonify({'ok': True, 'tarea': tarea.id}), 202
+
     # ----------------------------------------------------------------- backups
     def _backups_activos():
         return bool((config.get('backups') or {}).get('enabled', True))
@@ -581,17 +649,39 @@ def crear_app(config=None):
         instantanea = colector.snapshot(incluir_ocultas=True)
         return jsonify(mod_backups.listar(config, instantanea['instancias']))
 
+    def _instancia_con_base(instantanea):
+        """Una instancia cuya base responde: sus credenciales sirven para el servidor."""
+        instancias = {i.id: i for i in discovery.descubrir(config)}
+        for datos in instantanea['instancias']:
+            if (datos.get('db') or {}).get('ok') and instancias.get(datos['id']):
+                return instancias[datos['id']]
+        return None
+
+    @app.route('/api/bases/<nombre>')
+    @requiere_login
+    def api_base_detalle(nombre):
+        """Tablas, conexiones y estadísticas de una base concreta."""
+        instantanea = colector.snapshot(incluir_ocultas=True)
+        objeto = _instancia_con_base(instantanea)
+        if objeto is None:
+            return jsonify({'ok': False, 'error': 'Ninguna instancia con base accesible'}), 200
+        existentes = {b['nombre'] for b in dbstats.listar_bases(objeto, config).get('bases') or []}
+        if nombre not in existentes:
+            return jsonify({'ok': False, 'error': 'La base %s no existe en el servidor' % nombre}), 404
+        resultado = dbstats.detalle_base(objeto, config, nombre)
+        for datos in instantanea['instancias']:
+            if (datos.get('db') or {}).get('dbname') == nombre:
+                resultado['instancia'] = {'id': datos.get('id'), 'cliente': datos.get('cliente'),
+                                          'tipo': datos.get('tipo')}
+                break
+        return jsonify(resultado)
+
     @app.route('/api/bases')
     @requiere_login
     def api_bases():
         """Bases del servidor PostgreSQL y cuáles no tiene ninguna instancia."""
         instantanea = colector.snapshot(incluir_ocultas=True)
-        instancias = {i.id: i for i in discovery.descubrir(config)}
-        objeto = None
-        for datos in instantanea['instancias']:
-            if (datos.get('db') or {}).get('ok') and instancias.get(datos['id']):
-                objeto = instancias[datos['id']]
-                break
+        objeto = _instancia_con_base(instantanea)
         if objeto is None:
             return jsonify({'ok': False, 'error': 'Ninguna instancia con base accesible',
                             'bases': []}), 200
@@ -606,6 +696,10 @@ def crear_app(config=None):
         respaldos = mod_backups.listar(config, instantanea['instancias'])
         con_backup = {}
         for fila in respaldos['instancias']:
+            # Los backups del panel se nombran por cliente, no por base: el
+            # último de la instancia es también el último de su base.
+            if fila.get('base') and fila.get('ultimo'):
+                con_backup.setdefault(fila['base'], fila['ultimo'])
             for archivo in fila.get('archivos') or []:
                 con_backup.setdefault(archivo.get('clave'), archivo)
 
@@ -618,6 +712,7 @@ def crear_app(config=None):
             base['en_uso'] = bool(uso)
             base['sistema'] = base['nombre'] in sistema
             base['ultimo_backup'] = (con_backup.get(base['nombre']) or {}).get('fecha')
+            base['ultimo_backup_archivo'] = (con_backup.get(base['nombre']) or {}).get('archivo')
             if not uso and not base['sistema']:
                 sin_uso_bytes += base['bytes']
         resultado['sin_uso'] = sum(1 for b in resultado.get('bases') or []
@@ -646,6 +741,19 @@ def crear_app(config=None):
                                       ', '.join(bases or ids or ['todas']), 0,
                                       'tarea %s' % tarea.id)
         tareas.lanzar(tarea, lambda t: mod_backups.crear(t, config, colector, ids, bases))
+        return jsonify({'ok': True, 'tarea': tarea.id}), 202
+
+    @app.route('/api/backups/verificar', methods=['POST'])
+    @requiere_login
+    def api_backups_verificar():
+        if not _backups_activos():
+            return jsonify({'ok': False, 'error': 'Los backups están desactivados'}), 403
+        archivo = (request.get_json(silent=True) or {}).get('archivo') or ''
+        if not mod_backups.ruta_valida(config, archivo):
+            return jsonify({'ok': False, 'error': 'Archivo no disponible'}), 404
+        tarea = tareas.crear('backup_verificar', 'Verificar backup %s' % archivo.rsplit('/', 1)[-1],
+                             {'archivo': archivo}, usuario=session.get('usuario') or 'api')
+        tareas.lanzar(tarea, lambda t: mod_backups.verificar(t, config, archivo))
         return jsonify({'ok': True, 'tarea': tarea.id}), 202
 
     @app.route('/api/backups/eliminar', methods=['POST'])

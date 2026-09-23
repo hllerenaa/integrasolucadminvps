@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% block title %}Consumo · {{ titulo }}{% endblock %}
+{% block contenido %}
+<header class="cabecera">
+  <div class="cabecera-izq">
+    <h1>{{ titulo }}</h1>
+    {% include "_nav.html" %}
+  </div>
+  <div class="cabecera-der">
+    <span class="estado-refresco" id="consumo-medido"></span>
+    <label class="check" style="color:#fff"><input type="checkbox" id="consumo-auto"> Actualizar cada 15 s</label>
+    <button id="btn-consumo-recargar" class="boton secundario" type="button">Medir ahora</button>
+    <button id="btn-tareas" class="boton secundario" type="button">Tareas</button>
+    {% if auth_activa %}<a class="boton secundario" href="/logout">Salir</a>{% endif %}
+  </div>
+</header>
+
+<div id="avisos"></div>
+
+<section class="tarjetas" id="tarjetas-consumo"></section>
+
+<section class="seccion">
+  <h2>Discos</h2>
+  <div class="tabla-envoltura" style="margin-left:0;margin-right:0">
+    <table class="tabla" style="min-width:auto">
+      <thead><tr><th>Montaje</th><th>Dispositivo</th><th class="num">Tamaño</th><th class="num">Usado</th>
+        <th class="num">Libre</th><th style="min-width:180px">Ocupación</th><th class="num">Inodos</th></tr></thead>
+      <tbody id="cuerpo-discos"><tr><td class="vacio" colspan="7">Midiendo…</td></tr></tbody>
+    </table>
+  </div>
+</section>
+
+<section class="seccion">
+  <h2>Consumo por instancia</h2>
+  <p class="tenue">RAM y CPU del servicio de cada instancia, y lo que ocupa en disco (base de datos, media y logs).
+     Los datos vienen del último refresco del panel.</p>
+  <div class="barra" style="padding-left:0">
+    <input type="search" id="filtro-consumo-inst" placeholder="Buscar instancia…">
+    <select id="orden-consumo-inst">
+      <option value="ram_bytes">Ordenar por RAM</option>
+      <option value="cpu_pct">Ordenar por CPU</option>
+      <option value="disco_bytes">Ordenar por disco total</option>
+      <option value="db_bytes">Ordenar por base de datos</option>
+      <option value="media_bytes">Ordenar por media</option>
+      <option value="logs_bytes">Ordenar por logs</option>
+    </select>
+  </div>
+  <div class="tabla-envoltura" style="margin-left:0;margin-right:0">
+    <table class="tabla" style="min-width:auto">
+      <thead><tr><th>Instancia</th><th style="min-width:160px">RAM</th><th class="num">CPU</th>
+        <th class="num">Base de datos</th><th class="num">Media</th><th class="num">Logs</th>
+        <th style="min-width:160px">Disco total</th></tr></thead>
+      <tbody id="cuerpo-consumo-inst"><tr><td class="vacio" colspan="7">Midiendo…</td></tr></tbody>
+    </table>
+  </div>
+</section>
+
+<section class="seccion">
+  <h2>Servicios en ejecución</h2>
+  <p class="tenue">Todas las unidades de systemd que están corriendo. La CPU se mide durante 1 segundo
+     (100 % = un núcleo completo).</p>
+  <div class="barra" style="padding-left:0">
+    <select id="filtro-servicio-cat">
+      <option value="">Todas las categorías</option>
+      <option value="instancia">Instancias</option>
+      <option value="infraestructura">Infraestructura (PostgreSQL, Apache, nginx…)</option>
+      <option value="sistema">Sistema</option>
+    </select>
+    <span class="crece"></span>
+    <span class="tenue" id="resumen-servicios"></span>
+  </div>
+  <div class="tabla-envoltura" style="margin-left:0;margin-right:0">
+    <table class="tabla" style="min-width:auto">
+      <thead><tr><th>Servicio</th><th>Categoría</th><th style="min-width:160px">RAM</th>
+        <th class="num">CPU</th><th class="num">Tareas</th><th class="num">PID</th></tr></thead>
+      <tbody id="cuerpo-servicios"><tr><td class="vacio" colspan="6">Midiendo…</td></tr></tbody>
+    </table>
+  </div>
+</section>
+
+<section class="seccion">
+  <h2>Procesos que más consumen</h2>
+  <div class="barra" style="padding-left:0">
+    <select id="procesos-por">
+      <option value="por_memoria">Por memoria (RSS)</option>
+      <option value="por_cpu">Por CPU (último segundo)</option>
+    </select>
+    <span class="crece"></span>
+    <span class="tenue" id="resumen-procesos"></span>
+  </div>
+  <div class="tabla-envoltura" style="margin-left:0;margin-right:0">
+    <table class="tabla" style="min-width:auto">
+      <thead><tr><th class="num">PID</th><th>Usuario</th><th>Proceso</th><th>Instancia</th>
+        <th class="num">RAM</th><th class="num">% RAM</th><th class="num">CPU</th></tr></thead>
+      <tbody id="cuerpo-procesos"><tr><td class="vacio" colspan="7">Midiendo…</td></tr></tbody>
+    </table>
+  </div>
+</section>
+
+<section class="seccion">
+  <h2>Bases de datos más grandes</h2>
+  <p class="tenue">El detalle, las conexiones y los backups de cada base están en
+     <a href="/backups">Bases y backups</a>.</p>
+  <div class="tabla-envoltura" style="margin-left:0;margin-right:0">
+    <table class="tabla" style="min-width:auto">
+      <thead><tr><th>Base</th><th>Instancia</th><th style="min-width:180px">Tamaño</th><th class="num">Conexiones</th></tr></thead>
+      <tbody id="cuerpo-consumo-bases"><tr><td class="vacio" colspan="4">Consultando PostgreSQL…</td></tr></tbody>
+    </table>
+  </div>
+</section>
+
+<section class="seccion">
+  <h2>Carpetas que más ocupan</h2>
+  <p class="tenue">Medidas con du (pueden tardar). Se guardan 30 minutos.
+     <button class="boton mini" type="button" id="btn-carpetas-medir">Volver a medir</button>
+     <span id="carpetas-medido"></span></p>
+  <div class="tabla-envoltura" style="margin-left:0;margin-right:0">
+    <table class="tabla" style="min-width:auto">
+      <thead><tr><th>Carpeta</th><th>Ruta</th><th style="min-width:180px">Tamaño</th></tr></thead>
+      <tbody id="cuerpo-carpetas"><tr><td class="vacio" colspan="3">Midiendo…</td></tr></tbody>
+    </table>
+  </div>
+</section>
+
+<div class="modal oculto" id="modal-tarea">
+  <div class="modal-caja">
+    <div class="modal-cabecera">
+      <h2 id="tarea-titulo"></h2>
+      <button class="cerrar" id="tarea-cerrar" type="button">&times;</button>
+    </div>
+    <div class="modal-cuerpo" id="tarea-cuerpo"></div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>window.PANEL_MODO = 'consumo';</script>
+<script src="{{ url_for('static', filename='app.js') }}?v={{ version }}"></script>
+{% endblock %}

@@ -15,10 +15,15 @@ import os
 import re
 import shutil
 import socket
+import subprocess
+import time
+import urllib.error
+import urllib.request
 
 from . import units, webserver
 from .credenciales import leer as leer_credenciales
 from .tareas import TareaError
+from .utils import bytes_legible, revisar_dns
 
 RE_NOMBRE = re.compile(r'^[a-z][a-z0-9_-]{1,30}$')
 RE_DB = re.compile(r'^[a-z][a-z0-9_]{1,40}$')
@@ -63,20 +68,70 @@ def _psql_args(credenciales):
             '-U', credenciales.get('POSTGRES_USER') or 'postgres']
 
 
+def _psql_valor(credenciales, sql, base='postgres', timeout=20):
+    """Ejecuta una consulta de un solo valor. Devuelve (ok, texto o error)."""
+    comando = ['psql'] + _psql_args(credenciales) + ['-d', base, '-tAc', sql]
+    try:
+        proc = subprocess.run(comando, env=_entorno_pg(credenciales), timeout=timeout,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except FileNotFoundError:
+        return False, 'psql no está instalado'
+    except Exception as ex:
+        return False, str(ex)
+    if proc.returncode != 0:
+        return False, (proc.stderr.decode('utf-8', 'replace').strip().splitlines() or ['error'])[0]
+    return True, proc.stdout.decode('utf-8', 'replace').strip()
+
+
 def _existe_base(config, tipo, nombre):
     """True/False si la base existe; None si no se pudo comprobar."""
-    import subprocess
-    credenciales = _credenciales_template(config, tipo)
-    comando = ['psql'] + _psql_args(credenciales) + [
-        '-tAc', "SELECT 1 FROM pg_database WHERE datname='%s'" % nombre, 'postgres']
     try:
-        proc = subprocess.run(comando, env=_entorno_pg(credenciales), timeout=20,
+        credenciales = _credenciales_template(config, tipo)
+    except TareaError:
+        return None
+    if not RE_DB.match(nombre or '') and not re.match(r'^[A-Za-z0-9_]+$', nombre or ''):
+        return None
+    ok, valor = _psql_valor(credenciales, "SELECT 1 FROM pg_database WHERE datname='%s'" % nombre)
+    if not ok:
+        return None
+    return valor == '1'
+
+
+def _tamano_base(credenciales, nombre):
+    ok, valor = _psql_valor(credenciales, 'SELECT pg_database_size(current_database())', nombre)
+    return int(valor) if ok and valor.isdigit() else None
+
+
+def _contar_tablas(credenciales, nombre):
+    ok, valor = _psql_valor(credenciales, "SELECT COUNT(*) FROM information_schema.tables "
+                                          "WHERE table_schema = 'public'", nombre)
+    return int(valor) if ok and valor.isdigit() else None
+
+
+def _libre(ruta):
+    """Bytes libres en el disco donde está (o estará) la ruta."""
+    while ruta and not os.path.exists(ruta):
+        ruta = os.path.dirname(ruta)
+    try:
+        st = os.statvfs(ruta or '/')
+        return st.f_bavail * st.f_frsize
+    except OSError:
+        return None
+
+
+def _tamano_carpeta(ruta):
+    try:
+        proc = subprocess.run(['du', '-sb', '--exclude=media/backups', ruta], timeout=120,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return int(proc.stdout.split()[0]) if proc.returncode == 0 else None
     except Exception:
         return None
-    if proc.returncode != 0:
-        return None
-    return proc.stdout.decode('utf-8', 'replace').strip() == '1'
+
+
+def _puerto_escuchando(puerto, host='127.0.0.1'):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
+        return s.connect_ex((host, int(puerto))) == 0
 
 
 def puertos_usados(config):
@@ -182,34 +237,220 @@ def validar(config, colector, datos):
     revisar(os.path.isfile(os.path.join(ruta_template, 'credenciales.json')),
             'El template tiene credenciales.json')
 
-    existe = _existe_base(config, tipo, base) if base else None
-    if existe is None:
-        revisar(False, 'No se pudo consultar PostgreSQL para verificar la base', critico=False,
-                detalle='Se comprobará igual al crearla')
-    else:
-        revisar(not existe, 'La base «%s» no existe todavía' % base)
+    revisar(os.path.isfile(os.path.join(ruta_template, 'manage.py')),
+            'El template tiene manage.py')
 
-    if plantilla.get('db_origen'):
-        origen = _existe_base(config, tipo, plantilla['db_origen'])
-        if origen is not None:
-            revisar(origen, 'La base origen del dump existe (%s)' % plantilla['db_origen'])
+    # PostgreSQL: sin conexión no se puede crear la base, así que es crítico.
+    credenciales_tpl = None
+    try:
+        credenciales_tpl = _credenciales_template(config, tipo) if ruta_template else None
+    except TareaError as ex:
+        revisar(False, str(ex))
+    if credenciales_tpl:
+        conecta, detalle = _psql_valor(credenciales_tpl, 'SELECT version()')
+        revisar(conecta, 'Conexión a PostgreSQL con el usuario del template (%s@%s)'
+                % (credenciales_tpl.get('POSTGRES_USER'), credenciales_tpl.get('POSTGRES_HOST')),
+                detalle=None if conecta else detalle)
+        if conecta:
+            existe = _existe_base(config, tipo, base) if RE_DB.match(base or '') else None
+            if existe is not None:
+                revisar(not existe, 'La base «%s» no existe todavía' % base)
+            puede, valor = _psql_valor(
+                credenciales_tpl, "SELECT rolcreatedb OR rolsuper FROM pg_roles "
+                                  "WHERE rolname = current_user")
+            revisar(puede and valor == 't', 'El usuario de PostgreSQL puede crear bases',
+                    detalle=None if (puede and valor == 't') else 'Le falta el permiso CREATEDB')
+
+            tamano_origen = None
+            if plantilla.get('db_origen'):
+                origen = _existe_base(config, tipo, plantilla['db_origen'])
+                revisar(bool(origen), 'La base origen del dump existe (%s)' % plantilla['db_origen'])
+                if origen:
+                    tamano_origen = _tamano_base(credenciales_tpl, plantilla['db_origen'])
+
+            # Espacio: la copia del template + el dump + la base restaurada.
+            necesario = (_tamano_carpeta(ruta_template) or 0) + 2 * (tamano_origen or 0)
+            libre = _libre(carpeta)
+            if necesario and libre is not None:
+                revisar(libre > necesario * 1.2,
+                        'Espacio en disco suficiente (hacen falta ~%s, hay %s libres)'
+                        % (bytes_legible(necesario), bytes_legible(libre)))
+    else:
+        revisar(False, 'No se pudieron leer las credenciales de PostgreSQL del template')
 
     unidades = {u['unidad'] for u in units.cargar_unidades(config)}
     revisar(cliente not in unidades, 'No hay un servicio systemd llamado «%s»' % cliente)
 
     if puerto:
         revisar(puerto not in puertos_usados(config), 'El puerto %s no está usado por otra instancia' % puerto)
+        revisar(not _puerto_escuchando(puerto), 'Nada escucha ya en el puerto %s' % puerto)
 
-    if dominio:
+    if dominio and RE_DOMINIO.match(dominio):
         chocan = [v['nombre'] for v in webserver.cargar_vhosts(config)
                   if (v.get('servername') or '').lower() == dominio
                   or dominio in [a.lower() for a in v.get('alias') or []]]
         revisar(not chocan, 'El dominio %s no está en otro vhost' % dominio,
                 detalle=', '.join(chocan) if chocan else None)
+        dns = revisar_dns(dominio)
+        # Sin DNS la instancia se crea igual, pero certbot no podrá emitir.
+        revisar(dns['ok'], dns['mensaje'], critico=False,
+                detalle=None if dns['ok'] else ('certbot fallará hasta que el DNS apunte aquí'
+                                                if datos.get('certbot') else 'la URL no responderá'))
+    elif datos.get('crear_vhost', True):
+        revisar(False, 'Sin dominio no se crea el vhost ni el certificado', critico=False)
+    if datos.get('certbot') and not dominio:
+        revisar(False, 'Pediste certificado pero no hay dominio', critico=False)
 
-    revisar(bool(cfg.get('venv')) and os.path.isdir(cfg.get('venv') or ''),
-            'Entorno virtual disponible (%s)' % cfg.get('venv'))
+    venv = cfg.get('venv') or ''
+    revisar(bool(venv) and os.path.isdir(venv), 'Entorno virtual disponible (%s)' % venv)
+    if venv and os.path.isdir(venv):
+        revisar(os.access(os.path.join(venv, 'bin', 'python'), os.X_OK),
+                'El entorno virtual tiene bin/python')
+        if datos.get('crear_servicio', True):
+            revisar(os.access(os.path.join(venv, 'bin', 'gunicorn'), os.X_OK),
+                    'El entorno virtual tiene gunicorn', critico=False)
+
+    necesarias = ['pg_dump', 'psql']
+    if datos.get('actualizar_template'):
+        necesarias.append('git')
+    if datos.get('crear_servicio', True):
+        necesarias.append('systemctl')
+    if dominio and datos.get('crear_vhost', True):
+        necesarias.append('a2ensite')
+    if dominio and datos.get('certbot'):
+        necesarias.append('certbot')
+    faltan = [h for h in necesarias if not shutil.which(h)]
+    revisar(not faltan, 'Comandos necesarios instalados (%s)' % ', '.join(necesarias),
+            detalle='faltan: %s' % ', '.join(faltan) if faltan else None)
     return revisiones
+
+
+def diagnostico_entorno(config):
+    """Revisa que el servidor tenga todo lo que usa el asistente, sin crear nada."""
+    cfg = config.get('aprovisionamiento') or {}
+    grupos = []
+
+    def grupo(titulo):
+        lista = []
+        grupos.append({'titulo': titulo, 'revisiones': lista})
+
+        def revisar(ok, mensaje, critico=True, detalle=None):
+            lista.append({'ok': bool(ok), 'mensaje': mensaje,
+                          'critico': critico and not ok, 'detalle': detalle})
+        return revisar
+
+    revisar = grupo('Herramientas del servidor')
+    for herramienta, uso, critico in (
+            ('pg_dump', 'volcar la base del template', True),
+            ('psql', 'crear y restaurar la base', True),
+            ('git', 'actualizar el template', False),
+            ('rsync', 'copiar el template (si falta se copia con Python)', False),
+            ('systemctl', 'crear el servicio', True),
+            ('apache2ctl', 'validar el vhost', False),
+            ('a2ensite', 'activar el vhost', False),
+            ('certbot', 'emitir certificados', False)):
+        ruta = shutil.which(herramienta)
+        revisar(bool(ruta), '%s — %s' % (herramienta, uso), critico=critico, detalle=ruta)
+
+    revisar = grupo('Entorno virtual de Python')
+    venv = cfg.get('venv') or ''
+    python = os.path.join(venv, 'bin', 'python')
+    revisar(bool(venv) and os.path.isdir(venv), 'Carpeta del venv (%s)' % (venv or 'sin configurar'))
+    if os.access(python, os.X_OK):
+        try:
+            proc = subprocess.run([python, '--version'], timeout=10,
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            revisar(proc.returncode == 0, 'Python del venv responde',
+                    detalle=proc.stdout.decode('utf-8', 'replace').strip())
+            proc = subprocess.run([python, '-c', 'import django; print(django.get_version())'],
+                                  timeout=20, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            lineas = proc.stdout.decode('utf-8', 'replace').strip().splitlines()
+            revisar(proc.returncode == 0, 'Django instalado en el venv',
+                    detalle=lineas[-1] if lineas else None)
+        except Exception as ex:
+            revisar(False, 'Python del venv responde', detalle=str(ex))
+    else:
+        revisar(False, 'Existe %s' % python)
+    revisar(os.access(os.path.join(venv, 'bin', 'gunicorn'), os.X_OK),
+            'gunicorn instalado en el venv', critico=False)
+
+    for tipo, plantilla in (cfg.get('templates') or {}).items():
+        revisar = grupo('Template de %s' % tipo)
+        ruta = plantilla.get('ruta') or ''
+        revisar(os.path.isdir(ruta), 'Carpeta %s' % (ruta or '(sin configurar)'))
+        if not os.path.isdir(ruta):
+            continue
+        revisar(os.path.isfile(os.path.join(ruta, 'manage.py')), 'manage.py presente')
+        revisar(os.path.isfile(os.path.join(ruta, 'credenciales.json')), 'credenciales.json presente')
+        if os.path.isdir(os.path.join(ruta, '.git')) and shutil.which('git'):
+            proc = subprocess.run(['git', '-C', ruta, 'status', '--porcelain'], timeout=20,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            cambios = [l for l in proc.stdout.decode('utf-8', 'replace').splitlines() if l.strip()]
+            revisar(not cambios, 'Sin cambios locales sin commitear', critico=False,
+                    detalle=('%s archivo(s) modificados: se perderán al actualizar (git reset --hard)'
+                             % len(cambios)) if cambios else None)
+            proc = subprocess.run(['git', '-C', ruta, 'rev-parse', '--abbrev-ref', 'HEAD'], timeout=10,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            rama = proc.stdout.decode('utf-8', 'replace').strip()
+            esperada = plantilla.get('rama') or 'master'
+            revisar(rama == esperada, 'Rama %s (se espera %s)' % (rama or '?', esperada), critico=False)
+            try:
+                proc = subprocess.run(['git', '-C', ruta, 'ls-remote', '--heads', 'origin', esperada],
+                                      timeout=20, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                      env=dict(os.environ, GIT_TERMINAL_PROMPT='0'))
+                revisar(proc.returncode == 0 and bool(proc.stdout.strip()),
+                        'El repositorio remoto responde (git ls-remote)', critico=False,
+                        detalle=None if proc.returncode == 0 else
+                        proc.stderr.decode('utf-8', 'replace').strip()[:200])
+            except subprocess.TimeoutExpired:
+                revisar(False, 'El repositorio remoto responde (git ls-remote)', critico=False,
+                        detalle='sin respuesta en 20 s')
+        try:
+            credenciales = _credenciales_template(config, tipo)
+        except TareaError as ex:
+            revisar(False, 'Credenciales de PostgreSQL', detalle=str(ex))
+            continue
+        conecta, detalle = _psql_valor(credenciales, 'SHOW server_version')
+        revisar(conecta, 'Conexión a PostgreSQL (%s@%s)' % (credenciales.get('POSTGRES_USER'),
+                                                          credenciales.get('POSTGRES_HOST')),
+                detalle=detalle)
+        if conecta:
+            puede, valor = _psql_valor(credenciales, "SELECT rolcreatedb OR rolsuper FROM pg_roles "
+                                                     "WHERE rolname = current_user")
+            revisar(puede and valor == 't', 'El usuario puede crear bases (CREATEDB)')
+            origen = plantilla.get('db_origen')
+            if origen:
+                tamano = _tamano_base(credenciales, origen)
+                revisar(tamano is not None, 'Base origen %s' % origen,
+                        detalle=bytes_legible(tamano) if tamano is not None else 'no existe o sin acceso')
+                if tamano is not None:
+                    tablas = _contar_tablas(credenciales, origen)
+                    revisar(bool(tablas), 'La base origen tiene tablas', detalle='%s tablas' % tablas)
+
+    revisar = grupo('Carpetas y permisos')
+    for etiqueta, ruta in (('Instancias', _base_dir(config)),
+                           ('Servicios systemd', '/etc/systemd/system'),
+                           ('Sitios de Apache', '/etc/apache2/sites-available')):
+        revisar(os.path.isdir(ruta) and os.access(ruta, os.W_OK),
+                '%s: se puede escribir en %s' % (etiqueta, ruta),
+                critico=etiqueta != 'Sitios de Apache')
+    libre = _libre(_base_dir(config))
+    revisar(libre is None or libre > 2 * 1024 ** 3,
+            'Espacio libre en %s' % _base_dir(config),
+            detalle=bytes_legible(libre) if libre is not None else None)
+
+    revisar = grupo('Puertos')
+    usados = puertos_usados(config)
+    inicio = int(cfg.get('puerto_inicial') or 8000)
+    fin = int(cfg.get('puerto_final') or 8999)
+    libres = sum(1 for p in range(inicio, fin + 1) if p not in usados)
+    revisar(libres > 0, 'Puertos libres en el rango %s-%s' % (inicio, fin),
+            detalle='%s libres, %s usados por instancias' % (libres, len(usados)))
+
+    todas = [r for g in grupos for r in g['revisiones']]
+    return {'grupos': grupos, 'ok': not any(r['critico'] for r in todas),
+            'errores': sum(1 for r in todas if r['critico']),
+            'avisos': sum(1 for r in todas if not r['ok'] and not r['critico'])}
 
 
 # ------------------------------------------------------------------- plantillas
@@ -359,11 +600,35 @@ def crear_instancia(tarea, config, colector):
     if not simular:
         tarea.registrar_deshacer('base', base)
     codigo, salida = tarea.ejecutar(
-        ['psql'] + args_pg + ['-v', 'ON_ERROR_STOP=0', '-d', base, '-f', dump],
+        ['psql'] + args_pg + ['-q', '-v', 'ON_ERROR_STOP=0', '-d', base, '-f', dump],
         entorno=entorno_pg, timeout=7200, critico=False, simular=simular, ocultar=[clave_pg])
     if codigo != 0:
         tarea.log('  La restauración devolvió código %s; revisa los errores de arriba' % codigo, 'aviso')
-    tarea.paso_ok(indice, 'Base restaurada')
+    if not simular:
+        # Con ON_ERROR_STOP=0 psql sigue ante errores: se cuentan y se compara
+        # la cantidad de tablas con la base origen para saber si quedó completa.
+        errores = [l for l in (salida or '').splitlines() if 'ERROR:' in l]
+        if errores:
+            tarea.log('  La restauración tuvo %s error(es); los primeros:' % len(errores), 'aviso')
+            for linea in errores[:5]:
+                tarea.log('    %s' % linea.strip(), 'aviso')
+        tablas_origen = _contar_tablas(credenciales_tpl, plantilla['db_origen'])
+        tablas_nueva = _contar_tablas(credenciales_tpl, base)
+        tarea.log('  Tablas: origen %s · nueva %s' % (tablas_origen, tablas_nueva))
+        if not tablas_nueva:
+            tarea.paso_error(indice, 'La base quedó vacía')
+            raise TareaError('La restauración no creó ninguna tabla en %s' % base)
+        if tablas_origen and tablas_nueva < tablas_origen:
+            tarea.log('  Faltan %s tabla(s) respecto al origen' % (tablas_origen - tablas_nueva), 'aviso')
+        try:
+            os.remove(dump)
+            tarea.log('  Dump temporal eliminado (%s)' % dump)
+        except OSError:
+            pass
+        tarea.paso_ok(indice, 'Base restaurada (%s tablas%s)'
+                      % (tablas_nueva, ', %s errores' % len(errores) if errores else ''))
+    else:
+        tarea.paso_ok(indice, 'Base restaurada')
 
     # 7 -------------------------------------------------------- credenciales
     indice = tarea.paso('Configurar credenciales.json')
@@ -469,22 +734,100 @@ def crear_instancia(tarea, config, colector):
     if simular:
         tarea.paso_ok(indice, 'Simulación: no se verifica nada real')
     else:
+        fallos = verificar_instancia(tarea, cliente, puerto, dominio,
+                                     con_servicio=datos.get('crear_servicio', True))
         colector.refrescar(forzar=True)
         nueva = colector.instancia('%s|%s' % (cliente, tipo))
         if not nueva:
-            tarea.paso_error(indice, 'La instancia no aparece todavía en el panel')
+            fallos.append('la instancia no aparece en el panel')
         else:
-            servicio = (nueva.get('servicio_estado') or {}).get('estado')
-            url = (nueva.get('url_estado') or {})
             db_ok = (nueva.get('db') or {}).get('ok')
-            tarea.log('  Servicio: %s · Base: %s · URL: %s'
-                      % (servicio, 'ok' if db_ok else 'sin acceso',
-                         ('HTTP %s' % url.get('codigo')) if url.get('responde') else 'sin respuesta'))
-            tarea.paso_ok(indice, 'Instancia registrada en el panel')
+            tarea.log('  %s Base de datos accesible desde la instancia' % ('✔' if db_ok else '✖'),
+                      'ok' if db_ok else 'error')
+            if not db_ok:
+                fallos.append('la base no responde con credenciales.json')
+            url = nueva.get('url_estado') or {}
+            if dominio:
+                tarea.log('  %s URL pública %s: %s'
+                          % ('✔' if url.get('responde') else '!', url.get('url') or dominio,
+                             ('HTTP %s' % url.get('codigo')) if url.get('responde')
+                             else (url.get('error') or 'sin respuesta')),
+                          'ok' if url.get('responde') else 'aviso')
+        if fallos:
+            # Se deja la tarea en «ok»: la instancia existe y el problema suele
+            # ser de configuración. Deshacer sigue disponible desde Tareas.
+            tarea.paso_error(indice, 'Creada, pero con problemas: %s' % '; '.join(fallos))
+            tarea.datos['problemas'] = fallos
+        else:
+            tarea.paso_ok(indice, 'Instancia funcionando')
         tarea.datos['instancia_id'] = '%s|%s' % (cliente, tipo)
 
     tarea.log('Recuerda revisar el resto de credenciales.json (SMTP, tokens) '
               'y los datos de la empresa en el sistema.', 'aviso')
+
+
+# ----------------------------------------------------------------- verificar
+def verificar_instancia(tarea, cliente, puerto, dominio, con_servicio=True, espera=30):
+    """Comprueba que la instancia recién creada realmente arrancó y responde.
+
+    Devuelve la lista de fallos (vacía si todo está bien).
+    """
+    fallos = []
+    if con_servicio:
+        limite = time.time() + espera
+        estado = ''
+        while time.time() < limite:
+            proc = subprocess.run(['systemctl', 'is-active', cliente], timeout=10,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            estado = proc.stdout.decode('utf-8', 'replace').strip()
+            if estado == 'active':
+                break
+            time.sleep(2)
+        tarea.log('  %s Servicio %s: %s' % ('✔' if estado == 'active' else '✖', cliente, estado or '?'),
+                  'ok' if estado == 'active' else 'error')
+        if estado != 'active':
+            fallos.append('el servicio no quedó activo (revisa: journalctl -u %s -n 50)' % cliente)
+            return fallos
+    else:
+        tarea.log('  No se creó el servicio: no se prueba si la aplicación responde', 'aviso')
+        return fallos
+
+    # gunicorn tarda unos segundos en abrir el puerto
+    limite = time.time() + espera
+    escucha = False
+    while time.time() < limite:
+        if _puerto_escuchando(puerto):
+            escucha = True
+            break
+        time.sleep(1)
+    tarea.log('  %s Puerto %s %s' % ('✔' if escucha else '✖', puerto,
+                                     'escuchando' if escucha else 'sin respuesta'),
+              'ok' if escucha else 'error')
+    if not escucha:
+        fallos.append('nada escucha en el puerto %s' % puerto)
+        return fallos
+
+    peticion = urllib.request.Request('http://127.0.0.1:%s/' % puerto, method='GET',
+                                      headers={'Host': dominio or 'localhost',
+                                               'User-Agent': 'integrasolucadminvps'})
+    try:
+        with urllib.request.urlopen(peticion, timeout=20) as respuesta:
+            codigo = respuesta.getcode()
+    except urllib.error.HTTPError as ex:
+        codigo = ex.code
+    except Exception as ex:
+        codigo = None
+        tarea.log('  ✖ La aplicación no respondió: %s' % ex, 'error')
+    if codigo is not None:
+        bien = codigo < 500
+        tarea.log('  %s La aplicación responde en local: HTTP %s' % ('✔' if bien else '✖', codigo),
+                  'ok' if bien else 'error')
+        if not bien:
+            fallos.append('la aplicación devuelve HTTP %s (revisa DEBUG/ALLOWED_HOSTS y el log)'
+                          % codigo)
+    else:
+        fallos.append('la aplicación no responde en el puerto %s' % puerto)
+    return fallos
 
 
 # -------------------------------------------------------------------- deshacer

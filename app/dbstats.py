@@ -605,10 +605,126 @@ def listar_bases(instancia, config):
         """)
         bases = [{'nombre': f[0], 'bytes': int(f[1]), 'tamano': bytes_legible(f[1]),
                   'dueno': f[2], 'conexiones': int(f[3])} for f in cur.fetchall()]
+        servidor = _info_servidor(cur)
         cur.close()
-        return {'ok': True, 'host': conexion['host'], 'bases': bases}
+        servidor['total_bytes'] = sum(b['bytes'] for b in bases)
+        servidor['total'] = bytes_legible(servidor['total_bytes'])
+        return {'ok': True, 'host': conexion['host'], 'bases': bases, 'servidor': servidor}
     except Exception as ex:
         return {'ok': False, 'error': str(ex).strip().splitlines()[0], 'bases': []}
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _info_servidor(cur):
+    """Versión, conexiones y arranque del servidor PostgreSQL."""
+    datos = {}
+    try:
+        cur.execute("SHOW server_version")
+        datos['version'] = cur.fetchone()[0]
+        cur.execute("SELECT setting::int FROM pg_settings WHERE name = 'max_connections'")
+        datos['max_conexiones'] = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM pg_stat_activity WHERE backend_type = 'client backend'")
+        datos['conexiones'] = cur.fetchone()[0]
+        cur.execute("SELECT pg_postmaster_start_time(), now() - pg_postmaster_start_time()")
+        inicio, activo = cur.fetchone()
+        datos['desde'] = fecha_iso(inicio.replace(tzinfo=None) if inicio else None)
+        datos['activo'] = str(activo).split('.')[0] if activo is not None else None
+        datos['conexiones_pct'] = (round(datos['conexiones'] * 100.0 / datos['max_conexiones'], 1)
+                                   if datos.get('max_conexiones') else None)
+    except Exception as ex:   # sin permisos para alguna vista: se informa lo que haya
+        datos['error'] = str(ex).strip().splitlines()[0]
+    return datos
+
+
+def detalle_base(instancia, config, nombre):
+    """Consumo de una base: tablas más pesadas, conexiones, caché y actividad.
+
+    Se conecta con las credenciales de una instancia del mismo servidor
+    (normalmente el usuario tiene acceso a todas las bases, como para pg_dump).
+    """
+    if psycopg2 is None:
+        return {'ok': False, 'error': 'psycopg2 no está instalado'}
+    conexion = instancia.base_datos()
+    conn = None
+    try:
+        conn = psycopg2.connect(
+            host=conexion['host'], port=int(conexion.get('port') or 5432),
+            dbname=nombre, user=conexion.get('user'), password=conexion.get('password'),
+            connect_timeout=int(config.get('db_connect_timeout') or 6),
+            application_name='integrasolucadminvps')
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("SET statement_timeout = %s", (int(config.get('db_statement_timeout') or 15000),))
+
+        cur.execute("SELECT pg_database_size(current_database()), pg_get_userbyid(datdba), "
+                    "pg_encoding_to_char(encoding), datcollate FROM pg_database "
+                    "WHERE datname = current_database()")
+        tamano, dueno, codificacion, collate = cur.fetchone()
+        datos = {'ok': True, 'nombre': nombre, 'bytes': int(tamano),
+                 'tamano': bytes_legible(tamano), 'dueno': dueno,
+                 'codificacion': codificacion, 'collate': collate}
+
+        cur.execute("""
+            SELECT numbackends, xact_commit, xact_rollback, blks_read, blks_hit,
+                   tup_inserted, tup_updated, tup_deleted, deadlocks, temp_bytes, stats_reset
+            FROM pg_stat_database WHERE datname = current_database()
+        """)
+        f = cur.fetchone() or [None] * 11
+        leidos, en_cache = (f[3] or 0), (f[4] or 0)
+        datos['estadisticas'] = {
+            'conexiones': f[0], 'commits': f[1], 'rollbacks': f[2],
+            'cache_pct': round(en_cache * 100.0 / (en_cache + leidos), 2) if (en_cache + leidos) else None,
+            'insertadas': f[5], 'actualizadas': f[6], 'borradas': f[7], 'deadlocks': f[8],
+            'temporales': bytes_legible(f[9]) if f[9] is not None else '-',
+            'desde': fecha_iso(f[10].replace(tzinfo=None) if f[10] else None),
+        }
+
+        cur.execute("SELECT COUNT(*) FROM pg_stat_user_tables")
+        datos['tablas_total'] = cur.fetchone()[0]
+        cur.execute("""
+            SELECT relname, pg_total_relation_size(relid), pg_relation_size(relid),
+                   pg_indexes_size(relid), n_live_tup, n_dead_tup,
+                   GREATEST(last_vacuum, last_autovacuum), GREATEST(last_analyze, last_autoanalyze),
+                   seq_scan, idx_scan
+            FROM pg_stat_user_tables
+            ORDER BY pg_total_relation_size(relid) DESC
+            LIMIT 20
+        """)
+        datos['tablas'] = [{
+            'tabla': t[0], 'total_bytes': int(t[1]), 'total': bytes_legible(t[1]),
+            'datos': bytes_legible(t[2]), 'indices': bytes_legible(t[3]),
+            'filas': int(t[4] or 0), 'muertas': int(t[5] or 0),
+            'muertas_pct': round((t[5] or 0) * 100.0 / ((t[4] or 0) + (t[5] or 0)), 1)
+                           if ((t[4] or 0) + (t[5] or 0)) else 0,
+            'vacuum': fecha_iso(t[6].replace(tzinfo=None) if t[6] else None),
+            'analyze': fecha_iso(t[7].replace(tzinfo=None) if t[7] else None),
+            'lecturas_secuenciales': t[8], 'lecturas_indice': t[9],
+        } for t in cur.fetchall()]
+
+        cur.execute("""
+            SELECT pid, usename, application_name, client_addr::text, state,
+                   backend_start, now() - query_start, wait_event_type, LEFT(query, 200)
+            FROM pg_stat_activity
+            WHERE datname = current_database() AND pid <> pg_backend_pid()
+            ORDER BY query_start NULLS LAST
+        """)
+        datos['conexiones'] = [{
+            'pid': c[0], 'usuario': c[1], 'aplicacion': c[2] or '', 'cliente': c[3] or 'local',
+            'estado': c[4] or '-',
+            'desde': fecha_iso(c[5].replace(tzinfo=None) if c[5] else None),
+            'duracion': str(c[6]).split('.')[0] if c[6] is not None else None,
+            'segundos': int(c[6].total_seconds()) if c[6] is not None else None,
+            'espera': c[7], 'consulta': c[8] or '',
+        } for c in cur.fetchall()]
+        cur.close()
+        return datos
+    except Exception as ex:
+        return {'ok': False, 'error': str(ex).strip().splitlines()[0]}
     finally:
         if conn is not None:
             try:

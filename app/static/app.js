@@ -1255,14 +1255,37 @@
       body: JSON.stringify(datosAlta())
     }).then(function (r) { return r.json(); })
       .then(function (d) {
-        caja.innerHTML = '<ul class="revisiones">' + (d.revisiones || []).map(function (r) {
-          var icono = r.ok ? '✔' : (r.critico ? '✖' : '!');
-          var clase = r.ok ? 'ok' : (r.critico ? 'error' : 'aviso');
-          return '<li class="rev-' + clase + '">' + icono + ' ' + esc(r.mensaje) +
-            (r.detalle ? ' <span class="tenue">— ' + esc(r.detalle) + '</span>' : '') + '</li>';
-        }).join('') + '</ul>';
+        caja.innerHTML = listaRevisiones(d.revisiones);
         return d.ok;
       });
+  }
+
+  function listaRevisiones(revisiones) {
+    return '<ul class="revisiones">' + (revisiones || []).map(function (r) {
+      var icono = r.ok ? '✔' : (r.critico ? '✖' : '!');
+      var clase = r.ok ? 'ok' : (r.critico ? 'error' : 'aviso');
+      return '<li class="rev-' + clase + '">' + icono + ' ' + esc(r.mensaje) +
+        (r.detalle ? ' <span class="tenue">— ' + esc(r.detalle) + '</span>' : '') + '</li>';
+    }).join('') + '</ul>';
+  }
+
+  function diagnosticarEntorno() {
+    var caja = $('#diagnostico-cuerpo');
+    caja.innerHTML = '<p class="tenue">Revisando el servidor (puede tardar unos segundos)…</p>';
+    fetch('/api/aprovisionar/diagnostico', { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d.error) { caja.innerHTML = '<div class="aviso-error">' + esc(d.error) + '</div>'; return; }
+        caja.innerHTML =
+          '<div class="aviso ' + (d.ok ? 'aviso-ok' : 'aviso-error') + '" style="margin:0 0 10px">' +
+            (d.ok ? 'El entorno está listo para crear instancias'
+                  : d.errores + ' problema(s) impiden crear instancias') +
+            (d.avisos ? ' · ' + d.avisos + ' aviso(s)' : '') + '</div>' +
+          '<div class="grid-detalle">' + (d.grupos || []).map(function (g) {
+            return '<div class="bloque"><h3>' + esc(g.titulo) + '</h3>' + listaRevisiones(g.revisiones) + '</div>';
+          }).join('') + '</div>';
+      })
+      .catch(function (e) { caja.innerHTML = '<div class="aviso-error">' + esc(e.message) + '</div>'; });
   }
 
   function crearInstancia(simular) {
@@ -1327,18 +1350,45 @@
                   '<button class="boton peligro" type="button" id="btn-deshacer" data-id="' + esc(d.id) +
                   '" style="margin-left:10px">Deshacer</button></div>'
                 : '') +
+              enlacesDescarga(d) +
               (d.estado === 'ok' && d.datos && d.datos.instancia_id
-                ? '<div class="aviso-ok" style="margin-top:10px">Instancia creada. ' +
+                ? ((d.datos.problemas || []).length
+                    ? '<div class="aviso-error" style="margin-top:10px">La instancia se creó, pero la ' +
+                      'verificación encontró problemas: ' + esc(d.datos.problemas.join('; ')) + '</div>'
+                    : '') +
+                  '<div class="aviso-ok" style="margin-top:10px">Instancia creada. ' +
                   '<button class="boton mini" type="button" id="btn-ver-nueva" data-id="' +
                   esc(d.datos.instancia_id) + '">Ver en el panel</button></div>'
                 : '');
-            cargar();
+            refrescarPaginaTrasTarea(d);
           }
         })
         .catch(function () {});
     };
     tick();
     tareaPoll = setInterval(tick, 1500);
+  }
+
+  // Backups recién generados: se pueden bajar desde la misma ventana de la tarea.
+  function enlacesDescarga(d) {
+    if (d.tipo !== 'backup') return '';
+    var listos = ((d.datos || {}).resultados || []).filter(function (r) { return r.ok && r.archivo; });
+    if (!listos.length) return '';
+    return '<div class="aviso-ok" style="margin-top:10px">Backups listos para descargar: ' +
+      listos.map(function (r) {
+        return '<a class="boton mini" style="margin:4px 4px 0 0" href="/backups/descargar?archivo=' +
+          encodeURIComponent(r.archivo) + '">⬇ ' + esc(r.nombre || r.archivo) +
+          (r.tamano ? ' (' + esc(r.tamano) + ')' : '') + '</a>';
+      }).join('') + '</div>';
+  }
+
+  // Cada página refresca lo suyo: cargar() pinta la tabla de instancias,
+  // que sólo existe en el panel principal y en /excluidos.
+  function refrescarPaginaTrasTarea(d) {
+    if (MODO === 'backups') { verBackups(); return verBases(); }
+    if (MODO === 'certificados') return verCertificados('#contenido');
+    if (MODO === 'principal' || MODO === 'excluidos') return cargar();
+    return cargarCapacidades();
   }
 
   function tablaCron(d) {
@@ -1639,12 +1689,55 @@
             ' <button class="boton renovar-cert" type="button">Renovar los que toquen</button>'
           : '') +
       '</div>' +
+      avisoRenovacionAutomatica(d.automatica) +
       '<p class="tenue">Fuente: ' + (d.certbot ? 'certbot certificates' : '/etc/letsencrypt/live') +
-        ' · ' + esc(d.total || 0) + ' certificado(s)</p>' +
+        ' · ' + esc(d.total || 0) + ' certificado(s)' +
+        (cap.acciones_apache
+          ? ' · <button class="boton mini servidor-web" type="button" data-modo="recargar">' +
+              'Recargar Apache/nginx</button> ' +
+            '<button class="boton mini servidor-web" type="button" data-modo="reiniciar">' +
+              'Reiniciar Apache/nginx</button>'
+          : '') + '</p>' +
       '<div class="tabla-envoltura"><table class="tabla" id="tabla-cert" style="min-width:auto">' +
         '<thead><tr id="cabecera-cert"></tr></thead>' +
-        '<tbody id="cuerpo-cert"></tbody></table></div>';
+        '<tbody id="cuerpo-cert"></tbody></table></div>' +
+      tablaSinCertificado(d.sin_certificado || [], cap);
     pintarFilasCert();
+  }
+
+  function avisoRenovacionAutomatica(a) {
+    if (!a) return '';
+    if (a.activa) {
+      return '<div class="aviso aviso-ok" style="margin:0 0 8px">Renovación automática activa (' +
+        esc(a.timer_activo ? a.timer : a.cron) + ')' +
+        (a.proxima ? ' · próxima ejecución: ' + esc(a.proxima) : '') +
+        (a.ultima ? ' · última: ' + esc(a.ultima) : '') + '</div>';
+    }
+    return '<div class="aviso aviso-error" style="margin:0 0 8px">No hay renovación automática: ' +
+      'ni certbot.timer ni /etc/cron.d/certbot están activos. Los certificados vencerán si ' +
+      'nadie los renueva desde aquí (o activa el timer con: systemctl enable --now certbot.timer).</div>';
+  }
+
+  function tablaSinCertificado(lista, cap) {
+    if (!lista.length) return '';
+    return '<h3 style="margin:18px 0 6px">Instancias sin certificado de Let\'s Encrypt (' +
+        lista.length + ')</h3>' +
+      '<p class="tenue">Tienen dominio y sitio web, pero ningún certificado lo cubre. ' +
+        'Antes de emitir, el dominio debe apuntar por DNS a este servidor.</p>' +
+      '<div class="tabla-envoltura"><table class="tabla" style="min-width:auto"><thead><tr>' +
+        '<th>Instancia</th><th>Dominio</th><th>Servidor web</th><th>SSL actual</th><th></th>' +
+      '</tr></thead><tbody>' +
+      lista.map(function (f) {
+        return '<tr><td class="cliente">' + esc(f.cliente) +
+          (f.oculta ? ' <span class="badge gris">oculta</span>' : '') +
+          '<div class="sub">' + esc(f.tipo || '') + '</div></td>' +
+          '<td>' + esc(f.dominio) + '</td><td>' + esc(f.servidor) + '</td>' +
+          '<td>' + guion(f.ssl) + '</td>' +
+          '<td>' + (cap.acciones_certbot
+            ? '<button class="boton mini emitir-cert" type="button" data-dominio="' +
+              esc(f.dominio) + '" data-servidor="' + esc(f.servidor) + '">Emitir certificado</button>'
+            : '') + '</td></tr>';
+      }).join('') + '</tbody></table></div>';
   }
 
   function pintarFilasCert() {
@@ -1689,6 +1782,9 @@
         acciones =
           '<button class="boton mini renovar-cert" type="button" data-nombre="' +
             esc(c.nombre) + '">Renovar</button> ' +
+          '<button class="boton mini renovar-cert" type="button" data-forzar="1" ' +
+            'title="Renueva ya, aunque falten más de 30 días para el vencimiento" data-nombre="' +
+            esc(c.nombre) + '">Forzar</button> ' +
           '<button class="boton mini cert-accion" type="button" data-nombre="' + esc(c.nombre) +
             '" data-accion="' + (pausada ? 'reanudar' : 'pausar') + '">' +
             (pausada ? 'Reanudar' : 'Pausar') + '</button> ' +
@@ -1747,7 +1843,10 @@
 
   function renovarCertificado(nombre, simular, forzar) {
     var texto = nombre ? ('el certificado ' + nombre) : 'los certificados que lo necesiten';
-    if (!simular && !window.confirm('¿Renovar ' + texto + ' con certbot?')) return;
+    if (forzar && !window.confirm('¿Forzar la renovación de ' + texto + ' ahora?\n\n' +
+        'Let\'s Encrypt limita a 5 renovaciones del mismo certificado por semana: úsalo ' +
+        'sólo si el certificado está dañado o cambió de dominio.')) return;
+    if (!simular && !forzar && !window.confirm('¿Renovar ' + texto + ' con certbot?')) return;
     fetch('/api/certificados/renovar', {
       method: 'POST', credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -1758,6 +1857,235 @@
         verTarea(d.tarea);
       })
       .catch(function (e) { aviso(e.message); });
+  }
+
+  function lanzarTarea(url, cuerpo) {
+    return fetch(url, {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cuerpo || {})
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) { aviso(d.error || 'No se pudo iniciar'); return; }
+        verTarea(d.tarea);
+      })
+      .catch(function (e) { aviso(e.message); });
+  }
+
+  function emitirCertificado(dominio, servidor) {
+    if (!window.confirm('¿Emitir un certificado de Let\'s Encrypt para ' + dominio + ' (' +
+        servidor + ')?\n\nSe comprueba antes el DNS, certbot ajusta el sitio web para HTTPS ' +
+        'con redirección y después se recarga el servidor web.')) return;
+    lanzarTarea('/api/certificados/emitir', { dominio: dominio, servidor: servidor });
+  }
+
+  function servidorWeb(modo) {
+    var texto = modo === 'reiniciar'
+      ? '¿Reiniciar Apache/nginx? Las conexiones en curso se cortan unos segundos.'
+      : '¿Recargar Apache/nginx? No corta conexiones; aplica certificados y vhosts nuevos.';
+    if (!window.confirm(texto + '\n\nAntes se valida la configuración: si tiene errores no se toca.')) return;
+    lanzarTarea('/api/servidor-web', { modo: modo });
+  }
+
+  // ----------------------------------------------------------------- consumo
+  var datosConsumo = null, consumoAuto = null, consumoMidiendo = false;
+
+  function medirConsumo() {
+    if (consumoMidiendo) return;
+    consumoMidiendo = true;
+    $('#consumo-medido').textContent = 'Midiendo…';
+    fetch('/api/consumo', { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var primera = !datosConsumo;
+        datosConsumo = d;
+        pintarConsumo();
+        if (primera) medirCarpetas(false);   // necesita el tamaño del disco para los %
+        $('#consumo-medido').textContent = 'Medido: ' + (d.medido || '');
+      })
+      .catch(function (e) { aviso('No se pudo medir el consumo: ' + e.message); })
+      .then(function () { consumoMidiendo = false; });
+  }
+
+  function pctDe(parte, total) {
+    return total ? Math.round(parte * 1000 / total) / 10 : null;
+  }
+
+  function pintarConsumo() {
+    var d = datosConsumo;
+    if (!d) return;
+    var s = d.sistema || {}, sv = d.servicios || {}, tot = sv.totales || {};
+    var raiz = (s.discos || []).filter(function (x) { return x.montaje === '/'; })[0] ||
+               (s.discos || [])[0] || {};
+    var tarjeta = function (rotulo, valor, extra, pct, ambar, rojo) {
+      var clase = pct === null || pct === undefined ? ''
+        : (pct >= (rojo || 85) ? 'mal' : (pct >= (ambar || 70) ? '' : 'ok'));
+      return '<div class="tarjeta ' + clase + '"><div class="rotulo">' + esc(rotulo) + '</div>' +
+        '<div class="valor">' + esc(valor) + '</div>' +
+        (extra ? '<div class="rotulo">' + esc(extra) + '</div>' : '') + '</div>';
+    };
+    var infra = tot.infraestructura || {}, inst = tot.instancia || {};
+    $('#tarjetas-consumo').innerHTML = [
+      tarjeta('CPU (carga 1 min)', (s.carga_pct !== null && s.carga_pct !== undefined ? s.carga_pct + ' %' : '-'),
+              (s.nucleos || '?') + ' núcleos · carga ' + ((s.carga_1_5_15 || []).join(' / ') || '-'),
+              s.carga_pct),
+      tarjeta('RAM usada', (s.ram_pct !== undefined ? s.ram_pct + ' %' : '-'),
+              (s.ram_usada_legible || '-') + ' de ' + (s.ram_total_legible || '-'), s.ram_pct),
+      tarjeta('Swap', (s.swap || {}).porcentaje !== null && (s.swap || {}).porcentaje !== undefined
+              ? s.swap.porcentaje + ' %' : 'sin swap',
+              ((s.swap || {}).usado || '-') + ' de ' + ((s.swap || {}).total || '-'),
+              (s.swap || {}).porcentaje, 30, 60),
+      tarjeta('Disco /', (raiz.porcentaje !== undefined ? raiz.porcentaje + ' %' : '-'),
+              (raiz.libre || '-') + ' libres de ' + (raiz.total || '-'), raiz.porcentaje),
+      tarjeta('RAM instancias', inst.memoria || '-',
+              (inst.servicios || 0) + ' servicios · CPU ' + (inst.cpu_pct || 0) + ' %',
+              pctDe(inst.memoria_bytes || 0, s.ram_total)),
+      tarjeta('RAM infraestructura', infra.memoria || '-',
+              'PostgreSQL, Apache, nginx… · CPU ' + (infra.cpu_pct || 0) + ' %',
+              pctDe(infra.memoria_bytes || 0, s.ram_total)),
+      tarjeta('Encendido hace', s.uptime || '-', null, null)
+    ].join('');
+
+    $('#cuerpo-discos').innerHTML = (s.discos || []).map(function (x) {
+      return '<tr><td><strong>' + esc(x.montaje) + '</strong></td><td class="sub">' +
+        esc(x.dispositivo) + ' · ' + esc(x.tipo) + '</td>' +
+        '<td class="num">' + esc(x.total) + '</td><td class="num">' + esc(x.usado) + '</td>' +
+        '<td class="num">' + esc(x.libre) + '</td>' +
+        '<td>' + barra(x.porcentaje, x.porcentaje + ' %', '', 70, 85) + '</td>' +
+        '<td class="num">' + guion(x.inodos_pct === null ? null : x.inodos_pct + ' %') + '</td></tr>';
+    }).join('') || '<tr><td class="vacio" colspan="7">Sin datos de discos</td></tr>';
+
+    pintarConsumoInstancias();
+    pintarServicios();
+    pintarProcesos();
+  }
+
+  function pintarConsumoInstancias() {
+    var d = datosConsumo;
+    if (!d) return;
+    var ramTotal = (d.sistema || {}).ram_total || 0;
+    var raiz = ((d.sistema || {}).discos || []).filter(function (x) { return x.montaje === '/'; })[0] || {};
+    var txt = ($('#filtro-consumo-inst').value || '').toLowerCase().trim();
+    var orden = $('#orden-consumo-inst').value || 'ram_bytes';
+    var filas = (d.instancias || []).filter(function (f) {
+      return !txt || (f.cliente || '').toLowerCase().indexOf(txt) !== -1;
+    }).sort(function (a, b) { return (b[orden] || 0) - (a[orden] || 0); });
+    $('#cuerpo-consumo-inst').innerHTML = filas.map(function (f) {
+      var pctRam = pctDe(f.ram_bytes, ramTotal);
+      var pctDisco = pctDe(f.disco_bytes, raiz.total_bytes);
+      return '<tr><td class="cliente">' + esc(f.cliente) +
+          (f.oculta ? ' <span class="badge gris">oculta</span>' : '') +
+          ' <span class="chip ' + esc(f.tipo) + '">' + esc(f.tipo) + '</span>' +
+          (f.activo ? '' : ' ' + badge('rojo', 'detenida')) + '</td>' +
+        '<td>' + (f.ram_bytes ? barra(pctRam, f.ram + ' · ' + pctRam + ' %', 'del total de RAM', 10, 25)
+                              : '<span class="tenue">—</span>') + '</td>' +
+        '<td class="num">' + (f.cpu_pct === null || f.cpu_pct === undefined ? '—' : f.cpu_pct + ' %') + '</td>' +
+        '<td class="num">' + esc(f.db) + '</td><td class="num">' + esc(f.media) + '</td>' +
+        '<td class="num">' + esc(f.logs) + '</td>' +
+        '<td>' + barra(pctDisco, f.disco + ' · ' + (pctDisco || 0) + ' %', 'del disco /', 5, 15) + '</td></tr>';
+    }).join('') || '<tr><td class="vacio" colspan="7">Sin instancias</td></tr>';
+  }
+
+  function pintarServicios() {
+    var d = datosConsumo;
+    if (!d) return;
+    var sv = d.servicios || {};
+    if (sv.ok === false) {
+      $('#cuerpo-servicios').innerHTML = '<tr><td class="vacio" colspan="6">' +
+        esc(sv.error || 'No se pudo consultar systemd') + '</td></tr>';
+      return;
+    }
+    var ramTotal = (d.sistema || {}).ram_total || 0;
+    var cat = $('#filtro-servicio-cat').value;
+    var etiquetas = { instancia: ['azul', 'instancia'], infraestructura: ['ambar', 'infraestructura'],
+                      sistema: ['gris', 'sistema'] };
+    var filas = (sv.servicios || []).filter(function (f) { return !cat || f.categoria === cat; });
+    $('#cuerpo-servicios').innerHTML = filas.map(function (f) {
+      var pct = pctDe(f.memoria_bytes || 0, ramTotal);
+      var e = etiquetas[f.categoria] || ['gris', f.categoria];
+      return '<tr><td><strong>' + esc(f.nombre) + '</strong>' +
+          (f.cliente ? ' <span class="tenue">(' + esc(f.cliente) + ')</span>' : '') +
+          '<div class="sub">' + esc(f.descripcion || '') + '</div></td>' +
+        '<td>' + badge(e[0], e[1]) + '</td>' +
+        '<td>' + (f.memoria_bytes ? barra(pct, f.memoria + ' · ' + pct + ' %', '', 10, 25)
+                                  : '<span class="tenue">—</span>') + '</td>' +
+        '<td class="num">' + (f.cpu_pct === null ? '—' : f.cpu_pct + ' %') + '</td>' +
+        '<td class="num">' + guion(f.tareas) + '</td><td class="num">' + guion(f.pid) + '</td></tr>';
+    }).join('') || '<tr><td class="vacio" colspan="6">Sin servicios</td></tr>';
+    var t = sv.totales || {};
+    $('#resumen-servicios').textContent = Object.keys(t).map(function (k) {
+      return k + ': ' + t[k].servicios + ' · ' + t[k].memoria + ' · CPU ' + t[k].cpu_pct + ' %';
+    }).join('  |  ');
+  }
+
+  function pintarProcesos() {
+    var d = datosConsumo;
+    if (!d) return;
+    var p = d.procesos || {};
+    if (p.ok === false) {
+      $('#cuerpo-procesos').innerHTML = '<tr><td class="vacio" colspan="7">' +
+        esc(p.error || 'No se pudieron leer los procesos') + '</td></tr>';
+      return;
+    }
+    var lista = p[$('#procesos-por').value] || [];
+    $('#cuerpo-procesos').innerHTML = lista.map(function (f) {
+      return '<tr><td class="num">' + esc(f.pid) + '</td><td>' + esc(f.usuario || '') + '</td>' +
+        '<td><strong>' + esc(f.nombre || '') + '</strong><div class="sub"><code class="ruta" title="' +
+          esc(f.comando) + '">' + esc(f.comando) + '</code></div></td>' +
+        '<td>' + (f.cliente ? esc(f.cliente) : '<span class="tenue">—</span>') + '</td>' +
+        '<td class="num">' + esc(f.rss) + '</td>' +
+        '<td class="num">' + guion(f.ram_pct === null ? null : f.ram_pct + ' %') + '</td>' +
+        '<td class="num">' + esc(f.cpu_pct) + ' %</td></tr>';
+    }).join('') || '<tr><td class="vacio" colspan="7">Ningún proceso usó CPU en el último segundo</td></tr>';
+    $('#resumen-procesos').textContent = (p.total || 0) + ' procesos en el servidor';
+  }
+
+  function medirCarpetas(forzar) {
+    $('#cuerpo-carpetas').innerHTML = '<tr><td class="vacio" colspan="3">Midiendo con du…</td></tr>';
+    fetch('/api/consumo/carpetas' + (forzar ? '?forzar=1' : ''), { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var raiz = (((datosConsumo || {}).sistema || {}).discos || [])
+          .filter(function (x) { return x.montaje === '/'; })[0] || {};
+        $('#cuerpo-carpetas').innerHTML = (d.carpetas || []).map(function (c) {
+          var pct = pctDe(c.bytes || 0, raiz.total_bytes);
+          return '<tr><td>' + esc(c.etiqueta) + '</td><td><code class="ruta">' + esc(c.ruta) + '</code></td>' +
+            '<td>' + (c.bytes === null ? '<span class="tenue">' + esc(c.error || '—') + '</span>'
+                     : (pct === null ? esc(c.tamano)
+                        : barra(pct, c.tamano + ' · ' + pct + ' %', 'del disco /', 10, 25))) + '</td></tr>';
+        }).join('') || '<tr><td class="vacio" colspan="3">Sin carpetas que medir</td></tr>';
+        $('#carpetas-medido').textContent = ' · medido ' + (d.medido || '') + (d.cache ? ' (guardado)' : '');
+      })
+      .catch(function (e) {
+        $('#cuerpo-carpetas').innerHTML = '<tr><td class="vacio" colspan="3">' + esc(e.message) + '</td></tr>';
+      });
+  }
+
+  function consumoBases() {
+    fetch('/api/bases', { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d.ok === false) {
+          $('#cuerpo-consumo-bases').innerHTML = '<tr><td class="vacio" colspan="4">' +
+            esc(d.error || 'No se pudo consultar PostgreSQL') + '</td></tr>';
+          return;
+        }
+        var total = (d.bases || []).reduce(function (a, b) { return a + (b.bytes || 0); }, 0);
+        $('#cuerpo-consumo-bases').innerHTML = (d.bases || []).slice(0, 15).map(function (b) {
+          var pct = pctDe(b.bytes, total);
+          return '<tr><td class="cliente">' + esc(b.nombre) + '</td>' +
+            '<td>' + (b.instancia ? esc(b.instancia.cliente)
+                     : (b.sistema ? badge('gris', 'del motor') : badge('ambar', 'sin instancia'))) + '</td>' +
+            '<td>' + barra(pct, b.tamano + ' · ' + pct + ' %', 'del total de bases', 25, 50) + '</td>' +
+            '<td class="num">' + esc(b.conexiones) + '</td></tr>';
+        }).join('') || '<tr><td class="vacio" colspan="4">Sin bases</td></tr>';
+      })
+      .catch(function () {});
+  }
+
+  function programarConsumo() {
+    if (consumoAuto) { clearInterval(consumoAuto); consumoAuto = null; }
+    if ($('#consumo-auto').checked) consumoAuto = setInterval(medirConsumo, 15000);
   }
 
   var datosBackups = null;
@@ -1852,8 +2180,11 @@
           '<td>' + esc(a.tamano) + '</td>' +
           '<td><a class="boton mini" href="/backups/descargar?archivo=' +
             encodeURIComponent(a.archivo) + '">Descargar</a> ' +
-          '<button class="boton mini peligro backup-borrar" type="button" style="color:#fff" ' +
-            'data-archivo="' + esc(a.archivo) + '">Eliminar</button></td></tr>';
+          '<button class="boton mini backup-verificar" type="button" data-archivo="' +
+            esc(a.archivo) + '" title="Comprueba que el dump esté completo y se pueda leer">Verificar</button> ' +
+          (a.solo_lectura ? '' :
+            '<button class="boton mini peligro backup-borrar" type="button" style="color:#fff" ' +
+              'data-archivo="' + esc(a.archivo) + '">Eliminar</button>') + '</td></tr>';
       }).join('') + '</tbody></table></div>';
     $('#detalle-backups').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
@@ -1940,12 +2271,90 @@
         '<td class="num">' + esc(b.tamano) + '</td>' +
         '<td class="num">' + esc(b.conexiones) + '</td>' +
         '<td>' + guion(b.ultimo_backup) + '</td>' +
-        '<td><button class="boton mini backup-base" type="button" data-base="' +
-          esc(b.nombre) + '">Respaldar</button></td></tr>';
+        '<td style="white-space:nowrap"><button class="boton mini base-detalle" type="button" data-base="' +
+          esc(b.nombre) + '">Detalle</button> ' +
+          '<button class="boton mini backup-base" type="button" data-base="' +
+          esc(b.nombre) + '">Respaldar</button>' +
+          (b.ultimo_backup_archivo
+            ? ' <a class="boton mini" title="Descargar el último backup" href="/backups/descargar?archivo=' +
+              encodeURIComponent(b.ultimo_backup_archivo) + '">⬇ Último</a>'
+            : '') + '</td></tr>';
     }).join('') || '<tr><td class="vacio" colspan="6">Sin bases</td></tr>';
-    $('#resumen-bases').textContent = (d.bases || []).length + ' bases · ' +
+    var sv = d.servidor || {};
+    $('#resumen-bases').textContent = (d.bases || []).length + ' bases · ' + (sv.total || '') + ' · ' +
       (d.sin_uso || 0) + ' sin instancia (' + (d.sin_uso_tamano || '0 B') + ')' +
-      (d.host ? ' · ' + d.host : '');
+      (d.host ? ' · ' + d.host : '') +
+      (sv.version ? ' · PostgreSQL ' + sv.version : '') +
+      (sv.max_conexiones ? ' · conexiones ' + sv.conexiones + '/' + sv.max_conexiones +
+        ' (' + sv.conexiones_pct + ' %)' : '') +
+      (sv.activo ? ' · activo hace ' + sv.activo : '');
+  }
+
+  function verDetalleBase(nombre) {
+    if (tareaPoll) { clearInterval(tareaPoll); tareaPoll = null; }
+    $('#tarea-titulo').textContent = 'Base ' + nombre;
+    $('#modal-tarea').classList.remove('oculto');
+    var caja = $('#tarea-cuerpo');
+    caja.innerHTML = '<p class="tenue">Consultando PostgreSQL…</p>';
+    fetch('/api/bases/' + encodeURIComponent(nombre), { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) { caja.innerHTML = '<div class="aviso-error">' + esc(d.error || 'Error') + '</div>'; return; }
+        var e = d.estadisticas || {};
+        var cache = e.cache_pct;
+        var inactivas = (d.conexiones || []).filter(function (c) { return c.estado === 'idle'; }).length;
+        var largas = (d.conexiones || []).filter(function (c) {
+          return c.estado === 'active' && c.segundos > 60; }).length;
+        caja.innerHTML =
+          '<div class="grid-detalle">' +
+            '<div class="bloque"><h3>General</h3>' + dl([
+              ['Instancia', d.instancia ? d.instancia.cliente + ' (' + d.instancia.tipo + ')' : 'sin instancia'],
+              ['Tamaño', d.tamano], ['Dueño', d.dueno], ['Tablas', d.tablas_total],
+              ['Codificación', d.codificacion + ' · ' + (d.collate || '')]
+            ]) + '</div>' +
+            '<div class="bloque"><h3>Actividad</h3>' + dl([
+              ['Conexiones', (d.conexiones || []).length + ' (' + inactivas + ' inactivas' +
+                (largas ? ', ' + largas + ' consultas de más de 1 min' : '') + ')'],
+              ['Aciertos de caché', cache === null || cache === undefined ? '-' : cache + ' %' +
+                (cache < 95 ? ' (bajo: falta RAM para shared_buffers)' : '')],
+              ['Commits / rollbacks', (e.commits || 0) + ' / ' + (e.rollbacks || 0)],
+              ['Filas insertadas / actualizadas / borradas',
+                (e.insertadas || 0) + ' / ' + (e.actualizadas || 0) + ' / ' + (e.borradas || 0)],
+              ['Deadlocks', e.deadlocks], ['Archivos temporales', e.temporales],
+              ['Estadísticas desde', e.desde || 'inicio del servidor']
+            ]) + '</div>' +
+          '</div>' +
+          '<div style="margin:10px 0">' +
+            '<button class="boton mini backup-base" type="button" data-base="' + esc(d.nombre) +
+              '">Respaldar ahora</button></div>' +
+          '<div class="bloque"><h3>Tablas más pesadas</h3><div class="tabla-envoltura" style="margin:0">' +
+            '<table class="tabla-mini"><thead><tr><th>Tabla</th><th class="num">Total</th>' +
+            '<th class="num">Datos</th><th class="num">Índices</th><th class="num">Filas</th>' +
+            '<th class="num">Muertas</th><th>Último vacuum</th></tr></thead><tbody>' +
+            (d.tablas || []).map(function (t) {
+              return '<tr><td>' + esc(t.tabla) + '</td><td class="num">' + esc(t.total) + '</td>' +
+                '<td class="num">' + esc(t.datos) + '</td><td class="num">' + esc(t.indices) + '</td>' +
+                '<td class="num">' + esc(t.filas) + '</td>' +
+                '<td class="num">' + (t.muertas_pct > 20 ? badge('ambar', t.muertas_pct + ' %')
+                                     : esc(t.muertas_pct + ' %')) + '</td>' +
+                '<td>' + guion(t.vacuum) + '</td></tr>';
+            }).join('') + '</tbody></table></div></div>' +
+          '<div class="bloque" style="margin-top:10px"><h3>Conexiones abiertas</h3>' +
+            ((d.conexiones || []).length
+              ? '<div class="tabla-envoltura" style="margin:0"><table class="tabla-mini"><thead><tr>' +
+                '<th class="num">PID</th><th>Usuario</th><th>Aplicación</th><th>Origen</th><th>Estado</th>' +
+                '<th>Duración</th><th>Consulta</th></tr></thead><tbody>' +
+                d.conexiones.map(function (c) {
+                  return '<tr><td class="num">' + esc(c.pid) + '</td><td>' + esc(c.usuario) + '</td>' +
+                    '<td>' + esc(c.aplicacion) + '</td><td>' + esc(c.cliente) + '</td>' +
+                    '<td>' + esc(c.estado) + (c.espera ? ' <span class="tenue">(' + esc(c.espera) + ')</span>' : '') + '</td>' +
+                    '<td>' + guion(c.duracion) + '</td>' +
+                    '<td><code class="ruta" title="' + esc(c.consulta) + '">' + esc(c.consulta) + '</code></td></tr>';
+                }).join('') + '</tbody></table></div>'
+              : '<p class="tenue">Nadie está conectado a esta base.</p>') +
+          '</div>';
+      })
+      .catch(function (e) { caja.innerHTML = '<div class="aviso-error">' + esc(e.message) + '</div>'; });
   }
 
   function diagnosticoVhost(id) {
@@ -2093,24 +2502,36 @@
           return pintarFilasCert();
         }
         if (el.id === 'btn-backups-recargar') { verBackups(); return verBases(); }
+        if (el.id === 'btn-consumo-recargar') return medirConsumo();
+        if (el.id === 'btn-carpetas-medir') return medirCarpetas(true);
         if (el.id === 'btn-backup-todos') return crearBackup(null);
         if (el.classList.contains('backup-crear')) return crearBackup([el.getAttribute('data-id')]);
         if (el.classList.contains('backup-ver')) return verCopias(el.getAttribute('data-cliente'));
         if (el.classList.contains('backup-borrar')) return borrarBackup(el.getAttribute('data-archivo'));
+        if (el.classList.contains('backup-verificar')) {
+          return lanzarTarea('/api/backups/verificar', { archivo: el.getAttribute('data-archivo') });
+        }
+        if (el.classList.contains('base-detalle')) return verDetalleBase(el.getAttribute('data-base'));
         if (el.classList.contains('backup-base')) return crearBackupBase(el.getAttribute('data-base'));
         if (el.classList.contains('cert-accion')) {
           return accionCertificado(el.getAttribute('data-nombre'), el.getAttribute('data-accion'));
         }
         if (el.classList.contains('renovar-cert')) {
           return renovarCertificado(el.getAttribute('data-nombre'),
-                                    el.getAttribute('data-simular') === '1', false);
+                                    el.getAttribute('data-simular') === '1',
+                                    el.getAttribute('data-forzar') === '1');
         }
+        if (el.classList.contains('emitir-cert')) {
+          return emitirCertificado(el.getAttribute('data-dominio'), el.getAttribute('data-servidor'));
+        }
+        if (el.classList.contains('servidor-web')) return servidorWeb(el.getAttribute('data-modo'));
         if (el.id === 'nueva-cerrar' || el.id === 'modal-nueva') return $('#modal-nueva').classList.add('oculto');
         if (el.id === 'tarea-cerrar' || el.id === 'modal-tarea') {
           if (tareaPoll) { clearInterval(tareaPoll); tareaPoll = null; }
           return $('#modal-tarea').classList.add('oculto');
         }
         if (el.id === 'btn-validar') return validarAlta();
+        if (el.id === 'btn-diagnostico') return diagnosticarEntorno();
         if (el.id === 'btn-simular') return crearInstancia(true);
         if (el.id === 'btn-crear') return crearInstancia(false);
         if (el.id === 'btn-deshacer') return deshacerTarea(el.getAttribute('data-id'));
@@ -2205,6 +2626,10 @@
            'filtro-ocultos'].indexOf(el.id) !== -1) return pintarTabla();
       if (el.id === 'filtro-backup-estado') return pintarBackups();
       if (el.id === 'solo-sin-uso') return pintarBases();
+      if (el.id === 'consumo-auto') return programarConsumo();
+      if (el.id === 'orden-consumo-inst') return pintarConsumoInstancias();
+      if (el.id === 'filtro-servicio-cat') return pintarServicios();
+      if (el.id === 'procesos-por') return pintarProcesos();
       if (el.id === 'filtro-cert-estado') { estadoCert.estado = el.value; return pintarFilasCert(); }
       if (el.classList.contains('ver-en-panel')) return alternarVisibilidad(el);
       if (el.hasAttribute && el.hasAttribute('data-grupo')) {
@@ -2220,15 +2645,15 @@
       }
       if (['filtro-backups', 'filtro-backup-estado'].indexOf(e.target.id) !== -1) pintarBackups();
       if (e.target.id === 'filtro-cert') { estadoCert.filtro = e.target.value; pintarFilasCert(); }
+      if (e.target.id === 'filtro-consumo-inst') pintarConsumoInstancias();
     });
 
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape') {
-        $('#modal').classList.add('oculto');
-        if ($('#modal-campo')) $('#modal-campo').classList.add('oculto');
-        $('#modal-nueva').classList.add('oculto');
+        ['#modal', '#modal-campo', '#modal-nueva', '#modal-tarea'].forEach(function (sel) {
+          if ($(sel)) $(sel).classList.add('oculto');
+        });
         if (tareaPoll) { clearInterval(tareaPoll); tareaPoll = null; }
-        $('#modal-tarea').classList.add('oculto');
       }
     });
 
@@ -2238,6 +2663,10 @@
     }
     if (MODO === 'backups') {
       cargarCapacidades().then(function () { verBackups(); verBases(); });
+      return;
+    }
+    if (MODO === 'consumo') {
+      cargarCapacidades().then(function () { medirConsumo(); consumoBases(); });
       return;
     }
     if (MODO === 'nueva') {

@@ -109,6 +109,7 @@ a:hover{text-decoration:underline}
 .badge.rojo{background:var(--rojo-bg);color:var(--rojo)}
 .badge.ambar{background:var(--ambar-bg);color:var(--ambar)}
 .badge.gris{background:#eceff4;color:var(--suave)}
+.badge.azul{background:#e8f0ff;color:var(--azul-oscuro)}
 .chip{font-size:10.5px;border-radius:5px;padding:2px 7px;background:#eef2fa;color:var(--azul-oscuro);
   text-transform:uppercase;letter-spacing:.3px;font-weight:600}
 .chip.restaurante{background:#fdf0e6;color:#a2650a}
