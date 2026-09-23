@@ -2523,10 +2523,120 @@
           }
         }
         notif.primera = false;
+        actualizarAlertas(d.alertas_actuales);
         pintarPanelNotif();
         if (MODO === 'notificaciones') pintarPaginaNotif();
       })
       .catch(function () {});
+  }
+
+  // ------------------------------------------------------- modal de alertas
+  // Se abre solo cuando aparece algo caído que este navegador no había visto;
+  // «Entendido» lo guarda y el botón rojo de la cabecera lo vuelve a abrir.
+  var CLAVE_VISTAS = 'panel-alertas-vistas';
+
+  function alertasVistas() {
+    try { return JSON.parse(localStorage.getItem(CLAVE_VISTAS) || '{}') || {}; } catch (e) { return {}; }
+  }
+  function guardarVistas(v) {
+    try { localStorage.setItem(CLAVE_VISTAS, JSON.stringify(v)); } catch (e) { /* modo privado */ }
+  }
+  // Una alerta que se resolvió y vuelve a aparecer es nueva: se identifica
+  // por su clave y el momento en que empezó.
+  function firmaAlerta(a) { return a.clave + '@' + (a.desde || ''); }
+
+  function asegurarModalAlertas() {
+    if ($('#modal-alertas')) return;
+    var modal = document.createElement('div');
+    modal.className = 'modal oculto';
+    modal.id = 'modal-alertas';
+    modal.innerHTML =
+      '<div class="modal-caja modal-alertas-caja" role="alertdialog" aria-labelledby="alertas-titulo">' +
+        '<div class="modal-cabecera modal-alertas-cabecera">' +
+          '<h2 id="alertas-titulo"></h2>' +
+          '<button class="cerrar" id="alertas-cerrar" type="button" aria-label="Cerrar">&times;</button>' +
+        '</div>' +
+        '<div class="modal-cuerpo" id="alertas-cuerpo"></div>' +
+        '<div class="modal-alertas-pie">' +
+          '<a class="boton mini" href="/notificaciones">Ver notificaciones</a>' +
+          '<button class="boton" type="button" id="alertas-entendido">Entendido</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(modal);
+
+    var der = document.querySelector('.cabecera-der');
+    if (der && !$('#btn-alertas')) {
+      var boton = document.createElement('button');
+      boton.id = 'btn-alertas';
+      boton.type = 'button';
+      boton.className = 'boton boton-alertas oculto';
+      boton.title = 'Alertas activas';
+      der.insertBefore(boton, der.firstChild);
+    }
+  }
+
+  function actualizarAlertas(lista) {
+    if (lista === null || lista === undefined) return;     // aún sin datos del servidor
+    asegurarModalAlertas();
+    notif.alertas = lista;
+    var errores = lista.filter(function (a) { return a.nivel === 'error'; }).length;
+    var boton = $('#btn-alertas');
+    if (boton) {
+      boton.classList.toggle('oculto', !lista.length);
+      boton.classList.toggle('solo-avisos', !errores);
+      boton.innerHTML = '⚠ ' + lista.length + '<span class="texto-alertas"> ' +
+        (lista.length === 1 ? 'alerta' : 'alertas') + '</span>';
+    }
+    var vistas = alertasVistas(), vigentes = {}, nuevas = 0;
+    lista.forEach(function (a) {
+      var f = firmaAlerta(a);
+      if (vistas[f]) vigentes[f] = 1; else nuevas++;
+    });
+    guardarVistas(vigentes);      // se olvidan las resueltas
+    if ($('#modal-alertas') && !$('#modal-alertas').classList.contains('oculto')) {
+      pintarModalAlertas();       // abierto: se actualiza en vivo
+    } else if (nuevas) {
+      abrirModalAlertas();
+    }
+  }
+
+  function pintarModalAlertas() {
+    var lista = notif.alertas || [];
+    var errores = lista.filter(function (a) { return a.nivel === 'error'; }).length;
+    $('#alertas-titulo').textContent = lista.length
+      ? (errores ? '⚠ ' : '') + lista.length + (lista.length === 1 ? ' alerta activa' : ' alertas activas')
+      : 'Sin alertas';
+    $('#modal-alertas').classList.toggle('con-errores', errores > 0);
+    var vistas = alertasVistas();
+    $('#alertas-cuerpo').innerHTML = lista.length
+      ? '<p class="tenue" style="margin:0 0 10px">Esto está fallando ahora mismo. Se revisa cada minuto ' +
+          'mientras el panel está abierto.</p>' +
+        '<div class="lista-alertas">' + lista.map(function (a) {
+          return '<a class="item-alerta nivel-' + esc(a.nivel) + '" href="' + esc(a.ruta || '/') + '">' +
+            '<span class="icono-notif">' + (ICONO_NIVEL[a.nivel] || '🔵') + '</span>' +
+            '<span class="texto-notif"><strong>' + esc(a.titulo) +
+              (vistas[firmaAlerta(a)] ? '' : ' <span class="badge rojo">nueva</span>') + '</strong>' +
+              '<span class="sub">' + esc(a.mensaje || '') + '</span>' +
+              '<span class="fecha-notif">Desde ' + esc(hace(a.desde)) + '</span></span>' +
+            '<span class="ver-alerta">Ver ›</span></a>';
+        }).join('') + '</div>'
+      : '<p class="aviso aviso-ok" style="margin:0">🟢 Todo volvió a la normalidad.</p>';
+  }
+
+  function abrirModalAlertas() {
+    asegurarModalAlertas();
+    pintarModalAlertas();
+    $('#modal-alertas').classList.remove('oculto');
+  }
+
+  function cerrarModalAlertas(entendido) {
+    if (!$('#modal-alertas')) return;
+    if (entendido) {
+      var vistas = alertasVistas();
+      (notif.alertas || []).forEach(function (a) { vistas[firmaAlerta(a)] = 1; });
+      guardarVistas(vistas);
+    }
+    $('#modal-alertas').classList.add('oculto');
   }
 
   function pintarPanelNotif() {
@@ -2964,6 +3074,10 @@
           el = contenedor;
         }
         if (el.id === 'btn-campana') return alternarPanelNotif();
+        if (el.id === 'btn-alertas') return abrirModalAlertas();
+        if (el.id === 'alertas-entendido') return cerrarModalAlertas(true);
+        if (el.id === 'alertas-cerrar' || el.id === 'modal-alertas') return cerrarModalAlertas(true);
+        if (el.closest && el.closest('.item-alerta')) { cerrarModalAlertas(true); return; }
         if (!el.closest('.campana') && $('#panel-notif') && !$('#panel-notif').classList.contains('oculto')) {
           alternarPanelNotif(true);
         }
@@ -3176,6 +3290,7 @@
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape') {
         if (document.querySelector('.cabecera')) document.querySelector('.cabecera').classList.remove('abierta');
+        if ($('#modal-alertas') && !$('#modal-alertas').classList.contains('oculto')) cerrarModalAlertas(true);
         ['#modal', '#modal-campo', '#modal-nueva', '#modal-tarea', '#panel-notif'].forEach(function (sel) {
           if ($(sel)) $(sel).classList.add('oculto');
         });
@@ -3204,6 +3319,8 @@
       cargarCapacidades().then(function () { abrirAsistente(true); });
       return;
     }
+    var buscado = (location.search.match(/[?&]q=([^&]+)/) || [])[1];
+    if (buscado && $('#filtro-texto')) $('#filtro-texto').value = decodeURIComponent(buscado.replace(/\+/g, ' '));
     prepararScroll();
     cargar();
     programarAuto();

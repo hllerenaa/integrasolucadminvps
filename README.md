@@ -92,6 +92,16 @@ En la barra superior, además:
 **Campana** (arriba a la derecha en todas las páginas): las últimas notificaciones
 con el contador de no leídas. Con el panel abierto, lo nuevo aparece también como aviso.
 
+**Ventana de alertas**: en cualquier página, cuando algo está fallando en ese
+momento (un servicio, una web o una base caídos, Apache/nginx caído, un certificado
+vencido o por vencer, disco o RAM al límite) se abre sola una ventana con la lista,
+de lo más grave a lo menos grave, con el enlace para ir a revisarlo. Se muestra al
+instante, sin esperar las confirmaciones de las notificaciones. «Entendido» la cierra
+y queda el botón rojo **⚠ N alertas** en la cabecera para volver a abrirla; sólo se
+vuelve a abrir sola cuando aparece un problema nuevo. Incluye también los
+certificados de Let's Encrypt que no están ligados a ninguna instancia (p. ej. el
+del propio panel), salvo los de renovación pausada o de instancias ocultas.
+
 **Qué se avisa** (se revisa cada `notificaciones.intervalo` segundos, 300 por defecto):
 servicio de una instancia caído (sólo si está habilitado: un cliente dado de baja no
 alerta), su web sin respuesta, base de datos inaccesible, Apache/nginx caído,
