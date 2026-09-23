@@ -72,9 +72,11 @@ eso funciona aunque el esquema varíe entre inventario y restaurante.
 | Sección | Para qué |
 |---|---|
 | **Instancias** (`/`) | El listado completo con todos los datos y las acciones sobre cada instalación |
-| **Certificados** (`/certificados`) | Certificados de Let's Encrypt: emisión, vencimiento, renovar, pausar la renovación o eliminar, con buscador y tabla ordenable |
-| **Backups** (`/backups`) | Respaldos por instancia o de cualquier base, descarga, retención y las bases del servidor sin instancia |
-| **Nueva instancia** (`/nueva`) | El asistente de creación |
+| **Certificados** (`/certificados`) | Certificados de Let's Encrypt: emisión, vencimiento, renovar (normal o forzada, comprobando que la fecha cambió), pausar la renovación o eliminar; **emitir** certificados para las instancias que no tienen; **recargar o reiniciar Apache/nginx** validando antes la configuración; y aviso si no hay renovación automática (`certbot.timer` o cron) |
+| **Consumo** (`/consumo`) | Qué consume cada cosa: CPU, RAM, swap y discos del servidor; RAM/CPU/disco de cada instancia; todos los servicios de systemd en ejecución (instancias, infraestructura como PostgreSQL/Apache/nginx y sistema) con la CPU medida en 1 s; los procesos que más RAM o CPU usan (con la instancia a la que pertenecen); las bases más grandes y las carpetas que más ocupan (backups, PostgreSQL, logs, journal…) |
+| **Bases y backups** (`/backups`) | Respaldos por instancia o de cualquier base, verificados y descargables, retención, y todas las bases del servidor con su **detalle**: tablas más pesadas, filas muertas, vacuum, conexiones abiertas con su consulta, aciertos de caché y actividad |
+| **Notificaciones** (`/notificaciones`) | Alertas activas, historial, activar las notificaciones push en el celular, instalar la app y configurar Telegram, correo y qué avisar (ver abajo) |
+| **Nueva instancia** (`/nueva`) | El asistente de creación y el **diagnóstico del entorno** (herramientas, venv con Django, templates y su git, PostgreSQL con permiso CREATEDB, carpetas con escritura, espacio y puertos) |
 | **Excluidos** (`/excluidos`) | El mismo panel con todas las instalaciones y el interruptor para ocultarlas o mostrarlas. No se enlaza desde el menú: se entra escribiendo la dirección |
 
 En la barra superior, además:
@@ -84,6 +86,53 @@ En la barra superior, además:
 | **Tareas** | Lo que el servidor tiene programado (crontabs de los usuarios, `/etc/crontab`, `/etc/cron.d` y los `.timer` de systemd, con el horario traducido) y las tareas que el panel ha lanzado en segundo plano, con su log |
 | **Historial** (sólo con permiso `ver_excluidos`) | Todo lo hecho desde el panel: arrancar/parar servicios, activar o desactivar sitios, abrir o guardar credenciales, cambios de RUC o de API cédula y operaciones de certbot, con usuario, resultado y salida del comando |
 | **Excel** / **CSV** | Exportan exactamente las filas que están en pantalla, en el mismo orden y con los mismos filtros |
+
+## Notificaciones, celular y app instalable
+
+**Campana** (arriba a la derecha en todas las páginas): las últimas notificaciones
+con el contador de no leídas. Con el panel abierto, lo nuevo aparece también como aviso.
+
+**Qué se avisa** (se revisa cada `notificaciones.intervalo` segundos, 300 por defecto):
+servicio de una instancia caído (sólo si está habilitado: un cliente dado de baja no
+alerta), su web sin respuesta, base de datos inaccesible, Apache/nginx caído,
+certificado por vencer o vencido, disco o RAM sobre el umbral, backups atrasados
+(apagado por defecto), falta de renovación automática de certbot y el final de las
+tareas largas (backups, altas, certbot). Las instancias ocultas (`excluidos.txt`) no alertan.
+
+- Una alerta se envía cuando se confirma en `confirmaciones` revisiones seguidas
+  (evita avisos por un reinicio de segundos), se recuerda cada `repetir_horas`
+  mientras siga, y se avisa cuando se resuelve.
+- Lo que aparece en una misma revisión sale **en un solo mensaje** por canal: si se
+  cae Apache no llegan 40 mensajes.
+
+**Canales** (se configuran desde `/notificaciones` → *Canales y reglas*; sólo quien
+administra el panel, `gestionar_excluidos`, ve y cambia esta parte; se guarda en
+`config.json` → `notificaciones` y los tokens no se vuelven a mostrar):
+
+| Canal | Cómo se configura |
+|---|---|
+| **Telegram** | Crea un bot con [@BotFather](https://t.me/BotFather) (`/newbot`), pega el token, escríbele cualquier mensaje al bot desde tu Telegram (o agrégalo a un grupo) y pulsa **Detectar chat**. Después **Enviar prueba** |
+| **Correo** | Servidor SMTP, puerto y seguridad (STARTTLS 587 / SSL 465), usuario, contraseña y destinatarios. En Gmail hace falta una *contraseña de aplicación* |
+| **Push** | En cada celular: abre el panel, **Notificaciones → Activar notificaciones aquí** (o 🔔 *Recibir en este dispositivo* en la campana) y acepta el permiso. Llegan aunque el panel esté cerrado |
+
+**App instalable (PWA)**: el panel se puede instalar en el celular como una app
+(ícono propio, pantalla completa, sesión que dura `sesion_dias`, 30 por defecto).
+En Android/Chrome: menú ⋮ → *Instalar aplicación*. En iPhone/Safari: *Compartir* →
+*Agregar a pantalla de inicio* (en iPhone las notificaciones push sólo funcionan
+con la app instalada y iOS 16.4 o superior).
+
+> **Importante:** la app instalable y las notificaciones push exigen **HTTPS**.
+> Entra por el dominio con certificado (`deploy/admin_dominio.sh`), no por
+> `http://IP:8600`. Telegram y correo funcionan igual con HTTP.
+
+Las notificaciones push usan el estándar Web Push con claves VAPID propias
+(generadas la primera vez en `var/vapid.json`; si se borran, cada celular tiene que
+volver a activarlas). No dependen de ningún servicio externo más que el del
+navegador (Google, Mozilla o Apple). Requiere la librería `cryptography`
+(incluida en `requirements.txt`).
+
+Todo el panel se adapta al celular: menú ☰, tarjetas en dos columnas, tablas
+desplazables y ventanas a pantalla completa.
 
 ## Usuarios y permisos
 
@@ -117,6 +166,14 @@ venv/bin/python run.py --quitar-usuario mochoa
   sospechosamente pequeños y permite descargarlos o borrarlos.
 - Lista **todas las bases de PostgreSQL** del servidor con su tamaño y marca las
   que no corresponden a ninguna instalación, para respaldarlas antes de darlas de baja.
+- Cada backup se **verifica** al generarlo: antes se comprueba que haya espacio
+  (si la base no cabe en el disco no se empieza), el dump tiene que terminar con
+  `PostgreSQL database dump complete` y el `.gz` pasa `gzip -t`. Si algo falla el
+  archivo cortado se borra en vez de quedar como un backup falso.
+- Al terminar, la ventana de la tarea muestra el enlace para **descargarlo**; en la
+  tabla de bases, «⬇ Último» baja el backup más reciente de esa base.
+- «Verificar» revisa un backup ya existente (`.sql`, `.sql.gz`, `.zip` de
+  `backupall.sh` o formato custom con `pg_restore --list`).
 
 ## Qué permite hacer
 
@@ -197,7 +254,16 @@ Botón **+ Nueva instancia**. Reproduce lo que hacen `new_instance_inventario.sh
    instancia que ya funciona** o se generan con las plantillas de `deploy/plantillas/`.
 2. **Validar**: comprueba nombre, que la carpeta esté libre, que la base no
    exista, que el template esté disponible, que no haya otro servicio con ese
-   nombre, que el puerto esté libre y que el dominio no esté en otro vhost.
+   nombre, que el puerto esté libre (y que nada escuche ya en él) y que el dominio
+   no esté en otro vhost. Además: conexión real a PostgreSQL y permiso CREATEDB,
+   que exista `manage.py`, espacio en disco para la copia + el dump + la base, que
+   el dominio apunte por DNS a este servidor (aviso: sin eso certbot falla), que el
+   venv tenga `python` y `gunicorn`, y que estén instalados los comandos que se
+   van a usar según las opciones elegidas.
+   **Diagnóstico del entorno** hace una revisión general del servidor (sin
+   formulario): venv con Django, rama y cambios locales del template, si el
+   repositorio remoto responde, base origen con tablas, permisos de escritura y
+   puertos libres.
 3. **Simular**: hace las validaciones y muestra los comandos exactos que se
    ejecutarían, **sin tocar nada**. Conviene usarlo la primera vez.
 4. **Crear instancia**: corre en segundo plano con log en vivo:
@@ -207,6 +273,11 @@ Botón **+ Nueva instancia**. Reproduce lo que hacen `new_instance_inventario.sh
    `credenciales.json` (base, dominio, SSL, DEBUG) → `migrate --fake` →
    crear y arrancar el servicio systemd → crear y activar el vhost →
    `certbot --apache` (opcional) → verificar que quedó arriba.
+   Tras restaurar se cuentan los errores de `psql` y se compara la cantidad de
+   tablas con la base origen (si quedó vacía, la tarea se detiene); el dump
+   temporal se borra. La verificación final es real: servicio `active`, puerto
+   escuchando, la aplicación responde por HTTP en local (con el dominio como
+   `Host`), la base accesible con el nuevo `credenciales.json` y la URL pública.
 5. Si algo falla a mitad, la tarea muestra un botón **Deshacer** que elimina
    sólo lo que ella creó (carpeta, base, unidad y vhost). Nunca se ejecuta solo.
 
@@ -396,7 +467,14 @@ inaccesibles o certificados vencidos: sirve para cron o alertas.
 | `POST /api/certificados/accion` | `pausar`, `reanudar` o `eliminar` un certificado |
 | `GET /api/backups`, `POST /api/backups/crear` | Backups: listado y generación (`{"ids"}` o `{"bases"}`) |
 | `POST /api/backups/eliminar`, `GET /backups/descargar` | Borrar y descargar un backup |
-| `GET /api/bases` | Bases del servidor y cuáles no tiene ninguna instancia |
+| `GET /api/bases` | Bases del servidor y cuáles no tiene ninguna instancia, versión y conexiones de PostgreSQL |
+| `GET /api/bases/<nombre>` | Detalle de una base: tablas, conexiones, caché y actividad |
+| `POST /api/backups/verificar` | Comprueba que un backup esté completo (`{"archivo"}`), en segundo plano |
+| `POST /api/certificados/emitir` | Emite un certificado (`{"dominio","servidor": "apache"\|"nginx"}`) |
+| `POST /api/servidor-web` | Recarga o reinicia Apache/nginx validando antes (`{"modo": "recargar"\|"reiniciar"}`) |
+| `GET /api/consumo` | Sistema, servicios, procesos y consumo por instancia (tarda ~1 s: mide la CPU) |
+| `GET /api/consumo/carpetas` | Tamaño de las carpetas que más ocupan (`?forzar=1` vuelve a medir) |
+| `GET /api/aprovisionar/diagnostico` | Revisa el entorno del asistente sin crear nada |
 | `GET /api/diagnostico/vhosts?id=<instancia>` | Qué sitios web leyó el panel y el puntaje de cada candidato |
 | `POST /api/certificados/renovar` | Renueva (`{"nombre","forzar","simular"}`) en segundo plano |
 | `POST /api/instancia/<id>/api-cedula` | Activa o desactiva la búsqueda por cédula (`{"activar"}`) |
@@ -408,6 +486,14 @@ inaccesibles o certificados vencidos: sirve para cron o alertas.
 | `GET /api/acciones` | Historial de acciones (requiere `ver_excluidos`) |
 | `GET /api/cron` | Tareas programadas del servidor (crontabs y timers de systemd), sólo lectura |
 | `GET/POST /export.xlsx`, `/export.csv` | Exportaciones (aceptan `?tipo=` y `?q=`; por POST, `{"ids": [...]}` para exportar sólo esas filas y en ese orden) |
+| `GET /api/notificaciones` | Historial, no leídas y alertas activas (`?limite=`) |
+| `POST /api/notificaciones/leidas` | Marca como leídas (`{"ids": [...]}` o todas) |
+| `POST /api/notificaciones/revisar` | Revisa las alertas ahora |
+| `GET/POST /api/notificaciones/config` | Configuración de canales y reglas (administradores) |
+| `POST /api/notificaciones/probar` | Envía una prueba (`{"canal": "telegram"\|"correo"\|"push"}`) |
+| `GET /api/notificaciones/telegram-chats` | Chats que escribieron al bot |
+| `GET /api/push/clave`, `POST /api/push/suscribir`, `POST /api/push/desuscribir`, `GET /api/push/dispositivos` | Suscripciones push de los celulares |
+| `GET /manifest.webmanifest`, `GET /sw.js` | App instalable (sin login) |
 | `GET /healthz` | Chequeo de salud (sin autenticación) |
 
 Acciones disponibles: `iniciar`, `detener`, `reiniciar`, `habilitar`,

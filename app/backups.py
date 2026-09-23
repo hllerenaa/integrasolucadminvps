@@ -164,12 +164,156 @@ def _credenciales(instancia_datos):
     return datos['datos'], None
 
 
-def crear(tarea, config, colector, ids=None, bases=None):
-    """Genera el pg_dump comprimido de instancias y/o de bases sueltas."""
-    cfg = config.get('backups') or {}
-    retencion = int(cfg.get('retencion') or 7)
-    comprimir = cfg.get('comprimir', True)
+MARCA_FIN = b'PostgreSQL database dump complete'
 
+
+def _cola(ruta, bytes_finales=8192):
+    """Últimos bytes del dump, descomprimiendo si hace falta.
+
+    Recorrer el .gz entero también valida su CRC: un archivo cortado o
+    dañado lanza excepción antes de llegar al final.
+    """
+    if ruta.endswith('.gz'):
+        import gzip
+        cola = b''
+        with gzip.open(ruta, 'rb') as fh:
+            while True:
+                bloque = fh.read(1024 * 1024)
+                if not bloque:
+                    break
+                cola = (cola + bloque)[-bytes_finales:]
+        return cola
+    with open(ruta, 'rb') as fh:
+        fh.seek(0, os.SEEK_END)
+        fh.seek(max(0, fh.tell() - bytes_finales))
+        return fh.read()
+
+
+def comprobar(ruta):
+    """Revisa que un backup esté completo y se pueda leer. Devuelve (ok, mensaje)."""
+    if not os.path.isfile(ruta):
+        return False, 'No existe %s' % ruta
+    nombre = os.path.basename(ruta)
+    try:
+        if nombre.endswith('.sql') or nombre.endswith('.sql.gz'):
+            if MARCA_FIN in _cola(ruta):
+                return True, 'Dump completo: termina con «%s»' % MARCA_FIN.decode()
+            return False, ('El dump no termina con «%s»: pg_dump se cortó o el archivo está '
+                           'incompleto' % MARCA_FIN.decode())
+        if nombre.endswith('.zip'):
+            import zipfile
+            with zipfile.ZipFile(ruta) as zf:
+                malo = zf.testzip()
+                contenido = zf.namelist()
+            if malo:
+                return False, 'El zip está dañado (%s)' % malo
+            return True, 'Zip íntegro: %s' % ', '.join(contenido[:5])
+        if nombre.endswith('.backup') or nombre.endswith('.dump'):
+            codigo, salida, error = ejecutar(['pg_restore', '--list', ruta], timeout=600)
+            if codigo != 0:
+                return False, 'pg_restore no puede leerlo: %s' % (error or salida)[:300]
+            objetos = len([l for l in salida.splitlines() if l and not l.startswith(';')])
+            return True, 'Formato custom legible: %s objetos en el índice' % objetos
+    except Exception as ex:
+        return False, 'No se pudo leer: %s' % ex
+    return None, 'Formato sin verificación automática'
+
+
+def _tamano_base(credenciales, base):
+    """Tamaño de la base en bytes (None si no se pudo consultar)."""
+    entorno = dict(os.environ)
+    entorno['PGPASSWORD'] = credenciales.get('POSTGRES_PASSWORD') or ''
+    import subprocess
+    try:
+        proc = subprocess.run(
+            ['psql', '-h', credenciales.get('POSTGRES_HOST') or 'localhost',
+             '-U', credenciales.get('POSTGRES_USER') or 'postgres', '-d', base,
+             '-tAc', 'SELECT pg_database_size(current_database())'],
+            env=entorno, timeout=30, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        texto = proc.stdout.decode('utf-8', 'replace').strip()
+        return int(texto) if proc.returncode == 0 and texto.isdigit() else None
+    except Exception:
+        return None
+
+
+def _volcar(tarea, config, credenciales, base, clave, indice):
+    """pg_dump de una base con chequeo de espacio, verificación y compresión.
+
+    Devuelve el dict de resultado; el paso `indice` queda marcado ok/error.
+    """
+    cfg = config.get('backups') or {}
+    carpeta = carpeta_de(config, clave)
+    os.makedirs(carpeta, exist_ok=True)
+
+    # 1. Espacio: un dump SQL ocupa como mucho lo que la base (sin índices
+    #    suele ser bastante menos). Sin espacio el dump queda cortado.
+    tamano_bd = _tamano_base(credenciales, base)
+    try:
+        st = os.statvfs(carpeta)
+        libre = st.f_bavail * st.f_frsize
+    except OSError:
+        libre = None
+    if tamano_bd and libre is not None:
+        tarea.log('  Base: %s · libre en %s: %s' % (bytes_legible(tamano_bd), carpeta,
+                                                   bytes_legible(libre)))
+        if libre < tamano_bd:
+            tarea.paso_error(indice, 'No hay espacio: la base ocupa %s y quedan %s libres'
+                             % (bytes_legible(tamano_bd), bytes_legible(libre)))
+            return {'cliente': clave, 'base': base, 'ok': False, 'error': 'sin espacio en disco'}
+        if libre < tamano_bd * 2:
+            tarea.log('  Queda poco espacio en disco para backups', 'aviso')
+
+    marca = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    destino = os.path.join(carpeta, '%s_%s.sql' % (clave, marca))
+    entorno = dict(os.environ)
+    entorno['PGPASSWORD'] = credenciales.get('POSTGRES_PASSWORD') or ''
+    comando = ['pg_dump',
+               '-h', credenciales.get('POSTGRES_HOST') or 'localhost',
+               '-U', credenciales.get('POSTGRES_USER') or 'postgres',
+               '-f', destino, base]
+    codigo, _salida = tarea.ejecutar(comando, entorno=entorno, timeout=7200, critico=False,
+                                     ocultar=[credenciales.get('POSTGRES_PASSWORD')])
+    if codigo != 0 or not os.path.isfile(destino):
+        tarea.paso_error(indice, 'pg_dump falló')
+        if os.path.isfile(destino):
+            os.remove(destino)
+        return {'cliente': clave, 'base': base, 'ok': False, 'error': 'pg_dump falló'}
+
+    # 2. Verificación: el dump debe terminar con la marca de pg_dump.
+    ok, mensaje = comprobar(destino)
+    if not ok:
+        tarea.paso_error(indice, mensaje)
+        os.remove(destino)
+        return {'cliente': clave, 'base': base, 'ok': False, 'error': mensaje}
+    tarea.log('  ✔ %s' % mensaje, 'ok')
+
+    tamano = os.path.getsize(destino)
+    if tamano < 51200:
+        tarea.log('  El dump pesa sólo %s: se conserva, pero revísalo' % bytes_legible(tamano),
+                  'aviso')
+
+    if cfg.get('comprimir', True):
+        codigo, _salida = tarea.ejecutar(['gzip', '-f', destino], timeout=3600, critico=False)
+        if codigo == 0:
+            destino += '.gz'
+            codigo, _salida = tarea.ejecutar(['gzip', '-t', destino], timeout=3600, critico=False)
+            if codigo != 0:
+                tarea.paso_error(indice, 'El .gz no pasó la prueba de integridad (gzip -t)')
+                return {'cliente': clave, 'base': base, 'ok': False, 'archivo': destino,
+                        'error': 'gzip dañado'}
+            tamano = os.path.getsize(destino)
+
+    tarea.paso_ok(indice, '%s (%s) verificado' % (os.path.basename(destino), bytes_legible(tamano)))
+    borrados = aplicar_retencion(config, clave, int(cfg.get('retencion') or 7))
+    if borrados:
+        tarea.log('  Retención: se eliminaron %s backup(s) antiguo(s)' % len(borrados))
+    return {'cliente': clave, 'base': base, 'ok': True, 'archivo': destino,
+            'nombre': os.path.basename(destino), 'bytes': tamano,
+            'tamano': bytes_legible(tamano)}
+
+
+def crear(tarea, config, colector, ids=None, bases=None):
+    """Genera el pg_dump comprimido y verificado de instancias y/o bases sueltas."""
     instantanea = colector.snapshot(incluir_ocultas=True)
     objetivo = []
     if ids or not bases:
@@ -188,87 +332,30 @@ def crear(tarea, config, colector, ids=None, bases=None):
             tarea.paso_error(indice, 'Sin credenciales: %s' % error)
             resultados.append({'cliente': cliente, 'ok': False, 'error': error})
             continue
-
         base = credenciales.get('POSTGRES_DBNAME')
         if not base:
             tarea.paso_error(indice, 'credenciales.json sin POSTGRES_DBNAME')
+            resultados.append({'cliente': cliente, 'ok': False, 'error': 'sin POSTGRES_DBNAME'})
             continue
-
-        carpeta = carpeta_de(config, cliente)
-        os.makedirs(carpeta, exist_ok=True)
-        marca = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-        destino = os.path.join(carpeta, '%s_%s.sql' % (cliente, marca))
-
-        entorno = dict(os.environ)
-        entorno['PGPASSWORD'] = credenciales.get('POSTGRES_PASSWORD') or ''
-        comando = ['pg_dump',
-                   '-h', credenciales.get('POSTGRES_HOST') or 'localhost',
-                   '-U', credenciales.get('POSTGRES_USER') or 'postgres',
-                   '-f', destino, base]
-        codigo, _salida = tarea.ejecutar(comando, entorno=entorno, timeout=7200, critico=False,
-                                         ocultar=[credenciales.get('POSTGRES_PASSWORD')])
-        if codigo != 0 or not os.path.isfile(destino):
-            tarea.paso_error(indice, 'pg_dump falló')
-            resultados.append({'cliente': cliente, 'ok': False, 'error': 'pg_dump falló'})
-            if os.path.isfile(destino):
-                os.remove(destino)
-            continue
-
-        tamano = os.path.getsize(destino)
-        if tamano < 51200:
-            tarea.log('  El dump pesa sólo %s: se conserva, pero revísalo' % bytes_legible(tamano),
-                      'aviso')
-
-        if comprimir:
-            codigo, _salida = tarea.ejecutar(['gzip', '-f', destino], timeout=3600, critico=False)
-            if codigo == 0:
-                destino += '.gz'
-                tamano = os.path.getsize(destino)
-
-        tarea.paso_ok(indice, '%s (%s)' % (os.path.basename(destino), bytes_legible(tamano)))
-        resultados.append({'cliente': cliente, 'ok': True, 'archivo': destino,
-                           'bytes': tamano, 'tamano': bytes_legible(tamano)})
-
-        borrados = aplicar_retencion(config, cliente, retencion)
-        if borrados:
-            tarea.log('  Retención: se eliminaron %s backup(s) antiguo(s)' % len(borrados))
+        resultados.append(_volcar(tarea, config, credenciales, base, cliente, indice))
 
     # Bases sueltas (sin instancia): se usan las credenciales de una instancia
     # cualquiera del mismo servidor PostgreSQL.
+    credenciales_servidor = None
     for base_suelta in (bases or []):
         indice = tarea.paso('Backup de la base %s' % base_suelta)
-        credenciales = None
-        for inst in instantanea['instancias']:
-            posibles, _error = _credenciales(inst)
-            if posibles and posibles.get('POSTGRES_HOST'):
-                credenciales = posibles
-                break
-        if not credenciales:
+        if credenciales_servidor is None:
+            for inst in instantanea['instancias']:
+                posibles, _error = _credenciales(inst)
+                if posibles and posibles.get('POSTGRES_HOST'):
+                    credenciales_servidor = posibles
+                    break
+        if not credenciales_servidor:
             tarea.paso_error(indice, 'No hay credenciales de PostgreSQL disponibles')
             resultados.append({'cliente': base_suelta, 'ok': False, 'error': 'sin credenciales'})
             continue
-
-        carpeta = carpeta_de(config, base_suelta)
-        os.makedirs(carpeta, exist_ok=True)
-        marca = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-        destino = os.path.join(carpeta, '%s_%s.sql' % (base_suelta, marca))
-        entorno = dict(os.environ)
-        entorno['PGPASSWORD'] = credenciales.get('POSTGRES_PASSWORD') or ''
-        codigo, _salida = tarea.ejecutar(
-            ['pg_dump', '-h', credenciales.get('POSTGRES_HOST') or 'localhost',
-             '-U', credenciales.get('POSTGRES_USER') or 'postgres', '-f', destino, base_suelta],
-            entorno=entorno, timeout=7200, critico=False,
-            ocultar=[credenciales.get('POSTGRES_PASSWORD')])
-        if codigo != 0 or not os.path.isfile(destino):
-            tarea.paso_error(indice, 'pg_dump falló')
-            resultados.append({'cliente': base_suelta, 'ok': False, 'error': 'pg_dump falló'})
-            continue
-        if cfg.get('comprimir', True):
-            if tarea.ejecutar(['gzip', '-f', destino], timeout=3600, critico=False)[0] == 0:
-                destino += '.gz'
-        tarea.paso_ok(indice, '%s (%s)' % (os.path.basename(destino),
-                                           bytes_legible(os.path.getsize(destino))))
-        resultados.append({'cliente': base_suelta, 'ok': True, 'archivo': destino})
+        resultados.append(_volcar(tarea, config, credenciales_servidor, base_suelta,
+                                  base_suelta, indice))
 
     ok = sum(1 for r in resultados if r.get('ok'))
     tarea.log('Backups correctos: %s de %s' % (ok, len(resultados)),
@@ -276,6 +363,27 @@ def crear(tarea, config, colector, ids=None, bases=None):
     tarea.datos['resultados'] = resultados
     if ok == 0:
         tarea.estado = 'error'
+
+
+def verificar(tarea, config, archivo):
+    """Tarea: comprueba que un backup existente esté completo y legible."""
+    indice = tarea.paso('Verificar %s' % os.path.basename(archivo))
+    if not ruta_valida(config, archivo):
+        tarea.paso_error(indice, 'Archivo fuera de las carpetas de backups')
+        tarea.estado = 'error'
+        return
+    tarea.log('  %s (%s)' % (archivo, bytes_legible(os.path.getsize(archivo))))
+    ok, mensaje = comprobar(archivo)
+    if ok:
+        tarea.paso_ok(indice, mensaje)
+    elif ok is None:
+        tarea.paso_ok(indice)
+        tarea.log('  %s' % mensaje, 'aviso')
+    else:
+        tarea.paso_error(indice, mensaje)
+        tarea.estado = 'error'
+    tarea.datos['resultados'] = [{'ok': bool(ok), 'archivo': archivo,
+                                  'nombre': os.path.basename(archivo), 'mensaje': mensaje}]
 
 
 def aplicar_retencion(config, cliente, retencion):

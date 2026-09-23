@@ -1255,14 +1255,37 @@
       body: JSON.stringify(datosAlta())
     }).then(function (r) { return r.json(); })
       .then(function (d) {
-        caja.innerHTML = '<ul class="revisiones">' + (d.revisiones || []).map(function (r) {
-          var icono = r.ok ? '✔' : (r.critico ? '✖' : '!');
-          var clase = r.ok ? 'ok' : (r.critico ? 'error' : 'aviso');
-          return '<li class="rev-' + clase + '">' + icono + ' ' + esc(r.mensaje) +
-            (r.detalle ? ' <span class="tenue">— ' + esc(r.detalle) + '</span>' : '') + '</li>';
-        }).join('') + '</ul>';
+        caja.innerHTML = listaRevisiones(d.revisiones);
         return d.ok;
       });
+  }
+
+  function listaRevisiones(revisiones) {
+    return '<ul class="revisiones">' + (revisiones || []).map(function (r) {
+      var icono = r.ok ? '✔' : (r.critico ? '✖' : '!');
+      var clase = r.ok ? 'ok' : (r.critico ? 'error' : 'aviso');
+      return '<li class="rev-' + clase + '">' + icono + ' ' + esc(r.mensaje) +
+        (r.detalle ? ' <span class="tenue">— ' + esc(r.detalle) + '</span>' : '') + '</li>';
+    }).join('') + '</ul>';
+  }
+
+  function diagnosticarEntorno() {
+    var caja = $('#diagnostico-cuerpo');
+    caja.innerHTML = '<p class="tenue">Revisando el servidor (puede tardar unos segundos)…</p>';
+    fetch('/api/aprovisionar/diagnostico', { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d.error) { caja.innerHTML = '<div class="aviso-error">' + esc(d.error) + '</div>'; return; }
+        caja.innerHTML =
+          '<div class="aviso ' + (d.ok ? 'aviso-ok' : 'aviso-error') + '" style="margin:0 0 10px">' +
+            (d.ok ? 'El entorno está listo para crear instancias'
+                  : d.errores + ' problema(s) impiden crear instancias') +
+            (d.avisos ? ' · ' + d.avisos + ' aviso(s)' : '') + '</div>' +
+          '<div class="grid-detalle">' + (d.grupos || []).map(function (g) {
+            return '<div class="bloque"><h3>' + esc(g.titulo) + '</h3>' + listaRevisiones(g.revisiones) + '</div>';
+          }).join('') + '</div>';
+      })
+      .catch(function (e) { caja.innerHTML = '<div class="aviso-error">' + esc(e.message) + '</div>'; });
   }
 
   function crearInstancia(simular) {
@@ -1327,18 +1350,45 @@
                   '<button class="boton peligro" type="button" id="btn-deshacer" data-id="' + esc(d.id) +
                   '" style="margin-left:10px">Deshacer</button></div>'
                 : '') +
+              enlacesDescarga(d) +
               (d.estado === 'ok' && d.datos && d.datos.instancia_id
-                ? '<div class="aviso-ok" style="margin-top:10px">Instancia creada. ' +
+                ? ((d.datos.problemas || []).length
+                    ? '<div class="aviso-error" style="margin-top:10px">La instancia se creó, pero la ' +
+                      'verificación encontró problemas: ' + esc(d.datos.problemas.join('; ')) + '</div>'
+                    : '') +
+                  '<div class="aviso-ok" style="margin-top:10px">Instancia creada. ' +
                   '<button class="boton mini" type="button" id="btn-ver-nueva" data-id="' +
                   esc(d.datos.instancia_id) + '">Ver en el panel</button></div>'
                 : '');
-            cargar();
+            refrescarPaginaTrasTarea(d);
           }
         })
         .catch(function () {});
     };
     tick();
     tareaPoll = setInterval(tick, 1500);
+  }
+
+  // Backups recién generados: se pueden bajar desde la misma ventana de la tarea.
+  function enlacesDescarga(d) {
+    if (d.tipo !== 'backup') return '';
+    var listos = ((d.datos || {}).resultados || []).filter(function (r) { return r.ok && r.archivo; });
+    if (!listos.length) return '';
+    return '<div class="aviso-ok" style="margin-top:10px">Backups listos para descargar: ' +
+      listos.map(function (r) {
+        return '<a class="boton mini" style="margin:4px 4px 0 0" href="/backups/descargar?archivo=' +
+          encodeURIComponent(r.archivo) + '">⬇ ' + esc(r.nombre || r.archivo) +
+          (r.tamano ? ' (' + esc(r.tamano) + ')' : '') + '</a>';
+      }).join('') + '</div>';
+  }
+
+  // Cada página refresca lo suyo: cargar() pinta la tabla de instancias,
+  // que sólo existe en el panel principal y en /excluidos.
+  function refrescarPaginaTrasTarea(d) {
+    if (MODO === 'backups') { verBackups(); return verBases(); }
+    if (MODO === 'certificados') return verCertificados('#contenido');
+    if (MODO === 'principal' || MODO === 'excluidos') return cargar();
+    return cargarCapacidades();
   }
 
   function tablaCron(d) {
@@ -1639,12 +1689,55 @@
             ' <button class="boton renovar-cert" type="button">Renovar los que toquen</button>'
           : '') +
       '</div>' +
+      avisoRenovacionAutomatica(d.automatica) +
       '<p class="tenue">Fuente: ' + (d.certbot ? 'certbot certificates' : '/etc/letsencrypt/live') +
-        ' · ' + esc(d.total || 0) + ' certificado(s)</p>' +
+        ' · ' + esc(d.total || 0) + ' certificado(s)' +
+        (cap.acciones_apache
+          ? ' · <button class="boton mini servidor-web" type="button" data-modo="recargar">' +
+              'Recargar Apache/nginx</button> ' +
+            '<button class="boton mini servidor-web" type="button" data-modo="reiniciar">' +
+              'Reiniciar Apache/nginx</button>'
+          : '') + '</p>' +
       '<div class="tabla-envoltura"><table class="tabla" id="tabla-cert" style="min-width:auto">' +
         '<thead><tr id="cabecera-cert"></tr></thead>' +
-        '<tbody id="cuerpo-cert"></tbody></table></div>';
+        '<tbody id="cuerpo-cert"></tbody></table></div>' +
+      tablaSinCertificado(d.sin_certificado || [], cap);
     pintarFilasCert();
+  }
+
+  function avisoRenovacionAutomatica(a) {
+    if (!a) return '';
+    if (a.activa) {
+      return '<div class="aviso aviso-ok" style="margin:0 0 8px">Renovación automática activa (' +
+        esc(a.timer_activo ? a.timer : a.cron) + ')' +
+        (a.proxima ? ' · próxima ejecución: ' + esc(a.proxima) : '') +
+        (a.ultima ? ' · última: ' + esc(a.ultima) : '') + '</div>';
+    }
+    return '<div class="aviso aviso-error" style="margin:0 0 8px">No hay renovación automática: ' +
+      'ni certbot.timer ni /etc/cron.d/certbot están activos. Los certificados vencerán si ' +
+      'nadie los renueva desde aquí (o activa el timer con: systemctl enable --now certbot.timer).</div>';
+  }
+
+  function tablaSinCertificado(lista, cap) {
+    if (!lista.length) return '';
+    return '<h3 style="margin:18px 0 6px">Instancias sin certificado de Let\'s Encrypt (' +
+        lista.length + ')</h3>' +
+      '<p class="tenue">Tienen dominio y sitio web, pero ningún certificado lo cubre. ' +
+        'Antes de emitir, el dominio debe apuntar por DNS a este servidor.</p>' +
+      '<div class="tabla-envoltura"><table class="tabla" style="min-width:auto"><thead><tr>' +
+        '<th>Instancia</th><th>Dominio</th><th>Servidor web</th><th>SSL actual</th><th></th>' +
+      '</tr></thead><tbody>' +
+      lista.map(function (f) {
+        return '<tr><td class="cliente">' + esc(f.cliente) +
+          (f.oculta ? ' <span class="badge gris">oculta</span>' : '') +
+          '<div class="sub">' + esc(f.tipo || '') + '</div></td>' +
+          '<td>' + esc(f.dominio) + '</td><td>' + esc(f.servidor) + '</td>' +
+          '<td>' + guion(f.ssl) + '</td>' +
+          '<td>' + (cap.acciones_certbot
+            ? '<button class="boton mini emitir-cert" type="button" data-dominio="' +
+              esc(f.dominio) + '" data-servidor="' + esc(f.servidor) + '">Emitir certificado</button>'
+            : '') + '</td></tr>';
+      }).join('') + '</tbody></table></div>';
   }
 
   function pintarFilasCert() {
@@ -1689,6 +1782,9 @@
         acciones =
           '<button class="boton mini renovar-cert" type="button" data-nombre="' +
             esc(c.nombre) + '">Renovar</button> ' +
+          '<button class="boton mini renovar-cert" type="button" data-forzar="1" ' +
+            'title="Renueva ya, aunque falten más de 30 días para el vencimiento" data-nombre="' +
+            esc(c.nombre) + '">Forzar</button> ' +
           '<button class="boton mini cert-accion" type="button" data-nombre="' + esc(c.nombre) +
             '" data-accion="' + (pausada ? 'reanudar' : 'pausar') + '">' +
             (pausada ? 'Reanudar' : 'Pausar') + '</button> ' +
@@ -1747,7 +1843,10 @@
 
   function renovarCertificado(nombre, simular, forzar) {
     var texto = nombre ? ('el certificado ' + nombre) : 'los certificados que lo necesiten';
-    if (!simular && !window.confirm('¿Renovar ' + texto + ' con certbot?')) return;
+    if (forzar && !window.confirm('¿Forzar la renovación de ' + texto + ' ahora?\n\n' +
+        'Let\'s Encrypt limita a 5 renovaciones del mismo certificado por semana: úsalo ' +
+        'sólo si el certificado está dañado o cambió de dominio.')) return;
+    if (!simular && !forzar && !window.confirm('¿Renovar ' + texto + ' con certbot?')) return;
     fetch('/api/certificados/renovar', {
       method: 'POST', credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -1758,6 +1857,235 @@
         verTarea(d.tarea);
       })
       .catch(function (e) { aviso(e.message); });
+  }
+
+  function lanzarTarea(url, cuerpo) {
+    return fetch(url, {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cuerpo || {})
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) { aviso(d.error || 'No se pudo iniciar'); return; }
+        verTarea(d.tarea);
+      })
+      .catch(function (e) { aviso(e.message); });
+  }
+
+  function emitirCertificado(dominio, servidor) {
+    if (!window.confirm('¿Emitir un certificado de Let\'s Encrypt para ' + dominio + ' (' +
+        servidor + ')?\n\nSe comprueba antes el DNS, certbot ajusta el sitio web para HTTPS ' +
+        'con redirección y después se recarga el servidor web.')) return;
+    lanzarTarea('/api/certificados/emitir', { dominio: dominio, servidor: servidor });
+  }
+
+  function servidorWeb(modo) {
+    var texto = modo === 'reiniciar'
+      ? '¿Reiniciar Apache/nginx? Las conexiones en curso se cortan unos segundos.'
+      : '¿Recargar Apache/nginx? No corta conexiones; aplica certificados y vhosts nuevos.';
+    if (!window.confirm(texto + '\n\nAntes se valida la configuración: si tiene errores no se toca.')) return;
+    lanzarTarea('/api/servidor-web', { modo: modo });
+  }
+
+  // ----------------------------------------------------------------- consumo
+  var datosConsumo = null, consumoAuto = null, consumoMidiendo = false;
+
+  function medirConsumo() {
+    if (consumoMidiendo) return;
+    consumoMidiendo = true;
+    $('#consumo-medido').textContent = 'Midiendo…';
+    fetch('/api/consumo', { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var primera = !datosConsumo;
+        datosConsumo = d;
+        pintarConsumo();
+        if (primera) medirCarpetas(false);   // necesita el tamaño del disco para los %
+        $('#consumo-medido').textContent = 'Medido: ' + (d.medido || '');
+      })
+      .catch(function (e) { aviso('No se pudo medir el consumo: ' + e.message); })
+      .then(function () { consumoMidiendo = false; });
+  }
+
+  function pctDe(parte, total) {
+    return total ? Math.round(parte * 1000 / total) / 10 : null;
+  }
+
+  function pintarConsumo() {
+    var d = datosConsumo;
+    if (!d) return;
+    var s = d.sistema || {}, sv = d.servicios || {}, tot = sv.totales || {};
+    var raiz = (s.discos || []).filter(function (x) { return x.montaje === '/'; })[0] ||
+               (s.discos || [])[0] || {};
+    var tarjeta = function (rotulo, valor, extra, pct, ambar, rojo) {
+      var clase = pct === null || pct === undefined ? ''
+        : (pct >= (rojo || 85) ? 'mal' : (pct >= (ambar || 70) ? '' : 'ok'));
+      return '<div class="tarjeta ' + clase + '"><div class="rotulo">' + esc(rotulo) + '</div>' +
+        '<div class="valor">' + esc(valor) + '</div>' +
+        (extra ? '<div class="rotulo">' + esc(extra) + '</div>' : '') + '</div>';
+    };
+    var infra = tot.infraestructura || {}, inst = tot.instancia || {};
+    $('#tarjetas-consumo').innerHTML = [
+      tarjeta('CPU (carga 1 min)', (s.carga_pct !== null && s.carga_pct !== undefined ? s.carga_pct + ' %' : '-'),
+              (s.nucleos || '?') + ' núcleos · carga ' + ((s.carga_1_5_15 || []).join(' / ') || '-'),
+              s.carga_pct),
+      tarjeta('RAM usada', (s.ram_pct !== undefined ? s.ram_pct + ' %' : '-'),
+              (s.ram_usada_legible || '-') + ' de ' + (s.ram_total_legible || '-'), s.ram_pct),
+      tarjeta('Swap', (s.swap || {}).porcentaje !== null && (s.swap || {}).porcentaje !== undefined
+              ? s.swap.porcentaje + ' %' : 'sin swap',
+              ((s.swap || {}).usado || '-') + ' de ' + ((s.swap || {}).total || '-'),
+              (s.swap || {}).porcentaje, 30, 60),
+      tarjeta('Disco /', (raiz.porcentaje !== undefined ? raiz.porcentaje + ' %' : '-'),
+              (raiz.libre || '-') + ' libres de ' + (raiz.total || '-'), raiz.porcentaje),
+      tarjeta('RAM instancias', inst.memoria || '-',
+              (inst.servicios || 0) + ' servicios · CPU ' + (inst.cpu_pct || 0) + ' %',
+              pctDe(inst.memoria_bytes || 0, s.ram_total)),
+      tarjeta('RAM infraestructura', infra.memoria || '-',
+              'PostgreSQL, Apache, nginx… · CPU ' + (infra.cpu_pct || 0) + ' %',
+              pctDe(infra.memoria_bytes || 0, s.ram_total)),
+      tarjeta('Encendido hace', s.uptime || '-', null, null)
+    ].join('');
+
+    $('#cuerpo-discos').innerHTML = (s.discos || []).map(function (x) {
+      return '<tr><td><strong>' + esc(x.montaje) + '</strong></td><td class="sub">' +
+        esc(x.dispositivo) + ' · ' + esc(x.tipo) + '</td>' +
+        '<td class="num">' + esc(x.total) + '</td><td class="num">' + esc(x.usado) + '</td>' +
+        '<td class="num">' + esc(x.libre) + '</td>' +
+        '<td>' + barra(x.porcentaje, x.porcentaje + ' %', '', 70, 85) + '</td>' +
+        '<td class="num">' + guion(x.inodos_pct === null ? null : x.inodos_pct + ' %') + '</td></tr>';
+    }).join('') || '<tr><td class="vacio" colspan="7">Sin datos de discos</td></tr>';
+
+    pintarConsumoInstancias();
+    pintarServicios();
+    pintarProcesos();
+  }
+
+  function pintarConsumoInstancias() {
+    var d = datosConsumo;
+    if (!d) return;
+    var ramTotal = (d.sistema || {}).ram_total || 0;
+    var raiz = ((d.sistema || {}).discos || []).filter(function (x) { return x.montaje === '/'; })[0] || {};
+    var txt = ($('#filtro-consumo-inst').value || '').toLowerCase().trim();
+    var orden = $('#orden-consumo-inst').value || 'ram_bytes';
+    var filas = (d.instancias || []).filter(function (f) {
+      return !txt || (f.cliente || '').toLowerCase().indexOf(txt) !== -1;
+    }).sort(function (a, b) { return (b[orden] || 0) - (a[orden] || 0); });
+    $('#cuerpo-consumo-inst').innerHTML = filas.map(function (f) {
+      var pctRam = pctDe(f.ram_bytes, ramTotal);
+      var pctDisco = pctDe(f.disco_bytes, raiz.total_bytes);
+      return '<tr><td class="cliente">' + esc(f.cliente) +
+          (f.oculta ? ' <span class="badge gris">oculta</span>' : '') +
+          ' <span class="chip ' + esc(f.tipo) + '">' + esc(f.tipo) + '</span>' +
+          (f.activo ? '' : ' ' + badge('rojo', 'detenida')) + '</td>' +
+        '<td>' + (f.ram_bytes ? barra(pctRam, f.ram + ' · ' + pctRam + ' %', 'del total de RAM', 10, 25)
+                              : '<span class="tenue">—</span>') + '</td>' +
+        '<td class="num">' + (f.cpu_pct === null || f.cpu_pct === undefined ? '—' : f.cpu_pct + ' %') + '</td>' +
+        '<td class="num">' + esc(f.db) + '</td><td class="num">' + esc(f.media) + '</td>' +
+        '<td class="num">' + esc(f.logs) + '</td>' +
+        '<td>' + barra(pctDisco, f.disco + ' · ' + (pctDisco || 0) + ' %', 'del disco /', 5, 15) + '</td></tr>';
+    }).join('') || '<tr><td class="vacio" colspan="7">Sin instancias</td></tr>';
+  }
+
+  function pintarServicios() {
+    var d = datosConsumo;
+    if (!d) return;
+    var sv = d.servicios || {};
+    if (sv.ok === false) {
+      $('#cuerpo-servicios').innerHTML = '<tr><td class="vacio" colspan="6">' +
+        esc(sv.error || 'No se pudo consultar systemd') + '</td></tr>';
+      return;
+    }
+    var ramTotal = (d.sistema || {}).ram_total || 0;
+    var cat = $('#filtro-servicio-cat').value;
+    var etiquetas = { instancia: ['azul', 'instancia'], infraestructura: ['ambar', 'infraestructura'],
+                      sistema: ['gris', 'sistema'] };
+    var filas = (sv.servicios || []).filter(function (f) { return !cat || f.categoria === cat; });
+    $('#cuerpo-servicios').innerHTML = filas.map(function (f) {
+      var pct = pctDe(f.memoria_bytes || 0, ramTotal);
+      var e = etiquetas[f.categoria] || ['gris', f.categoria];
+      return '<tr><td><strong>' + esc(f.nombre) + '</strong>' +
+          (f.cliente ? ' <span class="tenue">(' + esc(f.cliente) + ')</span>' : '') +
+          '<div class="sub">' + esc(f.descripcion || '') + '</div></td>' +
+        '<td>' + badge(e[0], e[1]) + '</td>' +
+        '<td>' + (f.memoria_bytes ? barra(pct, f.memoria + ' · ' + pct + ' %', '', 10, 25)
+                                  : '<span class="tenue">—</span>') + '</td>' +
+        '<td class="num">' + (f.cpu_pct === null ? '—' : f.cpu_pct + ' %') + '</td>' +
+        '<td class="num">' + guion(f.tareas) + '</td><td class="num">' + guion(f.pid) + '</td></tr>';
+    }).join('') || '<tr><td class="vacio" colspan="6">Sin servicios</td></tr>';
+    var t = sv.totales || {};
+    $('#resumen-servicios').textContent = Object.keys(t).map(function (k) {
+      return k + ': ' + t[k].servicios + ' · ' + t[k].memoria + ' · CPU ' + t[k].cpu_pct + ' %';
+    }).join('  |  ');
+  }
+
+  function pintarProcesos() {
+    var d = datosConsumo;
+    if (!d) return;
+    var p = d.procesos || {};
+    if (p.ok === false) {
+      $('#cuerpo-procesos').innerHTML = '<tr><td class="vacio" colspan="7">' +
+        esc(p.error || 'No se pudieron leer los procesos') + '</td></tr>';
+      return;
+    }
+    var lista = p[$('#procesos-por').value] || [];
+    $('#cuerpo-procesos').innerHTML = lista.map(function (f) {
+      return '<tr><td class="num">' + esc(f.pid) + '</td><td>' + esc(f.usuario || '') + '</td>' +
+        '<td><strong>' + esc(f.nombre || '') + '</strong><div class="sub"><code class="ruta" title="' +
+          esc(f.comando) + '">' + esc(f.comando) + '</code></div></td>' +
+        '<td>' + (f.cliente ? esc(f.cliente) : '<span class="tenue">—</span>') + '</td>' +
+        '<td class="num">' + esc(f.rss) + '</td>' +
+        '<td class="num">' + guion(f.ram_pct === null ? null : f.ram_pct + ' %') + '</td>' +
+        '<td class="num">' + esc(f.cpu_pct) + ' %</td></tr>';
+    }).join('') || '<tr><td class="vacio" colspan="7">Ningún proceso usó CPU en el último segundo</td></tr>';
+    $('#resumen-procesos').textContent = (p.total || 0) + ' procesos en el servidor';
+  }
+
+  function medirCarpetas(forzar) {
+    $('#cuerpo-carpetas').innerHTML = '<tr><td class="vacio" colspan="3">Midiendo con du…</td></tr>';
+    fetch('/api/consumo/carpetas' + (forzar ? '?forzar=1' : ''), { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var raiz = (((datosConsumo || {}).sistema || {}).discos || [])
+          .filter(function (x) { return x.montaje === '/'; })[0] || {};
+        $('#cuerpo-carpetas').innerHTML = (d.carpetas || []).map(function (c) {
+          var pct = pctDe(c.bytes || 0, raiz.total_bytes);
+          return '<tr><td>' + esc(c.etiqueta) + '</td><td><code class="ruta">' + esc(c.ruta) + '</code></td>' +
+            '<td>' + (c.bytes === null ? '<span class="tenue">' + esc(c.error || '—') + '</span>'
+                     : (pct === null ? esc(c.tamano)
+                        : barra(pct, c.tamano + ' · ' + pct + ' %', 'del disco /', 10, 25))) + '</td></tr>';
+        }).join('') || '<tr><td class="vacio" colspan="3">Sin carpetas que medir</td></tr>';
+        $('#carpetas-medido').textContent = ' · medido ' + (d.medido || '') + (d.cache ? ' (guardado)' : '');
+      })
+      .catch(function (e) {
+        $('#cuerpo-carpetas').innerHTML = '<tr><td class="vacio" colspan="3">' + esc(e.message) + '</td></tr>';
+      });
+  }
+
+  function consumoBases() {
+    fetch('/api/bases', { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d.ok === false) {
+          $('#cuerpo-consumo-bases').innerHTML = '<tr><td class="vacio" colspan="4">' +
+            esc(d.error || 'No se pudo consultar PostgreSQL') + '</td></tr>';
+          return;
+        }
+        var total = (d.bases || []).reduce(function (a, b) { return a + (b.bytes || 0); }, 0);
+        $('#cuerpo-consumo-bases').innerHTML = (d.bases || []).slice(0, 15).map(function (b) {
+          var pct = pctDe(b.bytes, total);
+          return '<tr><td class="cliente">' + esc(b.nombre) + '</td>' +
+            '<td>' + (b.instancia ? esc(b.instancia.cliente)
+                     : (b.sistema ? badge('gris', 'del motor') : badge('ambar', 'sin instancia'))) + '</td>' +
+            '<td>' + barra(pct, b.tamano + ' · ' + pct + ' %', 'del total de bases', 25, 50) + '</td>' +
+            '<td class="num">' + esc(b.conexiones) + '</td></tr>';
+        }).join('') || '<tr><td class="vacio" colspan="4">Sin bases</td></tr>';
+      })
+      .catch(function () {});
+  }
+
+  function programarConsumo() {
+    if (consumoAuto) { clearInterval(consumoAuto); consumoAuto = null; }
+    if ($('#consumo-auto').checked) consumoAuto = setInterval(medirConsumo, 15000);
   }
 
   var datosBackups = null;
@@ -1852,8 +2180,11 @@
           '<td>' + esc(a.tamano) + '</td>' +
           '<td><a class="boton mini" href="/backups/descargar?archivo=' +
             encodeURIComponent(a.archivo) + '">Descargar</a> ' +
-          '<button class="boton mini peligro backup-borrar" type="button" style="color:#fff" ' +
-            'data-archivo="' + esc(a.archivo) + '">Eliminar</button></td></tr>';
+          '<button class="boton mini backup-verificar" type="button" data-archivo="' +
+            esc(a.archivo) + '" title="Comprueba que el dump esté completo y se pueda leer">Verificar</button> ' +
+          (a.solo_lectura ? '' :
+            '<button class="boton mini peligro backup-borrar" type="button" style="color:#fff" ' +
+              'data-archivo="' + esc(a.archivo) + '">Eliminar</button>') + '</td></tr>';
       }).join('') + '</tbody></table></div>';
     $('#detalle-backups').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
@@ -1940,12 +2271,90 @@
         '<td class="num">' + esc(b.tamano) + '</td>' +
         '<td class="num">' + esc(b.conexiones) + '</td>' +
         '<td>' + guion(b.ultimo_backup) + '</td>' +
-        '<td><button class="boton mini backup-base" type="button" data-base="' +
-          esc(b.nombre) + '">Respaldar</button></td></tr>';
+        '<td style="white-space:nowrap"><button class="boton mini base-detalle" type="button" data-base="' +
+          esc(b.nombre) + '">Detalle</button> ' +
+          '<button class="boton mini backup-base" type="button" data-base="' +
+          esc(b.nombre) + '">Respaldar</button>' +
+          (b.ultimo_backup_archivo
+            ? ' <a class="boton mini" title="Descargar el último backup" href="/backups/descargar?archivo=' +
+              encodeURIComponent(b.ultimo_backup_archivo) + '">⬇ Último</a>'
+            : '') + '</td></tr>';
     }).join('') || '<tr><td class="vacio" colspan="6">Sin bases</td></tr>';
-    $('#resumen-bases').textContent = (d.bases || []).length + ' bases · ' +
+    var sv = d.servidor || {};
+    $('#resumen-bases').textContent = (d.bases || []).length + ' bases · ' + (sv.total || '') + ' · ' +
       (d.sin_uso || 0) + ' sin instancia (' + (d.sin_uso_tamano || '0 B') + ')' +
-      (d.host ? ' · ' + d.host : '');
+      (d.host ? ' · ' + d.host : '') +
+      (sv.version ? ' · PostgreSQL ' + sv.version : '') +
+      (sv.max_conexiones ? ' · conexiones ' + sv.conexiones + '/' + sv.max_conexiones +
+        ' (' + sv.conexiones_pct + ' %)' : '') +
+      (sv.activo ? ' · activo hace ' + sv.activo : '');
+  }
+
+  function verDetalleBase(nombre) {
+    if (tareaPoll) { clearInterval(tareaPoll); tareaPoll = null; }
+    $('#tarea-titulo').textContent = 'Base ' + nombre;
+    $('#modal-tarea').classList.remove('oculto');
+    var caja = $('#tarea-cuerpo');
+    caja.innerHTML = '<p class="tenue">Consultando PostgreSQL…</p>';
+    fetch('/api/bases/' + encodeURIComponent(nombre), { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) { caja.innerHTML = '<div class="aviso-error">' + esc(d.error || 'Error') + '</div>'; return; }
+        var e = d.estadisticas || {};
+        var cache = e.cache_pct;
+        var inactivas = (d.conexiones || []).filter(function (c) { return c.estado === 'idle'; }).length;
+        var largas = (d.conexiones || []).filter(function (c) {
+          return c.estado === 'active' && c.segundos > 60; }).length;
+        caja.innerHTML =
+          '<div class="grid-detalle">' +
+            '<div class="bloque"><h3>General</h3>' + dl([
+              ['Instancia', d.instancia ? d.instancia.cliente + ' (' + d.instancia.tipo + ')' : 'sin instancia'],
+              ['Tamaño', d.tamano], ['Dueño', d.dueno], ['Tablas', d.tablas_total],
+              ['Codificación', d.codificacion + ' · ' + (d.collate || '')]
+            ]) + '</div>' +
+            '<div class="bloque"><h3>Actividad</h3>' + dl([
+              ['Conexiones', (d.conexiones || []).length + ' (' + inactivas + ' inactivas' +
+                (largas ? ', ' + largas + ' consultas de más de 1 min' : '') + ')'],
+              ['Aciertos de caché', cache === null || cache === undefined ? '-' : cache + ' %' +
+                (cache < 95 ? ' (bajo: falta RAM para shared_buffers)' : '')],
+              ['Commits / rollbacks', (e.commits || 0) + ' / ' + (e.rollbacks || 0)],
+              ['Filas insertadas / actualizadas / borradas',
+                (e.insertadas || 0) + ' / ' + (e.actualizadas || 0) + ' / ' + (e.borradas || 0)],
+              ['Deadlocks', e.deadlocks], ['Archivos temporales', e.temporales],
+              ['Estadísticas desde', e.desde || 'inicio del servidor']
+            ]) + '</div>' +
+          '</div>' +
+          '<div style="margin:10px 0">' +
+            '<button class="boton mini backup-base" type="button" data-base="' + esc(d.nombre) +
+              '">Respaldar ahora</button></div>' +
+          '<div class="bloque"><h3>Tablas más pesadas</h3><div class="tabla-envoltura" style="margin:0">' +
+            '<table class="tabla-mini"><thead><tr><th>Tabla</th><th class="num">Total</th>' +
+            '<th class="num">Datos</th><th class="num">Índices</th><th class="num">Filas</th>' +
+            '<th class="num">Muertas</th><th>Último vacuum</th></tr></thead><tbody>' +
+            (d.tablas || []).map(function (t) {
+              return '<tr><td>' + esc(t.tabla) + '</td><td class="num">' + esc(t.total) + '</td>' +
+                '<td class="num">' + esc(t.datos) + '</td><td class="num">' + esc(t.indices) + '</td>' +
+                '<td class="num">' + esc(t.filas) + '</td>' +
+                '<td class="num">' + (t.muertas_pct > 20 ? badge('ambar', t.muertas_pct + ' %')
+                                     : esc(t.muertas_pct + ' %')) + '</td>' +
+                '<td>' + guion(t.vacuum) + '</td></tr>';
+            }).join('') + '</tbody></table></div></div>' +
+          '<div class="bloque" style="margin-top:10px"><h3>Conexiones abiertas</h3>' +
+            ((d.conexiones || []).length
+              ? '<div class="tabla-envoltura" style="margin:0"><table class="tabla-mini"><thead><tr>' +
+                '<th class="num">PID</th><th>Usuario</th><th>Aplicación</th><th>Origen</th><th>Estado</th>' +
+                '<th>Duración</th><th>Consulta</th></tr></thead><tbody>' +
+                d.conexiones.map(function (c) {
+                  return '<tr><td class="num">' + esc(c.pid) + '</td><td>' + esc(c.usuario) + '</td>' +
+                    '<td>' + esc(c.aplicacion) + '</td><td>' + esc(c.cliente) + '</td>' +
+                    '<td>' + esc(c.estado) + (c.espera ? ' <span class="tenue">(' + esc(c.espera) + ')</span>' : '') + '</td>' +
+                    '<td>' + guion(c.duracion) + '</td>' +
+                    '<td><code class="ruta" title="' + esc(c.consulta) + '">' + esc(c.consulta) + '</code></td></tr>';
+                }).join('') + '</tbody></table></div>'
+              : '<p class="tenue">Nadie está conectado a esta base.</p>') +
+          '</div>';
+      })
+      .catch(function (e) { caja.innerHTML = '<div class="aviso-error">' + esc(e.message) + '</div>'; });
   }
 
   function diagnosticoVhost(id) {
@@ -2064,11 +2473,535 @@
     });
   }
 
+  // ---------------------------------------------------------- notificaciones
+  var notif = { datos: null, ultimaVista: null, poll: null, instalar: null, primera: true };
+  var ICONO_NIVEL = { error: '🔴', aviso: '🟠', ok: '🟢', info: '🔵' };
+
+  function hace(fecha) {
+    if (!fecha) return '';
+    var t = new Date(fecha.replace(' ', 'T'));
+    if (isNaN(t)) return fecha;
+    var s = Math.round((Date.now() - t.getTime()) / 1000);
+    if (s < 60) return 'hace un momento';
+    if (s < 3600) return 'hace ' + Math.round(s / 60) + ' min';
+    if (s < 86400) return 'hace ' + Math.round(s / 3600) + ' h';
+    return fecha.slice(0, 16);
+  }
+
+  function itemNotif(n) {
+    return '<a class="item-notif nivel-' + esc(n.nivel) + (n.leida ? '' : ' no-leida') + '" href="' +
+      esc(n.ruta || '/notificaciones') + '" data-notif="' + esc(n.id) + '">' +
+      '<span class="icono-notif">' + (ICONO_NIVEL[n.nivel] || '🔵') + '</span>' +
+      '<span class="texto-notif"><strong>' + esc(n.titulo) + '</strong>' +
+      '<span class="sub">' + esc(n.mensaje || '') + '</span>' +
+      '<span class="fecha-notif" title="' + esc(n.fecha) + '">' + esc(hace(n.fecha)) + '</span></span></a>';
+  }
+
+  function cargarNotificaciones() {
+    if (!$('#btn-campana')) return Promise.resolve();
+    var limite = MODO === 'notificaciones' ? 300 : 20;
+    return fetch('/api/notificaciones?limite=' + limite, { credentials: 'same-origin' })
+      .then(function (r) { return r.status === 401 ? null : r.json(); })
+      .then(function (d) {
+        if (!d) return;
+        var anterior = notif.datos;
+        notif.datos = d;
+        var c = $('#campana-contador');
+        c.textContent = d.no_leidas > 99 ? '99+' : d.no_leidas;
+        c.classList.toggle('oculto', !d.no_leidas);
+        document.title = document.title.replace(/^\(\d+\+?\) /, '');
+        if (d.no_leidas) document.title = '(' + (d.no_leidas > 99 ? '99+' : d.no_leidas) + ') ' + document.title;
+        // Con el panel abierto se avisa de lo nuevo aunque no haya push.
+        if (anterior && !notif.primera) {
+          var vistos = {};
+          (anterior.notificaciones || []).forEach(function (n) { vistos[n.id] = 1; });
+          var nuevas = (d.notificaciones || []).filter(function (n) { return !vistos[n.id]; });
+          if (nuevas.length) {
+            aviso((ICONO_NIVEL[nuevas[0].nivel] || '') + ' ' + nuevas[0].titulo +
+                  (nuevas.length > 1 ? ' (y ' + (nuevas.length - 1) + ' más)' : ''),
+                  nuevas[0].nivel === 'ok' ? 'aviso-ok' : (nuevas[0].nivel === 'error' ? 'aviso-error' : 'aviso-info'));
+          }
+        }
+        notif.primera = false;
+        pintarPanelNotif();
+        if (MODO === 'notificaciones') pintarPaginaNotif();
+      })
+      .catch(function () {});
+  }
+
+  function pintarPanelNotif() {
+    var d = notif.datos;
+    if (!d || !$('#lista-notif')) return;
+    $('#lista-notif').innerHTML = (d.notificaciones || []).slice(0, 20).map(itemNotif).join('') ||
+      '<p class="tenue" style="padding:14px">Sin notificaciones todavía.</p>';
+  }
+
+  function marcarLeidas(ids) {
+    return fetch('/api/notificaciones/leidas', {
+      method: 'POST', credentials: 'same-origin', keepalive: true,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(ids ? { ids: ids } : {})
+    }).then(cargarNotificaciones);
+  }
+
+  function alternarPanelNotif(forzarCerrar) {
+    var panel = $('#panel-notif');
+    if (!panel) return;
+    var abrir = !forzarCerrar && panel.classList.contains('oculto');
+    panel.classList.toggle('oculto', !abrir);
+    if (abrir) { cargarNotificaciones(); estadoPush(); }
+  }
+
+  // ------------------------------------------------------------- push
+  function pushSoportado() {
+    return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  }
+
+  function claveAplicacion(texto) {
+    var b = atob(texto.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((texto.length + 3) % 4));
+    var arr = new Uint8Array(b.length);
+    for (var i = 0; i < b.length; i++) arr[i] = b.charCodeAt(i);
+    return arr;
+  }
+
+  function suscripcionActual() {
+    if (!pushSoportado()) return Promise.resolve(null);
+    return navigator.serviceWorker.getRegistration('/').then(function (reg) {
+      return reg ? reg.pushManager.getSubscription() : null;
+    });
+  }
+
+  function esIOS() { return /iphone|ipad|ipod/i.test(navigator.userAgent); }
+  function instalada() {
+    return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) ||
+      window.navigator.standalone === true;
+  }
+
+  function motivoSinPush() {
+    if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
+      return 'Las notificaciones push y la app instalable necesitan HTTPS. Entra al panel por su ' +
+        'dominio con certificado (deploy/admin_dominio.sh) en vez de http://IP:puerto.';
+    }
+    if (esIOS() && !instalada()) {
+      return 'En iPhone primero instala la app: botón Compartir → «Agregar a pantalla de inicio», ' +
+        'ábrela desde el ícono y activa las notificaciones ahí (iOS 16.4 o superior).';
+    }
+    if (!pushSoportado()) return 'Este navegador no admite notificaciones push.';
+    return null;
+  }
+
+  function activarPush() {
+    var motivo = motivoSinPush();
+    if (motivo) { aviso(motivo); return Promise.resolve(); }
+    return Notification.requestPermission().then(function (permiso) {
+      if (permiso !== 'granted') {
+        throw new Error('No diste permiso para notificaciones. Actívalo en los ajustes del ' +
+          'navegador para este sitio y vuelve a intentar.');
+      }
+      return Promise.all([
+        navigator.serviceWorker.register('/sw.js', { scope: '/' }).then(function () {
+          return navigator.serviceWorker.ready;
+        }),
+        fetch('/api/push/clave', { credentials: 'same-origin' }).then(function (r) { return r.json(); })
+      ]);
+    }).then(function (res) {
+      var reg = res[0], d = res[1];
+      if (!d.ok) throw new Error(d.error || 'El servidor no tiene clave VAPID');
+      return reg.pushManager.getSubscription().then(function (previa) {
+        return previa || reg.pushManager.subscribe({
+          userVisibleOnly: true, applicationServerKey: claveAplicacion(d.clave) });
+      });
+    }).then(function (sus) {
+      return fetch('/api/push/suscribir', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ suscripcion: sus.toJSON() })
+      }).then(function (r) { return r.json(); });
+    }).then(function (d) {
+      if (!d.ok) throw new Error(d.error || 'No se pudo registrar el dispositivo');
+      aviso('Listo: este dispositivo recibirá las notificaciones. Envía una prueba para comprobarlo.', 'aviso-ok');
+      estadoPush();
+    }).catch(function (e) { aviso(e.message); });
+  }
+
+  function desactivarPush() {
+    return suscripcionActual().then(function (sus) {
+      if (!sus) return;
+      var endpoint = sus.endpoint;
+      return sus.unsubscribe().then(function () {
+        return fetch('/api/push/desuscribir', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ endpoint: endpoint })
+        });
+      });
+    }).then(function () { aviso('Este dispositivo ya no recibirá notificaciones push.', 'aviso-ok'); estadoPush(); });
+  }
+
+  function probarCanal(canal, boton) {
+    if (boton) boton.disabled = true;
+    return fetch('/api/notificaciones/probar', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ canal: canal })
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d.ok) {
+          aviso('Prueba de ' + canal + ' enviada' + (d.enviados !== undefined ? ' (' + d.enviados +
+                ' destino/s)' : '') + '. Revisa que haya llegado.', 'aviso-ok');
+        } else {
+          aviso('La prueba de ' + canal + ' falló: ' + (d.error || 'error desconocido'));
+        }
+      })
+      .catch(function (e) { aviso(e.message); })
+      .then(function () { if (boton) boton.disabled = false; });
+  }
+
+  function estadoPush() {
+    var rapido = $('#btn-push-rapido');
+    var caja = $('#estado-push');
+    return suscripcionActual().then(function (sus) {
+      var motivo = motivoSinPush();
+      if (rapido) rapido.classList.toggle('oculto', !!sus || !!motivo);
+      if (!caja) return;
+      if (motivo) {
+        caja.innerHTML = '<p class="aviso-inline">' + esc(motivo) + '</p>';
+        return;
+      }
+      var permiso = Notification.permission;
+      caja.innerHTML = sus
+        ? '<p>' + badge('verde', 'activas') + ' Este dispositivo recibe las notificaciones.</p>' +
+          '<p><button class="boton mini" type="button" id="btn-push-probar">Enviar prueba</button> ' +
+          '<button class="boton mini" type="button" id="btn-push-desactivar">Desactivar aquí</button></p>'
+        : '<p>' + (permiso === 'denied'
+            ? badge('rojo', 'bloqueadas') + ' El navegador bloqueó las notificaciones de este sitio: ' +
+              'actívalas en los ajustes del sitio y recarga.'
+            : badge('gris', 'inactivas') + ' Este dispositivo todavía no recibe notificaciones.') + '</p>' +
+          (permiso === 'denied' ? '' :
+            '<p><button class="boton" type="button" id="btn-push-activar">Activar notificaciones aquí</button></p>');
+      caja.innerHTML += '<div id="dispositivos-push" class="sub"></div>';
+      fetch('/api/push/dispositivos', { credentials: 'same-origin' })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          var lista = d.dispositivos || [];
+          $('#dispositivos-push').innerHTML = lista.length
+            ? 'Dispositivos registrados (' + lista.length + '):<br>' + lista.map(function (x) {
+                var nombre = /android/i.test(x.agente) ? 'Android' : /iphone|ipad/i.test(x.agente) ? 'iPhone/iPad'
+                  : /windows/i.test(x.agente) ? 'Windows' : /mac os/i.test(x.agente) ? 'Mac'
+                  : /linux/i.test(x.agente) ? 'Linux' : 'Navegador';
+                var nav = /edg\//i.test(x.agente) ? 'Edge' : /chrome|crios/i.test(x.agente) ? 'Chrome'
+                  : /firefox|fxios/i.test(x.agente) ? 'Firefox' : /safari/i.test(x.agente) ? 'Safari' : '';
+                return '• ' + esc(nombre + (nav ? ' · ' + nav : '')) + ' de ' + esc(x.usuario) +
+                  ' <span class="tenue">(' + esc(x.desde) + ')</span>' +
+                  (sus && sus.endpoint === x.endpoint ? ' ' + badge('azul', 'este') : '');
+              }).join('<br>')
+            : 'Ningún dispositivo registrado todavía.';
+        }).catch(function () {});
+    });
+  }
+
+  function estadoInstalar() {
+    var caja = $('#estado-instalar');
+    if (!caja) return;
+    if (instalada()) {
+      caja.innerHTML = '<p>' + badge('verde', 'instalada') + ' Estás usando la app instalada.</p>';
+    } else if (notif.instalar) {
+      caja.innerHTML = '<p>Instálala para abrirla desde el escritorio del celular, a pantalla completa.</p>' +
+        '<p><button class="boton" type="button" id="btn-instalar-app">Instalar la app</button></p>';
+    } else if (esIOS()) {
+      caja.innerHTML = '<p>En iPhone/iPad (Safari): toca <strong>Compartir</strong> → ' +
+        '<strong>Agregar a pantalla de inicio</strong>. Luego ábrela desde el ícono.</p>';
+    } else if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
+      caja.innerHTML = '<p class="aviso-inline">Para instalarla hace falta entrar por HTTPS (dominio con certificado).</p>';
+    } else {
+      caja.innerHTML = '<p>En Android (Chrome): menú <strong>⋮</strong> → <strong>Instalar aplicación</strong> ' +
+        '(o «Agregar a la pantalla principal»). En la computadora, el ícono de instalar en la barra de direcciones.</p>';
+    }
+  }
+
+  window.addEventListener('beforeinstallprompt', function (e) {
+    e.preventDefault();
+    notif.instalar = e;
+    estadoInstalar();
+  });
+  window.addEventListener('appinstalled', function () { notif.instalar = null; estadoInstalar(); });
+
+  // ----------------------------------------------------- página de notificaciones
+  function pintarPaginaNotif() {
+    var d = notif.datos;
+    if (!d || !$('#historial-notif')) return;
+    var activas = d.activas || [];
+    $('#alertas-activas').innerHTML = activas.length
+      ? '<div class="lista-notif lista-notif-pagina">' + activas.map(function (a) {
+          return itemNotif({ id: a.clave, nivel: a.nivel, titulo: a.titulo, leida: true,
+                             mensaje: a.mensaje, ruta: a.ruta, fecha: a.desde });
+        }).join('') + '</div>'
+      : '<p class="aviso aviso-ok" style="margin:0">' + '🟢 Todo en orden: no hay alertas activas.</p>';
+    $('#resumen-revision').textContent = 'Última revisión automática: ' + (d.ultima_revision || 'todavía no') +
+      '. Una alerta se envía cuando se confirma en varias revisiones seguidas.';
+    var filtro = $('#filtro-notif-nivel').value;
+    var lista = (d.notificaciones || []).filter(function (n) {
+      if (filtro === 'no-leidas') return !n.leida;
+      return !filtro || n.nivel === filtro;
+    });
+    $('#historial-notif').innerHTML = lista.map(itemNotif).join('') ||
+      '<p class="tenue" style="padding:14px">Sin notificaciones.</p>';
+  }
+
+  function cargarConfigNotif() {
+    var caja = $('#config-notif');
+    if (!caja) return;
+    fetch('/api/notificaciones/config', { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (c) {
+        if (c.ok === false) { caja.innerHTML = '<div class="aviso-error">' + esc(c.error) + '</div>'; return; }
+        pintarConfigNotif(c);
+      })
+      .catch(function (e) { caja.innerHTML = '<div class="aviso-error">' + esc(e.message) + '</div>'; });
+  }
+
+  function campo(etiqueta, id, valor, tipo, ayuda, extra) {
+    return '<label>' + esc(etiqueta) + '<input id="' + id + '" type="' + (tipo || 'text') + '" value="' +
+      esc(valor === null || valor === undefined ? '' : valor) + '"' + (extra || '') + '>' +
+      (ayuda ? '<span class="ayuda">' + ayuda + '</span>' : '') + '</label>';
+  }
+  function casilla(etiqueta, id, marcado) {
+    return '<label class="check"><input type="checkbox" id="' + id + '"' + (marcado ? ' checked' : '') + '> ' +
+      esc(etiqueta) + '</label>';
+  }
+
+  function pintarConfigNotif(c) {
+    var tg = c.telegram || {}, co = c.correo || {}, pu = c.push || {}, r = c.reglas || {};
+    $('#config-notif').innerHTML =
+      '<div class="grid-detalle">' +
+      '<div class="bloque"><h3>General</h3><div class="formulario formulario-1">' +
+        casilla('Enviar notificaciones', 'n-enabled', c.enabled) +
+        campo('Revisar cada (segundos)', 'n-intervalo', c.intervalo, 'number', 'Mínimo 60.', ' min="60"') +
+        campo('Confirmar en N revisiones seguidas', 'n-confirmaciones', c.confirmaciones, 'number',
+              'Evita avisos por un reinicio de segundos. Con 2 y 300 s: se avisa a los ~5-10 min.', ' min="1"') +
+        campo('Recordar alertas activas cada (horas)', 'n-repetir', c.repetir_horas, 'number', '0 = no recordar.', ' min="0"') +
+        casilla('Avisar también cuando se resuelve', 'n-recuperacion', c.avisar_recuperacion) +
+        campo('Dirección pública del panel', 'n-url', c.url_panel, 'url',
+              'Para los enlaces de Telegram y correo. Vacío = la que usas ahora' +
+              (c.url_detectada ? ' (' + esc(c.url_detectada) + ')' : '') + '.') +
+      '</div></div>' +
+
+      '<div class="bloque"><h3>Qué avisar</h3><div class="formulario formulario-1">' +
+        casilla('Servicio de una instancia caído', 'r-servicio', r.servicio_caido) +
+        casilla('La web de una instancia no responde', 'r-url', r.url_caida) +
+        casilla('Base de datos inaccesible', 'r-base', r.base_caida) +
+        casilla('Apache / nginx caído', 'r-web', r.servidor_web_caido) +
+        casilla('Sin renovación automática de certificados', 'r-auto', r.renovacion_automatica) +
+        casilla('Backups atrasados', 'r-backup', r.backup_atrasado) +
+        casilla('Fin de tareas (backups, altas, certbot)', 'r-tareas', r.tareas) +
+        campo('Certificado que vence en (días) o menos', 'r-ssl', r.ssl_dias, 'number', '0 = no avisar.') +
+        campo('Disco lleno a partir del %', 'r-disco', r.disco_pct, 'number', '0 = no avisar.') +
+        campo('RAM a partir del %', 'r-ram', r.ram_pct, 'number', '0 = no avisar.') +
+      '</div></div>' +
+
+      '<div class="bloque"><h3>Telegram</h3><div class="formulario formulario-1">' +
+        casilla('Enviar por Telegram', 't-enabled', tg.enabled) +
+        campo('Token del bot', 't-token', tg.bot_token, 'text',
+              'Créalo con <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a> → /newbot.',
+              ' autocomplete="off"') +
+        campo('Chat ID (varios separados por coma)', 't-chats', (tg.chat_ids || []).join(', '), 'text',
+              'Escríbele cualquier mensaje a tu bot (o agrégalo a un grupo), guarda el token y pulsa «Detectar».') +
+        '<div><button class="boton mini" type="button" id="btn-tg-detectar">Detectar chat</button> ' +
+        '<button class="boton mini" type="button" data-probar="telegram">Enviar prueba</button></div>' +
+        '<div id="tg-chats"></div>' +
+      '</div></div>' +
+
+      '<div class="bloque"><h3>Correo (SMTP)</h3><div class="formulario formulario-1">' +
+        casilla('Enviar por correo', 'c-enabled', co.enabled) +
+        campo('Servidor SMTP', 'c-servidor', co.servidor, 'text', 'Gmail: smtp.gmail.com · Outlook: smtp.office365.com') +
+        '<div class="formulario">' +
+          campo('Puerto', 'c-puerto', co.puerto, 'number') +
+          '<label>Seguridad<select id="c-seguridad">' + ['starttls', 'ssl', 'ninguna'].map(function (v) {
+            return '<option value="' + v + '"' + (co.seguridad === v ? ' selected' : '') + '>' +
+              { starttls: 'STARTTLS (587)', ssl: 'SSL/TLS (465)', ninguna: 'Sin cifrado (25)' }[v] + '</option>';
+          }).join('') + '</select></label>' +
+        '</div>' +
+        campo('Usuario', 'c-usuario', co.usuario, 'text', null, ' autocomplete="off"') +
+        campo('Contraseña', 'c-clave', co.clave, 'password',
+              'En Gmail usa una «contraseña de aplicación» (con verificación en 2 pasos activa).',
+              ' autocomplete="new-password"') +
+        campo('Remitente', 'c-remitente', co.remitente, 'text', 'Vacío = el usuario.') +
+        campo('Destinatarios (separados por coma)', 'c-destinatarios', (co.destinatarios || []).join(', ')) +
+        '<div><button class="boton mini" type="button" data-probar="correo">Enviar prueba</button></div>' +
+      '</div></div>' +
+
+      '<div class="bloque"><h3>Push (app en el celular)</h3><div class="formulario formulario-1">' +
+        casilla('Enviar notificaciones push', 'p-enabled', pu.enabled) +
+        campo('Contacto (correo o URL)', 'p-sujeto', pu.sujeto, 'text',
+              'Lo exige el estándar para identificar al remitente. Vacío = la dirección del panel.') +
+        (pu.disponible ? '' : '<p class="aviso-inline">Falta la librería cryptography en el servidor ' +
+          '(pip install -r requirements.txt).</p>') +
+        '<p class="sub">Cada celular se activa desde «Este dispositivo», arriba.</p>' +
+      '</div></div>' +
+      '</div>' +
+      '<div style="margin-top:12px;text-align:right"><button class="boton" type="button" id="btn-guardar-notif">' +
+        'Guardar configuración</button></div>';
+  }
+
+  function valorNum(id) { var v = parseInt($('#' + id).value, 10); return isNaN(v) ? 0 : v; }
+
+  function guardarConfigNotif(boton) {
+    var datos = {
+      enabled: $('#n-enabled').checked, intervalo: valorNum('n-intervalo'),
+      confirmaciones: valorNum('n-confirmaciones'), repetir_horas: valorNum('n-repetir'),
+      avisar_recuperacion: $('#n-recuperacion').checked, url_panel: $('#n-url').value.trim(),
+      reglas: {
+        servicio_caido: $('#r-servicio').checked, url_caida: $('#r-url').checked,
+        base_caida: $('#r-base').checked, servidor_web_caido: $('#r-web').checked,
+        renovacion_automatica: $('#r-auto').checked, backup_atrasado: $('#r-backup').checked,
+        tareas: $('#r-tareas').checked, ssl_dias: valorNum('r-ssl'), disco_pct: valorNum('r-disco'),
+        ram_pct: valorNum('r-ram')
+      },
+      telegram: { enabled: $('#t-enabled').checked, bot_token: $('#t-token').value.trim(),
+                  chat_ids: $('#t-chats').value },
+      correo: { enabled: $('#c-enabled').checked, servidor: $('#c-servidor').value.trim(),
+                puerto: valorNum('c-puerto'), seguridad: $('#c-seguridad').value,
+                usuario: $('#c-usuario').value.trim(), clave: $('#c-clave').value,
+                remitente: $('#c-remitente').value.trim(), destinatarios: $('#c-destinatarios').value },
+      push: { enabled: $('#p-enabled').checked, sujeto: $('#p-sujeto').value.trim() }
+    };
+    if (boton) boton.disabled = true;
+    return fetch('/api/notificaciones/config', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(datos)
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) { aviso(d.error || 'No se pudo guardar'); return; }
+        aviso('Configuración de notificaciones guardada', 'aviso-ok');
+        pintarConfigNotif(d);
+      })
+      .catch(function (e) { aviso(e.message); })
+      .then(function () { if (boton) boton.disabled = false; });
+  }
+
+  function detectarChats() {
+    var caja = $('#tg-chats');
+    caja.innerHTML = '<p class="tenue">Consultando a Telegram…</p>';
+    // Primero se guarda (por si se acaba de pegar el token).
+    guardarConfigNotif().then(function () {
+      return fetch('/api/notificaciones/telegram-chats', { credentials: 'same-origin' });
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) { caja.innerHTML = '<p class="aviso-inline">' + esc(d.error) + '</p>'; return; }
+        if (!(d.chats || []).length) {
+          caja.innerHTML = '<p class="aviso-inline">El bot no tiene mensajes: escríbele algo (por ejemplo ' +
+            '/start) desde tu Telegram y vuelve a pulsar «Detectar».</p>';
+          return;
+        }
+        caja.innerHTML = '<p class="sub">Toca uno para agregarlo:</p>' + d.chats.map(function (c) {
+          return '<button class="boton mini" type="button" data-chat="' + esc(c.id) + '">' +
+            esc(c.nombre || c.id) + ' · ' + esc(c.tipo) + ' · ' + esc(c.id) + '</button>';
+        }).join(' ');
+      })
+      .catch(function (e) { caja.innerHTML = '<p class="aviso-inline">' + esc(e.message) + '</p>'; });
+  }
+
+  function revisarAhora(boton) {
+    if (boton) boton.disabled = true;
+    fetch('/api/notificaciones/revisar', { method: 'POST', credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function () {
+        aviso('Revisión hecha. Las alertas nuevas se envían cuando se confirman en revisiones seguidas.', 'aviso-ok');
+        cargarNotificaciones();
+      })
+      .catch(function (e) { aviso(e.message); })
+      .then(function () { if (boton) boton.disabled = false; });
+  }
+
+  // ------------------------------------------------------ menú en el celular
+  function prepararCabeceraMovil() {
+    var der = document.querySelector('.cabecera-der');
+    if (!der || $('#btn-menu-movil')) return;
+    var boton = document.createElement('button');
+    boton.id = 'btn-menu-movil';
+    boton.type = 'button';
+    boton.className = 'boton secundario boton-menu-movil';
+    boton.setAttribute('aria-label', 'Menú');
+    boton.innerHTML = '&#9776;';
+    der.appendChild(boton);
+  }
+
+  function iniciarNotificaciones() {
+    prepararCabeceraMovil();
+    if (!$('#btn-campana')) return;
+    cargarNotificaciones();
+    estadoPush();
+    if (notif.poll) clearInterval(notif.poll);
+    notif.poll = setInterval(function () {
+      if (!document.hidden) cargarNotificaciones();
+    }, 60000);
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden) cargarNotificaciones();
+    });
+    if (navigator.serviceWorker) {
+      navigator.serviceWorker.addEventListener('message', function (e) {
+        if (e.data && e.data.tipo === 'notificacion') cargarNotificaciones();
+      });
+    }
+    if (MODO === 'notificaciones') {
+      estadoInstalar();
+      cargarConfigNotif();
+      var tarea = (location.search.match(/[?&]tarea=([^&]+)/) || [])[1];
+      if (tarea) verTarea(decodeURIComponent(tarea));
+    }
+  }
+
   function iniciar() {
     // Un solo manejador delegado: si algo falla, no se cae el resto del panel.
     document.addEventListener('click', function (e) {
       var el = e.target;
       try {
+        // Controles con ícono o texto dentro: se toma el botón o enlace que lo contiene.
+        var contenedor = el.closest && el.closest('button, a');
+        if (contenedor && contenedor !== el && (contenedor.id || contenedor.hasAttribute('data-probar') ||
+            contenedor.hasAttribute('data-chat') || contenedor.hasAttribute('data-notif'))) {
+          el = contenedor;
+        }
+        if (el.id === 'btn-campana') return alternarPanelNotif();
+        if (!el.closest('.campana') && $('#panel-notif') && !$('#panel-notif').classList.contains('oculto')) {
+          alternarPanelNotif(true);
+        }
+        if (el.id === 'btn-menu-movil') {
+          return document.querySelector('.cabecera').classList.toggle('abierta');
+        }
+        if (el.hasAttribute && el.hasAttribute('data-notif')) {
+          marcarLeidas([el.getAttribute('data-notif')]);
+          return;   // el enlace sigue su curso
+        }
+        if (el.id === 'btn-notif-leidas' || el.id === 'btn-notif-leidas-todas') return marcarLeidas(null);
+        if (el.id === 'btn-notif-borrar') {
+          if (!window.confirm('¿Vaciar todo el historial de notificaciones?')) return;
+          return fetch('/api/notificaciones/borrar', { method: 'POST', credentials: 'same-origin' })
+            .then(cargarNotificaciones);
+        }
+        if (el.id === 'btn-push-rapido' || el.id === 'btn-push-activar') return activarPush();
+        if (el.id === 'btn-push-desactivar') return desactivarPush();
+        if (el.id === 'btn-push-probar') return probarCanal('push', el);
+        if (el.hasAttribute && el.hasAttribute('data-probar')) {
+          // Se guarda antes para probar con lo que está escrito en el formulario.
+          var canal = el.getAttribute('data-probar');
+          return guardarConfigNotif(el).then(function () { return probarCanal(canal, el); });
+        }
+        if (el.id === 'btn-instalar-app' && notif.instalar) {
+          notif.instalar.prompt();
+          return notif.instalar.userChoice.then(function () { notif.instalar = null; estadoInstalar(); });
+        }
+        if (el.id === 'btn-guardar-notif') return guardarConfigNotif(el);
+        if (el.id === 'btn-tg-detectar') return detectarChats();
+        if (el.hasAttribute && el.hasAttribute('data-chat')) {
+          var chats = $('#t-chats').value.split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+          if (chats.indexOf(el.getAttribute('data-chat')) === -1) chats.push(el.getAttribute('data-chat'));
+          $('#t-chats').value = chats.join(', ');
+          aviso('Chat agregado: pulsa «Guardar configuración» o «Enviar prueba».', 'aviso-info');
+          return;
+        }
+        if (el.id === 'btn-revisar-ahora') return revisarAhora(el);
         if (el.id === 'btn-refrescar') return refrescar({}, el);
         if (el.id === 'btn-media') return refrescar({ media: true }, el);
         var sufijo = (MODO === 'excluidos') ? '?ocultas=1' : '';
@@ -2093,24 +3026,36 @@
           return pintarFilasCert();
         }
         if (el.id === 'btn-backups-recargar') { verBackups(); return verBases(); }
+        if (el.id === 'btn-consumo-recargar') return medirConsumo();
+        if (el.id === 'btn-carpetas-medir') return medirCarpetas(true);
         if (el.id === 'btn-backup-todos') return crearBackup(null);
         if (el.classList.contains('backup-crear')) return crearBackup([el.getAttribute('data-id')]);
         if (el.classList.contains('backup-ver')) return verCopias(el.getAttribute('data-cliente'));
         if (el.classList.contains('backup-borrar')) return borrarBackup(el.getAttribute('data-archivo'));
+        if (el.classList.contains('backup-verificar')) {
+          return lanzarTarea('/api/backups/verificar', { archivo: el.getAttribute('data-archivo') });
+        }
+        if (el.classList.contains('base-detalle')) return verDetalleBase(el.getAttribute('data-base'));
         if (el.classList.contains('backup-base')) return crearBackupBase(el.getAttribute('data-base'));
         if (el.classList.contains('cert-accion')) {
           return accionCertificado(el.getAttribute('data-nombre'), el.getAttribute('data-accion'));
         }
         if (el.classList.contains('renovar-cert')) {
           return renovarCertificado(el.getAttribute('data-nombre'),
-                                    el.getAttribute('data-simular') === '1', false);
+                                    el.getAttribute('data-simular') === '1',
+                                    el.getAttribute('data-forzar') === '1');
         }
+        if (el.classList.contains('emitir-cert')) {
+          return emitirCertificado(el.getAttribute('data-dominio'), el.getAttribute('data-servidor'));
+        }
+        if (el.classList.contains('servidor-web')) return servidorWeb(el.getAttribute('data-modo'));
         if (el.id === 'nueva-cerrar' || el.id === 'modal-nueva') return $('#modal-nueva').classList.add('oculto');
         if (el.id === 'tarea-cerrar' || el.id === 'modal-tarea') {
           if (tareaPoll) { clearInterval(tareaPoll); tareaPoll = null; }
           return $('#modal-tarea').classList.add('oculto');
         }
         if (el.id === 'btn-validar') return validarAlta();
+        if (el.id === 'btn-diagnostico') return diagnosticarEntorno();
         if (el.id === 'btn-simular') return crearInstancia(true);
         if (el.id === 'btn-crear') return crearInstancia(false);
         if (el.id === 'btn-deshacer') return deshacerTarea(el.getAttribute('data-id'));
@@ -2205,6 +3150,11 @@
            'filtro-ocultos'].indexOf(el.id) !== -1) return pintarTabla();
       if (el.id === 'filtro-backup-estado') return pintarBackups();
       if (el.id === 'solo-sin-uso') return pintarBases();
+      if (el.id === 'consumo-auto') return programarConsumo();
+      if (el.id === 'filtro-notif-nivel') return pintarPaginaNotif();
+      if (el.id === 'orden-consumo-inst') return pintarConsumoInstancias();
+      if (el.id === 'filtro-servicio-cat') return pintarServicios();
+      if (el.id === 'procesos-por') return pintarProcesos();
       if (el.id === 'filtro-cert-estado') { estadoCert.estado = el.value; return pintarFilasCert(); }
       if (el.classList.contains('ver-en-panel')) return alternarVisibilidad(el);
       if (el.hasAttribute && el.hasAttribute('data-grupo')) {
@@ -2220,24 +3170,34 @@
       }
       if (['filtro-backups', 'filtro-backup-estado'].indexOf(e.target.id) !== -1) pintarBackups();
       if (e.target.id === 'filtro-cert') { estadoCert.filtro = e.target.value; pintarFilasCert(); }
+      if (e.target.id === 'filtro-consumo-inst') pintarConsumoInstancias();
     });
 
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape') {
-        $('#modal').classList.add('oculto');
-        if ($('#modal-campo')) $('#modal-campo').classList.add('oculto');
-        $('#modal-nueva').classList.add('oculto');
+        if (document.querySelector('.cabecera')) document.querySelector('.cabecera').classList.remove('abierta');
+        ['#modal', '#modal-campo', '#modal-nueva', '#modal-tarea', '#panel-notif'].forEach(function (sel) {
+          if ($(sel)) $(sel).classList.add('oculto');
+        });
         if (tareaPoll) { clearInterval(tareaPoll); tareaPoll = null; }
-        $('#modal-tarea').classList.add('oculto');
       }
     });
 
+    iniciarNotificaciones();
+    if (MODO === 'notificaciones') {
+      cargarCapacidades();
+      return;
+    }
     if (MODO === 'certificados') {
       cargarCapacidades().then(function () { verCertificados('#contenido'); });
       return;
     }
     if (MODO === 'backups') {
       cargarCapacidades().then(function () { verBackups(); verBases(); });
+      return;
+    }
+    if (MODO === 'consumo') {
+      cargarCapacidades().then(function () { medirConsumo(); consumoBases(); });
       return;
     }
     if (MODO === 'nueva') {

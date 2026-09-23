@@ -2,13 +2,27 @@
 <html lang="es">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>{% block title %}{{ titulo }}{% endblock %}</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🖥️</text></svg>">
+  <meta name="theme-color" content="#12325f">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Panel VPS">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='iconos/apple-touch-icon.png') }}">
+  <link rel="icon" type="image/png" href="{{ url_for('static', filename='iconos/icono-192.png') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}?v={{ version }}">
 </head>
 <body class="{% block body_class %}{% endblock %}">
 {% block contenido %}{% endblock %}
 {% block scripts %}{% endblock %}
+<script>
+  // App instalable y notificaciones push: el service worker sólo funciona con
+  // HTTPS (o en localhost).
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+    navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(function () {});
+  }
+</script>
 </body>
 </html>

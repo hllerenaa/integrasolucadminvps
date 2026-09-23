@@ -1,0 +1,19 @@
+<div class="campana">
+  <button id="btn-campana" class="boton secundario boton-campana" type="button"
+          title="Notificaciones" aria-label="Notificaciones">
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor"
+      d="M12 22a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 22zm7-6V11a7 7 0 0 0-5.5-6.84V3.5a1.5 1.5 0 0 0-3 0v.66A7 7 0 0 0 5 11v5l-2 2v1h18v-1z"/></svg>
+    <span id="campana-contador" class="campana-contador oculto">0</span>
+  </button>
+  <div id="panel-notif" class="panel-notif oculto" role="dialog" aria-label="Notificaciones">
+    <div class="panel-notif-cabecera">
+      <strong>Notificaciones</strong>
+      <button class="boton mini" type="button" id="btn-notif-leidas">Marcar leídas</button>
+    </div>
+    <div id="lista-notif" class="lista-notif"><p class="tenue">Cargando…</p></div>
+    <div class="panel-notif-pie">
+      <button class="boton mini oculto" type="button" id="btn-push-rapido">🔔 Recibir en este dispositivo</button>
+      <a class="boton mini" href="/notificaciones">Ver todas y configurar</a>
+    </div>
+  </div>
+</div>

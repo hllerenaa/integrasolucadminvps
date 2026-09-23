@@ -12,7 +12,7 @@ import os
 import re
 import shutil
 
-from .utils import ejecutar
+from .utils import ejecutar, revisar_dns
 
 RUTA_LIVE = '/etc/letsencrypt/live'
 RUTA_RENOVACION = '/etc/letsencrypt/renewal'
@@ -22,6 +22,7 @@ _RE_NOMBRE = re.compile(r'^\s*Certificate Name:\s*(.+)$', re.M)
 _RE_DOMINIOS = re.compile(r'^\s*Domains:\s*(.+)$', re.M)
 _RE_VENCE = re.compile(r'^\s*Expiry Date:\s*(\S+ \S+)', re.M)
 _RE_RUTA = re.compile(r'^\s*Certificate Path:\s*(.+)$', re.M)
+RE_DOMINIO = re.compile(r'^(?=.{4,253}$)[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$')
 
 
 def _fechas_openssl(ruta):
@@ -251,7 +252,29 @@ def listar(config=None, instancias=None):
         cert['cliente'] = (inst or {}).get('cliente')
 
     certificados.sort(key=lambda c: (c['dias'] if c['dias'] is not None else 99999))
+
+    # Instancias con dominio que ningún certificado de Let's Encrypt cubre:
+    # son las candidatas a «Emitir certificado».
+    cubiertos = {d.lower() for c in certificados for d in c.get('dominios') or []}
+    sin_certificado = []
+    for inst in (instancias or []):
+        dominio = (inst.get('dominio') or '').lower()
+        if not dominio or dominio in cubiertos or not RE_DOMINIO.match(dominio):
+            continue
+        web = inst.get('apache') or {}
+        if not web.get('archivo'):
+            continue     # sin vhost certbot no tiene dónde instalarlo
+        sin_certificado.append({
+            'id': inst.get('id'), 'cliente': inst.get('cliente'), 'tipo': inst.get('tipo'),
+            'dominio': dominio, 'servidor': web.get('servidor') or 'apache',
+            'ssl': (inst.get('ssl') or {}).get('estado'),
+            'oculta': bool(inst.get('oculta')),
+        })
+    sin_certificado.sort(key=lambda f: f['cliente'] or '')
+
     return {
+        'sin_certificado': sin_certificado,
+        'automatica': renovacion_automatica(),
         'certificados': certificados,
         'origen': origen,
         'total': len(certificados),
@@ -260,8 +283,92 @@ def listar(config=None, instancias=None):
     }
 
 
+def renovacion_automatica():
+    """Si hay algo que renueve solo: el timer de systemd o el cron de certbot."""
+    datos = {'timer': None, 'timer_activo': False, 'proxima': None, 'ultima': None,
+             'cron': None}
+    for timer in ('certbot.timer', 'snap.certbot.renew.timer'):
+        codigo, salida, _ = ejecutar(
+            ['systemctl', 'show', timer, '--no-pager',
+             '--property=LoadState,ActiveState,NextElapseUSecRealtime,LastTriggerUSec'],
+            timeout=10)
+        if codigo != 0 or not salida:
+            continue
+        valores = dict(l.split('=', 1) for l in salida.splitlines() if '=' in l)
+        if valores.get('LoadState') in (None, '', 'not-found', 'masked'):
+            continue
+        datos.update({'timer': timer, 'timer_activo': valores.get('ActiveState') == 'active',
+                      'proxima': (valores.get('NextElapseUSecRealtime') or '').strip() or None,
+                      'ultima': (valores.get('LastTriggerUSec') or '').strip() or None})
+        break
+    if os.path.isfile('/etc/cron.d/certbot'):
+        datos['cron'] = '/etc/cron.d/certbot'
+    datos['activa'] = bool(datos['timer_activo'] or datos['cron'])
+    return datos
+
+
+def _vencimiento(nombre):
+    """Fecha de vencimiento actual del certificado (texto) o None."""
+    ruta = os.path.join(RUTA_LIVE, nombre, 'fullchain.pem')
+    vence = _fechas_openssl(ruta).get('vence')
+    return vence.strftime('%Y-%m-%d %H:%M') if vence else None
+
+
+def _servidores_activos(tarea):
+    activos = []
+    for demonio in ('apache2', 'nginx'):
+        codigo, _salida = tarea.ejecutar(['systemctl', 'is-active', '--quiet', demonio],
+                                         critico=False)
+        if codigo == 0:
+            activos.append(demonio)
+    return activos
+
+
+def recargar_web(tarea, config, modo='recargar', servidor=None):
+    """Valida la configuración y recarga (o reinicia) Apache/nginx.
+
+    Nunca se recarga una configuración que no pasa la prueba: un reload con
+    errores deja caído el servidor web y con él todas las instancias.
+    """
+    verbo = 'restart' if modo == 'reiniciar' else 'reload'
+    demonios = [servidor] if servidor else _servidores_activos(tarea)
+    if not demonios:
+        tarea.log('Ni apache2 ni nginx están activos: no hay nada que recargar', 'aviso')
+        return True
+    todo_ok = True
+    for demonio in demonios:
+        indice = tarea.paso('%s %s' % ('Reiniciar' if verbo == 'restart' else 'Recargar', demonio))
+        prueba = ['nginx', '-t'] if demonio == 'nginx' else ['apache2ctl', 'configtest']
+        codigo, _salida = tarea.ejecutar(prueba, critico=False, timeout=60)
+        if codigo != 0:
+            tarea.paso_error(indice, 'La configuración de %s tiene errores: no se toca' % demonio)
+            todo_ok = False
+            continue
+        codigo, _salida = tarea.ejecutar(['systemctl', verbo, demonio], critico=False, timeout=120)
+        if codigo != 0:
+            tarea.paso_error(indice, 'systemctl %s %s devolvió %s' % (verbo, demonio, codigo))
+            todo_ok = False
+            continue
+        codigo, salida = tarea.ejecutar(['systemctl', 'is-active', demonio], critico=False)
+        if codigo == 0:
+            tarea.paso_ok(indice, '%s activo' % demonio)
+        else:
+            tarea.paso_error(indice, '%s quedó %s' % (demonio, (salida or 'inactivo').strip()))
+            todo_ok = False
+    if not todo_ok:
+        tarea.estado = 'error'
+    return todo_ok
+
+
 def renovar(tarea, config, nombre=None, forzar=False, simular=False):
-    """Renueva uno o todos los certificados. Pensado para GestorTareas."""
+    """Renueva uno o todos los certificados. Pensado para GestorTareas.
+
+    Se compara el vencimiento antes y después para decir si de verdad se
+    renovó: certbot termina bien aunque no haga nada (falta más de 30 días).
+    """
+    nombres = [nombre] if nombre else [c['nombre'] for c in listar(config)['certificados']]
+    antes = {n: _vencimiento(n) for n in nombres}
+
     comando = ['certbot', 'renew']
     if nombre:
         comando += ['--cert-name', nombre]
@@ -280,11 +387,60 @@ def renovar(tarea, config, nombre=None, forzar=False, simular=False):
         tarea.estado = 'error'
         return
 
-    if not simular:
-        indice = tarea.paso('Recargar el servidor web')
-        for demonio in ('apache2', 'nginx'):
-            codigo_activo, _salida = tarea.ejecutar(['systemctl', 'is-active', demonio],
-                                                    critico=False)
-            if codigo_activo == 0:
-                tarea.ejecutar(['systemctl', 'reload', demonio], critico=False)
+    if simular:
+        tarea.log('Prueba correcta: la renovación real funcionaría.', 'ok')
+        return
+
+    indice = tarea.paso('Comprobar las fechas de vencimiento')
+    renovados = []
+    for n in nombres:
+        despues = _vencimiento(n)
+        if despues and despues != antes.get(n):
+            renovados.append(n)
+            tarea.log('  %s: vencía %s → ahora vence %s' % (n, antes.get(n) or '?', despues), 'ok')
+        elif nombre:
+            tarea.log('  %s sigue venciendo %s: certbot no lo renovó (sólo renueva cuando '
+                      'faltan menos de 30 días; usa «Forzar» si hace falta ya)'
+                      % (n, despues or '?'), 'aviso')
+    tarea.datos['renovados'] = renovados
+    tarea.paso_ok(indice, '%s certificado(s) renovado(s)' % len(renovados))
+
+    if renovados:
+        recargar_web(tarea, config)
+    else:
+        tarea.log('No cambió ningún certificado: no hace falta recargar el servidor web.')
+
+
+def emitir(tarea, config, dominio, servidor='apache', correo='', redirigir=True):
+    """Emite un certificado nuevo con el plugin de Apache o nginx de certbot."""
+    dominio = (dominio or '').strip().lower()
+    if not RE_DOMINIO.match(dominio):
+        tarea.log('Dominio inválido: %s' % dominio, 'error')
+        tarea.estado = 'error'
+        return
+
+    indice = tarea.paso('Comprobar que %s apunta a este servidor' % dominio)
+    dns = revisar_dns(dominio)
+    if dns['ok']:
+        tarea.paso_ok(indice, dns['mensaje'])
+    elif not dns['ips']:
+        tarea.paso_error(indice, dns['mensaje'])
+        tarea.estado = 'error'
+        return
+    else:
         tarea.paso_ok(indice)
+        tarea.log('  ' + dns['mensaje'], 'aviso')
+
+    plugin = '--nginx' if servidor == 'nginx' else '--apache'
+    comando = ['certbot', plugin, '-d', dominio, '--non-interactive', '--agree-tos']
+    comando += ['--redirect'] if redirigir else ['--no-redirect']
+    comando += ['-m', correo] if correo else ['--register-unsafely-without-email']
+    indice = tarea.paso('Emitir el certificado de %s' % dominio)
+    codigo, _salida = tarea.ejecutar(comando, timeout=600, critico=False)
+    if codigo != 0:
+        tarea.paso_error(indice, 'certbot devolvió el código %s' % codigo)
+        tarea.estado = 'error'
+        return
+    vence = _vencimiento(dominio)
+    tarea.paso_ok(indice, 'Certificado emitido%s' % (' (vence %s)' % vence if vence else ''))
+    recargar_web(tarea, config, servidor='nginx' if servidor == 'nginx' else 'apache2')

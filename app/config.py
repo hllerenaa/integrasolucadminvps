@@ -77,6 +77,9 @@ DEFAULTS = {
         'usuarios': [],
     },
     'session_cookie_secure': False,
+    # Días que dura la sesión (en el celular, con la app instalada, evita
+    # tener que ingresar cada vez que se abre).
+    'sesion_dias': 30,
     'secret_key': '',
 }
 

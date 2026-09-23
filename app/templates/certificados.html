@@ -7,6 +7,7 @@
     {% include "_nav.html" %}
   </div>
   <div class="cabecera-der">
+    {% include "_campana.html" %}
     <button id="btn-cert-recargar" class="boton secundario" type="button">Recargar</button>
     <button id="btn-tareas" class="boton secundario" type="button">Tareas</button>
     {% if auth_activa %}<a class="boton secundario" href="/logout">Salir</a>{% endif %}

@@ -143,6 +143,8 @@ class GestorTareas(object):
         self._tareas = {}
         self._orden = []
         self._lock = threading.Lock()
+        # Función opcional que se llama al terminar cada tarea (notificaciones).
+        self.al_terminar = None
 
     def crear(self, tipo, titulo, datos=None, usuario=None):
         tarea = Tarea(tipo, titulo, self.config, datos)
@@ -184,6 +186,11 @@ class GestorTareas(object):
             finally:
                 tarea.fin = ahora_iso()
                 tarea._persistir()
+                if self.al_terminar:
+                    try:
+                        self.al_terminar(tarea)
+                    except Exception:  # pragma: no cover - avisar nunca rompe la tarea
+                        pass
 
         hilo = threading.Thread(target=envoltura, name='tarea-%s' % tarea.id, daemon=True)
         hilo.start()

@@ -99,3 +99,42 @@ def ejecutar(comando, timeout=15):
         return (127, '', 'comando no encontrado: %s' % comando[0])
     except Exception as ex:  # pragma: no cover - defensivo
         return (1, '', str(ex))
+
+
+def ips_del_servidor():
+    """Direcciones IP propias del servidor (las de sus interfaces)."""
+    import socket
+    ips = set()
+    codigo, salida, _ = ejecutar(['hostname', '-I'], timeout=5)
+    if codigo == 0:
+        ips.update(p for p in (salida or '').split() if p)
+    try:
+        ips.update(info[4][0] for info in socket.getaddrinfo(socket.gethostname(), None))
+    except Exception:
+        pass
+    return sorted(ip for ip in ips if not ip.startswith('127.') and ip != '::1')
+
+
+def resolver_dominio(dominio):
+    """IPs a las que apunta un dominio en el DNS (lista vacía si no resuelve)."""
+    import socket
+    try:
+        return sorted({info[4][0] for info in socket.getaddrinfo(dominio, None)})
+    except Exception:
+        return []
+
+
+def revisar_dns(dominio):
+    """¿El dominio apunta a este servidor? Necesario para que certbot funcione."""
+    ips = resolver_dominio(dominio)
+    propias = ips_del_servidor()
+    if not ips:
+        return {'ok': False, 'ips': [], 'propias': propias,
+                'mensaje': 'El dominio %s no resuelve en el DNS' % dominio}
+    if propias and not set(ips) & set(propias):
+        return {'ok': False, 'ips': ips, 'propias': propias,
+                'mensaje': '%s apunta a %s y este servidor es %s (puede ser un proxy '
+                           'como Cloudflare; si no, certbot fallará)'
+                           % (dominio, ', '.join(ips), ', '.join(propias))}
+    return {'ok': True, 'ips': ips, 'propias': propias,
+            'mensaje': '%s apunta a este servidor (%s)' % (dominio, ', '.join(ips))}
