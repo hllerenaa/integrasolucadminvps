@@ -529,6 +529,32 @@
     }).join('') + '<th></th>';
   }
 
+  // Cada tarjeta cuenta con el mismo criterio con que filtra: «27 activos»
+  // + «7 no activos» son siempre las 34 instancias.
+  function atiende(i) { return !!(i.resumen || {}).atiende; }
+  var FILTROS_SERVICIO = {
+    'activo': atiende,
+    'no-activo': function (i) { return !atiende(i); },
+    'inactivo': function (i) {
+      var se = i.servicio_estado || {};
+      return !atiende(i) && se.existe && se.estado !== 'failed';
+    },
+    'fallido': function (i) { return !atiende(i) && (i.servicio_estado || {}).estado === 'failed'; },
+    'sin-unidad': function (i) { return !atiende(i) && !(i.servicio_estado || {}).existe; },
+    'socket': function (i) { return !!((i.socket || {}).activo && !(i.servicio_estado || {}).activo); }
+  };
+  var FILTROS_ESTADO = {
+    'servicio-inactivo': function (i) { return !atiende(i); },
+    'sitio-activo': function (i) { return !!(i.apache || {}).habilitado; },
+    'sitio-desactivado': function (i) { return !(i.apache || {}).habilitado; },
+    'ssl-vigente': function (i) { return (i.ssl || {}).estado === 'vigente'; },
+    'ssl-no-vigente': function (i) { return (i.ssl || {}).estado !== 'vigente'; },
+    'url-ok': function (i) { return !!(i.url_estado || {}).responde; },
+    'url-caida': function (i) { return !(i.url_estado || {}).responde; },
+    'db-ok': function (i) { return !!(i.resumen || {}).db_ok; },
+    'db-caida': function (i) { return !(i.resumen || {}).db_ok; }
+  };
+
   function filtrar(lista) {
     var txt = ($('#filtro-texto').value || '').toLowerCase().trim();
     var tipo = $('#filtro-tipo').value;
@@ -542,15 +568,7 @@
       if (tipo && i.tipo !== tipo) return false;
       if (ocultos === 'si' && !i.oculta) return false;
       if (ocultos === 'no' && i.oculta) return false;
-      if (serv) {
-        var se = (i.servicio_estado || {});
-        var sk = (i.socket || {});
-        if (serv === 'activo' && !se.activo) return false;
-        if (serv === 'inactivo' && (se.activo || se.estado === 'failed' || !se.existe)) return false;
-        if (serv === 'fallido' && se.estado !== 'failed') return false;
-        if (serv === 'sin-unidad' && se.existe) return false;
-        if (serv === 'socket' && !(sk.activo && !se.activo)) return false;
-      }
+      if (serv && !(FILTROS_SERVICIO[serv] || function () { return true; })(i)) return false;
       if (api === 'si' && !r.api_cedula) return false;
       if (api === 'no' && r.api_cedula !== false) return false;
       if (api === 'nd' && r.api_cedula_disponible) return false;
@@ -560,12 +578,9 @@
       }
       if (est === 'oculta' && !i.oculta) return false;
       if (est === 'visible' && i.oculta) return false;
-      if (est === 'servicio-inactivo' && r.servicio_activo) return false;
-      if (est === 'db-caida' && r.db_ok !== false) return false;
-      if (est === 'sitio-desactivado' && r.apache_habilitado !== false) return false;
+      if (FILTROS_ESTADO[est] && !FILTROS_ESTADO[est](i)) return false;
       if (est === 'ssl-problema' &&
           ['vencido', 'por-vencer', 'autofirmado'].indexOf(r.ssl_estado) === -1) return false;
-      if (est === 'url-caida' && r.url_responde !== false) return false;
       if (est === 'dominio-viejo' && !r.dominio_desactualizado) return false;
       if (est === 'dominio-compartido' && !r.dominio_compartido) return false;
       if (est === 'sin-ruc-proveedor' &&
@@ -641,15 +656,20 @@
           .concat(r.ocultas ? [r.ocultas + ' oculta' + (r.ocultas === 1 ? '' : 's')] : [])
           .join(' · ') },
       { rotulo: 'Servicios activos', valor: (r.servicios_activos || 0) + '/' + (r.total || 0),
-        clase: r.servicios_inactivos ? 'mal' : 'ok', filtroServicio: 'inactivo' },
-      { rotulo: 'Sitios Apache', valor: (r.sitios_habilitados || 0) + '/' + (r.total || 0),
-        filtro: 'sitio-desactivado' },
+        clase: r.servicios_inactivos ? 'mal' : 'ok',
+        chips: parChips('servicio', 'activo', 'no-activo', r.servicios_activos, r.total,
+                        'activos', 'no activos') },
+      { rotulo: 'Sitios web', valor: (r.sitios_habilitados || 0) + '/' + (r.total || 0),
+        chips: parChips('estado', 'sitio-activo', 'sitio-desactivado', r.sitios_habilitados, r.total,
+                        'habilitados', 'deshabilitados') },
       { rotulo: 'SSL vigentes', valor: (r.ssl_vigentes || 0) + '/' + (r.total || 0),
-        clase: r.ssl_alerta ? 'mal' : 'ok', filtro: 'ssl-problema',
-        extra: r.ssl_alerta ? r.ssl_alerta + ' con problema' : '' }
+        clase: r.ssl_alerta ? 'mal' : 'ok',
+        chips: parChips('estado', 'ssl-vigente', 'ssl-no-vigente', r.ssl_vigentes, r.total,
+                        'vigentes', 'no vigentes') }
     ];
     if (cap.url) t.push({ rotulo: 'URLs respondiendo', valor: (r.urls_ok || 0) + '/' + (r.total || 0),
-      clase: (r.urls_ok === r.total) ? 'ok' : 'mal', filtro: 'url-caida' });
+      clase: (r.urls_ok === r.total) ? 'ok' : 'mal',
+      chips: parChips('estado', 'url-ok', 'url-caida', r.urls_ok, r.total, 'responden', 'no responden') });
     if (r.dominios_desactualizados) t.push({ rotulo: 'Dominios desactualizados',
       valor: r.dominios_desactualizados, clase: 'mal', filtro: 'dominio-viejo',
       extra: 'credenciales.json vs Apache' });
@@ -675,7 +695,8 @@
     }
     if (cap.bd) {
       t.push({ rotulo: 'Bases activas', valor: (r.db_activas || 0) + '/' + (r.total || 0),
-        clase: r.db_caidas ? 'mal' : 'ok', filtro: 'db-caida' });
+        clase: r.db_caidas ? 'mal' : 'ok',
+        chips: parChips('estado', 'db-ok', 'db-caida', r.db_activas, r.total, 'accesibles', 'caídas') });
       t.push({ rotulo: 'Tamaño total BD', valor: r.db_tamano || '-' });
     }
     var web = estado.servidoresWeb || {};
@@ -706,6 +727,12 @@
                         (r.ocupa_tamano ? ' · instancias ' + r.ocupa_tamano : '')) : '' });
 
     $('#tarjetas').innerHTML = t.map(function (x) {
+      if (x.chips) {
+        return '<div class="tarjeta tarjeta-doble ' + (x.clase || '') + '">' +
+          '<div class="rotulo">' + esc(x.rotulo) + '</div>' +
+          '<div class="valor">' + esc(x.valor) + '</div>' +
+          '<div class="chips-tarjeta">' + x.chips + '</div></div>';
+      }
       var extraAttr = x.filtro ? ' clicable" data-filtro="' + x.filtro
                     : (x.filtroApi ? ' clicable" data-filtro-api="' + x.filtroApi
                     : (x.filtroUso ? ' clicable" data-filtro-uso="' + x.filtroUso
@@ -715,6 +742,32 @@
         '<div class="valor">' + esc(x.valor) + '</div>' +
         (x.extra ? '<div class="rotulo">' + esc(x.extra) + '</div>' : '') + '</div>';
     }).join('');
+  }
+
+  // Dos botones por tarjeta: los que están bien y los que no, cada uno filtra.
+  function parChips(control, filtroSi, filtroNo, cuantosSi, total, textoSi, textoNo) {
+    var si = cuantosSi || 0, no = Math.max(0, (total || 0) - si);
+    var actual = control === 'servicio' ? ($('#filtro-servicio') || {}).value : ($('#filtro-estado') || {}).value;
+    var chip = function (filtro, n, texto, clase) {
+      return '<button type="button" class="chip-filtro ' + clase + (actual === filtro ? ' elegido' : '') +
+        '" data-control="' + control + '" data-valor="' + filtro + '"' +
+        (n ? '' : ' disabled') + ' title="Mostrar sólo estas instancias">' +
+        (clase === 'si' ? '✔ ' : '✖ ') + n + ' ' + esc(texto) + '</button>';
+    };
+    return chip(filtroSi, si, textoSi, 'si') + chip(filtroNo, no, textoNo, 'no');
+  }
+
+  function aplicarChip(boton) {
+    var control = boton.getAttribute('data-control'), valor = boton.getAttribute('data-valor');
+    var sel = control === 'servicio' ? $('#filtro-servicio') : $('#filtro-estado');
+    if (!sel) return;
+    var yaElegido = boton.classList.contains('elegido');
+    // Un filtro por vez desde las tarjetas; otro clic en el mismo lo quita.
+    if ($('#filtro-servicio')) $('#filtro-servicio').value = '';
+    $('#filtro-estado').value = '';
+    sel.value = yaElegido ? '' : valor;
+    pintarTarjetas();
+    pintarTabla();
   }
 
   function pintarControles() {
@@ -3222,6 +3275,7 @@
           return ejecutarAccion(el.closest('.acciones').getAttribute('data-id'),
                                 el.getAttribute('data-accion'), el);
         }
+        if (el.classList.contains('chip-filtro')) return aplicarChip(el);
         var tarjeta = el.closest('.tarjeta.clicable');
         if (tarjeta) {
           if (tarjeta.getAttribute('data-filtro-api') && $('#filtro-api')) {
@@ -3261,7 +3315,8 @@
       if (el.id === 'auto-refresco') return programarAuto();
       if (el.id === 'orden') { estado.orden = el.value; return pintarTabla(); }
       if (['filtro-api', 'filtro-uso', 'filtro-servicio',
-           'filtro-ocultos'].indexOf(el.id) !== -1) return pintarTabla();
+           'filtro-ocultos'].indexOf(el.id) !== -1) { pintarTarjetas(); return pintarTabla(); }
+      if (el.id === 'filtro-estado') { pintarTarjetas(); return pintarTabla(); }
       if (el.id === 'filtro-backup-estado') return pintarBackups();
       if (el.id === 'solo-sin-uso') return pintarBases();
       if (el.id === 'consumo-auto') return programarConsumo();

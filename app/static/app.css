@@ -362,3 +362,14 @@ tr.fila-oculta .cliente{text-decoration:line-through;text-decoration-color:var(-
 .item-alerta.nivel-error{border-left-color:var(--rojo);background:#fff8f8}
 .item-alerta:hover{background:#f2f7ff;text-decoration:none}
 .ver-alerta{margin-left:auto;color:var(--azul);font-size:12.5px;white-space:nowrap;align-self:center}
+
+/* ------------------------------------- tarjetas con filtro activos / no activos */
+.chips-tarjeta{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
+.chip-filtro{border:1px solid var(--borde);background:#f7f9fc;border-radius:14px;padding:3px 9px;
+  font:inherit;font-size:11.5px;font-weight:600;cursor:pointer;color:var(--texto);white-space:nowrap}
+.chip-filtro.si{color:var(--verde)}
+.chip-filtro.no{color:var(--rojo)}
+.chip-filtro:hover{border-color:var(--azul);background:#eef4ff}
+.chip-filtro.elegido{background:var(--azul);border-color:var(--azul);color:#fff}
+.chip-filtro[disabled]{opacity:.45;cursor:default}
+@media (max-width:760px){.chip-filtro{padding:6px 10px;font-size:12.5px}}

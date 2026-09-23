@@ -67,6 +67,19 @@ eso funciona aunque el esquema varíe entre inventario y restaurante.
   `ssl-cert-snakeoil` de Apache) se marca **autofirmado**, para que no parezca
   un certificado válido de 10 años.
 
+## Tarjetas y filtros del listado
+
+Las tarjetas de **Servicios activos**, **Sitios web**, **SSL vigentes**, **URLs
+respondiendo** y **Bases activas** tienen dos botones: «✔ N activos» y «✖ N no
+activos» (o habilitados / deshabilitados, vigentes / no vigentes…). Cada uno
+filtra el listado exactamente a esas instancias, así que los dos números siempre
+suman el total; otro clic en el mismo botón quita el filtro.
+
+Un servicio cuenta como **activo** si atiende: su `.service` está corriendo o su
+`.socket` está escuchando. El selector de servicio desglosa los **no activos** en
+*detenido*, *fallido* y *sin servicio systemd*, y los activos que sólo atienden por
+socket.
+
 ## Secciones del panel
 
 | Sección | Para qué |
