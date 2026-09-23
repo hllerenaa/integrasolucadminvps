@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import functools
+import json
 import threading
 
 from flask import (Flask, Response, jsonify, redirect, render_template,
@@ -12,13 +13,14 @@ from flask import (Flask, Response, jsonify, redirect, render_template,
 from . import (__version__, acciones as mod_acciones, aprovisionar,
                backups as mod_backups, certificados as mod_certificados, consumo,
                credenciales as mod_credenciales, cron as mod_cron, dbstats,
-               discovery, excluidos as mod_excluidos, exportar, units)
-from flask import send_file
+               discovery, excluidos as mod_excluidos, exportar, units, webpush)
+from flask import send_file, send_from_directory
 
 from .utils import bytes_legible
 from .tareas import GestorTareas
 from .collector import Colector
 from .config import cargar
+from .notificaciones import Notificador
 
 
 def crear_app(config=None):
@@ -32,12 +34,17 @@ def crear_app(config=None):
     app.config['SESSION_COOKIE_SECURE'] = bool(config.get('session_cookie_secure'))
     app.config['SESSION_COOKIE_HTTPONLY'] = True
     app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+    app.config['PERMANENT_SESSION_LIFETIME'] = datetime.timedelta(
+        days=int(config.get('sesion_dias') or 30))
     app.config['PANEL'] = config
 
     colector = Colector(config)
     app.config['COLECTOR'] = colector
     tareas = GestorTareas(config)
     app.config['TAREAS'] = tareas
+    notificador = Notificador(config, colector)
+    app.config['NOTIFICADOR'] = notificador
+    tareas.al_terminar = notificador.tarea_terminada
 
     # --------------------------------------------------------------- seguridad
     def permisos():
@@ -106,10 +113,13 @@ def crear_app(config=None):
             password = request.form.get('password') or ''
             datos = config.autenticar(usuario, password)
             if datos:
+                session.permanent = True
                 session['usuario'] = datos['usuario']
                 session['ver_excluidos'] = bool(datos.get('ver_excluidos'))
                 session['gestionar_excluidos'] = bool(datos.get('gestionar_excluidos'))
                 destino = request.args.get('next') or url_for('dashboard')
+                if not destino.startswith('/') or destino.startswith('//'):
+                    destino = url_for('dashboard')
                 return redirect(destino)
             error = 'Usuario o contraseña incorrectos'
         return render_template('login.html', error=error, titulo=config.get('titulo'),
@@ -891,6 +901,158 @@ def crear_app(config=None):
             headers={'Content-Disposition': 'attachment; filename=%s' % nombre},
         )
 
+    # ------------------------------------------------------------ notificaciones
+    def requiere_administrar(vista):
+        """Tokens de Telegram y claves SMTP: sólo quien administra el panel."""
+        @functools.wraps(vista)
+        def envoltura(*args, **kwargs):
+            if not permisos()['gestionar_excluidos']:
+                return jsonify({'ok': False, 'error': 'Sólo un administrador del panel puede '
+                                                      'cambiar las notificaciones'}), 403
+            return vista(*args, **kwargs)
+        return envoltura
+
+    @app.before_request
+    def recordar_url_publica():
+        # Para los enlaces de Telegram/correo si no se configuró url_panel.
+        if session.get('usuario') and not request.path.startswith('/static'):
+            notificador.url_detectada = request.host_url.rstrip('/')
+
+    @app.route('/notificaciones')
+    @requiere_login
+    def pagina_notificaciones():
+        return render_template('notificaciones.html', seccion='notificaciones', permisos=permisos(),
+                               titulo=config.get('titulo'), version=__version__,
+                               auth_activa=bool((config.get('auth') or {}).get('enabled')))
+
+    @app.route('/api/notificaciones')
+    @requiere_login
+    def api_notificaciones():
+        try:
+            limite = min(300, int(request.args.get('limite') or 50))
+        except ValueError:
+            limite = 50
+        return jsonify(notificador.historial(limite))
+
+    @app.route('/api/notificaciones/leidas', methods=['POST'])
+    @requiere_login
+    def api_notificaciones_leidas():
+        ids = (request.get_json(silent=True) or {}).get('ids')
+        notificador.marcar_leidas(ids if isinstance(ids, list) else None)
+        return jsonify({'ok': True})
+
+    @app.route('/api/notificaciones/borrar', methods=['POST'])
+    @requiere_login
+    @requiere_administrar
+    def api_notificaciones_borrar():
+        notificador.borrar_historial()
+        return jsonify({'ok': True})
+
+    @app.route('/api/notificaciones/revisar', methods=['POST'])
+    @requiere_login
+    def api_notificaciones_revisar():
+        notificador.revisar()
+        return jsonify(dict(notificador.historial(20), ok=True))
+
+    @app.route('/api/notificaciones/config')
+    @requiere_login
+    @requiere_administrar
+    def api_notificaciones_config():
+        return jsonify(notificador.cfg_publica())
+
+    @app.route('/api/notificaciones/config', methods=['POST'])
+    @requiere_login
+    @requiere_administrar
+    def api_notificaciones_config_guardar():
+        try:
+            resultado = notificador.guardar_cfg(request.get_json(silent=True) or {})
+        except (OSError, ValueError) as ex:
+            return jsonify({'ok': False, 'error': 'No se pudo guardar config.json: %s' % ex}), 500
+        mod_acciones.registrar_evento(config, session.get('usuario') or 'api',
+                                      'notificaciones_config', config.path, 0, '')
+        return jsonify(dict(resultado, ok=True))
+
+    @app.route('/api/notificaciones/probar', methods=['POST'])
+    @requiere_login
+    def api_notificaciones_probar():
+        canal = (request.get_json(silent=True) or {}).get('canal')
+        if canal != 'push' and not permisos()['gestionar_excluidos']:
+            return jsonify({'ok': False, 'error': 'Sólo un administrador puede probar ese canal'}), 403
+        return jsonify(notificador.probar(canal))
+
+    @app.route('/api/notificaciones/telegram-chats')
+    @requiere_login
+    @requiere_administrar
+    def api_notificaciones_chats():
+        return jsonify(notificador.detectar_chats())
+
+    @app.route('/api/push/clave')
+    @requiere_login
+    def api_push_clave():
+        if not webpush.disponible():
+            return jsonify({'ok': False, 'error': 'Falta la librería cryptography en el servidor'}), 500
+        return jsonify({'ok': True, 'clave': webpush.clave_publica(config)})
+
+    @app.route('/api/push/suscribir', methods=['POST'])
+    @requiere_login
+    def api_push_suscribir():
+        cuerpo = request.get_json(silent=True) or {}
+        ok = notificador.suscribir(cuerpo.get('suscripcion'), session.get('usuario') or 'api',
+                                   request.headers.get('User-Agent'))
+        if not ok:
+            return jsonify({'ok': False, 'error': 'Suscripción inválida'}), 400
+        return jsonify({'ok': True})
+
+    @app.route('/api/push/desuscribir', methods=['POST'])
+    @requiere_login
+    def api_push_desuscribir():
+        endpoint = (request.get_json(silent=True) or {}).get('endpoint') or ''
+        return jsonify({'ok': notificador.desuscribir(endpoint)})
+
+    @app.route('/api/push/dispositivos')
+    @requiere_login
+    def api_push_dispositivos():
+        return jsonify({'dispositivos': notificador.dispositivos()})
+
+    # ---------------------------------------------------------------- PWA
+    # El manifiesto y el service worker se sirven sin login: el navegador los
+    # pide por su cuenta y sin ellos no se puede instalar la app.
+    @app.route('/manifest.webmanifest')
+    def manifest():
+        datos = {
+            'name': config.get('titulo') or 'Panel VPS',
+            'short_name': 'Panel VPS',
+            'description': 'Administración y monitoreo de las instancias del VPS',
+            'start_url': '/?origen=app',
+            'scope': '/',
+            'display': 'standalone',
+            'orientation': 'any',
+            'background_color': '#12325f',
+            'theme_color': '#12325f',
+            'lang': 'es',
+            'icons': [
+                {'src': '/static/iconos/icono-192.png', 'sizes': '192x192', 'type': 'image/png'},
+                {'src': '/static/iconos/icono-512.png', 'sizes': '512x512', 'type': 'image/png'},
+                {'src': '/static/iconos/icono-maskable-512.png', 'sizes': '512x512',
+                 'type': 'image/png', 'purpose': 'maskable'},
+            ],
+            'shortcuts': [
+                {'name': 'Notificaciones', 'url': '/notificaciones'},
+                {'name': 'Consumo', 'url': '/consumo'},
+                {'name': 'Certificados', 'url': '/certificados'},
+            ],
+        }
+        return Response(json.dumps(datos, ensure_ascii=False),
+                        mimetype='application/manifest+json')
+
+    @app.route('/sw.js')
+    def service_worker():
+        respuesta = send_from_directory(app.static_folder, 'sw.js',
+                                        mimetype='application/javascript', max_age=0)
+        respuesta.headers['Service-Worker-Allowed'] = '/'
+        respuesta.headers['Cache-Control'] = 'no-cache'
+        return respuesta
+
     @app.route('/healthz')
     def healthz():
         instantanea = colector.snapshot()
@@ -902,4 +1064,5 @@ def crear_app(config=None):
         })
 
     colector.iniciar_en_segundo_plano()
+    notificador.iniciar_en_segundo_plano()
     return app

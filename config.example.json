@@ -94,5 +94,45 @@
     "api_token": ""
   },
   "session_cookie_secure": false,
-  "secret_key": ""
+  "secret_key": "",
+  "sesion_dias": 30,
+  "notificaciones": {
+    "enabled": true,
+    "intervalo": 300,
+    "confirmaciones": 2,
+    "repetir_horas": 6,
+    "avisar_recuperacion": true,
+    "url_panel": "",
+    "telegram": {
+      "enabled": false,
+      "bot_token": "",
+      "chat_ids": []
+    },
+    "correo": {
+      "enabled": false,
+      "servidor": "",
+      "puerto": 587,
+      "seguridad": "starttls",
+      "usuario": "",
+      "clave": "",
+      "remitente": "",
+      "destinatarios": []
+    },
+    "push": {
+      "enabled": true,
+      "sujeto": ""
+    },
+    "reglas": {
+      "servicio_caido": true,
+      "url_caida": true,
+      "base_caida": true,
+      "servidor_web_caido": true,
+      "ssl_dias": 15,
+      "disco_pct": 85,
+      "ram_pct": 92,
+      "backup_atrasado": false,
+      "renovacion_automatica": true,
+      "tareas": true
+    }
+  }
 }

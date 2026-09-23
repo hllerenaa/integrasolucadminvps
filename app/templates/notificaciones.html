@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}Notificaciones · {{ titulo }}{% endblock %}
+{% block contenido %}
+<header class="cabecera">
+  <div class="cabecera-izq">
+    <h1>{{ titulo }}</h1>
+    {% include "_nav.html" %}
+  </div>
+  <div class="cabecera-der">
+    {% include "_campana.html" %}
+    <button id="btn-revisar-ahora" class="boton secundario" type="button">Revisar ahora</button>
+    <button id="btn-tareas" class="boton secundario" type="button">Tareas</button>
+    {% if auth_activa %}<a class="boton secundario" href="/logout">Salir</a>{% endif %}
+  </div>
+</header>
+
+<div id="avisos"></div>
+
+<section class="seccion">
+  <h2>Este dispositivo</h2>
+  <p class="tenue">Instala el panel como app y activa las notificaciones push para que las alertas lleguen
+     a tu celular aunque el panel esté cerrado.</p>
+  <div class="grid-detalle">
+    <div class="bloque">
+      <h3>Notificaciones push</h3>
+      <div id="estado-push"><p class="tenue">Comprobando…</p></div>
+    </div>
+    <div class="bloque">
+      <h3>Instalar la app</h3>
+      <div id="estado-instalar"></div>
+    </div>
+  </div>
+</section>
+
+<section class="seccion">
+  <h2>Alertas activas</h2>
+  <p class="tenue" id="resumen-revision"></p>
+  <div id="alertas-activas"><p class="tenue">Cargando…</p></div>
+</section>
+
+<section class="seccion">
+  <h2>Historial</h2>
+  <div class="barra" style="padding-left:0;padding-right:0">
+    <select id="filtro-notif-nivel">
+      <option value="">Todas</option>
+      <option value="error">Críticas</option>
+      <option value="aviso">Avisos</option>
+      <option value="ok">Resueltas / correctas</option>
+      <option value="no-leidas">No leídas</option>
+    </select>
+    <span class="crece"></span>
+    <button class="boton mini" type="button" id="btn-notif-leidas-todas">Marcar todas leídas</button>
+    {% if permisos and permisos.gestionar_excluidos %}
+    <button class="boton mini" type="button" id="btn-notif-borrar">Vaciar historial</button>
+    {% endif %}
+  </div>
+  <div id="historial-notif" class="lista-notif lista-notif-pagina"><p class="tenue">Cargando…</p></div>
+</section>
+
+{% if permisos and permisos.gestionar_excluidos %}
+<section class="seccion">
+  <h2>Canales y reglas</h2>
+  <p class="tenue">Se guarda en <code>config.json</code> (sección <code>notificaciones</code>). Los tokens y
+     contraseñas no se vuelven a mostrar: deja el campo como está para conservarlos.</p>
+  <div id="config-notif"><p class="tenue">Cargando…</p></div>
+</section>
+{% endif %}
+
+<div class="modal oculto" id="modal-tarea">
+  <div class="modal-caja">
+    <div class="modal-cabecera">
+      <h2 id="tarea-titulo"></h2>
+      <button class="cerrar" id="tarea-cerrar" type="button">&times;</button>
+    </div>
+    <div class="modal-cuerpo" id="tarea-cuerpo"></div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>window.PANEL_MODO = 'notificaciones';</script>
+<script src="{{ url_for('static', filename='app.js') }}?v={{ version }}"></script>
+{% endblock %}

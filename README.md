@@ -75,6 +75,7 @@ eso funciona aunque el esquema varíe entre inventario y restaurante.
 | **Certificados** (`/certificados`) | Certificados de Let's Encrypt: emisión, vencimiento, renovar (normal o forzada, comprobando que la fecha cambió), pausar la renovación o eliminar; **emitir** certificados para las instancias que no tienen; **recargar o reiniciar Apache/nginx** validando antes la configuración; y aviso si no hay renovación automática (`certbot.timer` o cron) |
 | **Consumo** (`/consumo`) | Qué consume cada cosa: CPU, RAM, swap y discos del servidor; RAM/CPU/disco de cada instancia; todos los servicios de systemd en ejecución (instancias, infraestructura como PostgreSQL/Apache/nginx y sistema) con la CPU medida en 1 s; los procesos que más RAM o CPU usan (con la instancia a la que pertenecen); las bases más grandes y las carpetas que más ocupan (backups, PostgreSQL, logs, journal…) |
 | **Bases y backups** (`/backups`) | Respaldos por instancia o de cualquier base, verificados y descargables, retención, y todas las bases del servidor con su **detalle**: tablas más pesadas, filas muertas, vacuum, conexiones abiertas con su consulta, aciertos de caché y actividad |
+| **Notificaciones** (`/notificaciones`) | Alertas activas, historial, activar las notificaciones push en el celular, instalar la app y configurar Telegram, correo y qué avisar (ver abajo) |
 | **Nueva instancia** (`/nueva`) | El asistente de creación y el **diagnóstico del entorno** (herramientas, venv con Django, templates y su git, PostgreSQL con permiso CREATEDB, carpetas con escritura, espacio y puertos) |
 | **Excluidos** (`/excluidos`) | El mismo panel con todas las instalaciones y el interruptor para ocultarlas o mostrarlas. No se enlaza desde el menú: se entra escribiendo la dirección |
 
@@ -85,6 +86,53 @@ En la barra superior, además:
 | **Tareas** | Lo que el servidor tiene programado (crontabs de los usuarios, `/etc/crontab`, `/etc/cron.d` y los `.timer` de systemd, con el horario traducido) y las tareas que el panel ha lanzado en segundo plano, con su log |
 | **Historial** (sólo con permiso `ver_excluidos`) | Todo lo hecho desde el panel: arrancar/parar servicios, activar o desactivar sitios, abrir o guardar credenciales, cambios de RUC o de API cédula y operaciones de certbot, con usuario, resultado y salida del comando |
 | **Excel** / **CSV** | Exportan exactamente las filas que están en pantalla, en el mismo orden y con los mismos filtros |
+
+## Notificaciones, celular y app instalable
+
+**Campana** (arriba a la derecha en todas las páginas): las últimas notificaciones
+con el contador de no leídas. Con el panel abierto, lo nuevo aparece también como aviso.
+
+**Qué se avisa** (se revisa cada `notificaciones.intervalo` segundos, 300 por defecto):
+servicio de una instancia caído (sólo si está habilitado: un cliente dado de baja no
+alerta), su web sin respuesta, base de datos inaccesible, Apache/nginx caído,
+certificado por vencer o vencido, disco o RAM sobre el umbral, backups atrasados
+(apagado por defecto), falta de renovación automática de certbot y el final de las
+tareas largas (backups, altas, certbot). Las instancias ocultas (`excluidos.txt`) no alertan.
+
+- Una alerta se envía cuando se confirma en `confirmaciones` revisiones seguidas
+  (evita avisos por un reinicio de segundos), se recuerda cada `repetir_horas`
+  mientras siga, y se avisa cuando se resuelve.
+- Lo que aparece en una misma revisión sale **en un solo mensaje** por canal: si se
+  cae Apache no llegan 40 mensajes.
+
+**Canales** (se configuran desde `/notificaciones` → *Canales y reglas*; sólo quien
+administra el panel, `gestionar_excluidos`, ve y cambia esta parte; se guarda en
+`config.json` → `notificaciones` y los tokens no se vuelven a mostrar):
+
+| Canal | Cómo se configura |
+|---|---|
+| **Telegram** | Crea un bot con [@BotFather](https://t.me/BotFather) (`/newbot`), pega el token, escríbele cualquier mensaje al bot desde tu Telegram (o agrégalo a un grupo) y pulsa **Detectar chat**. Después **Enviar prueba** |
+| **Correo** | Servidor SMTP, puerto y seguridad (STARTTLS 587 / SSL 465), usuario, contraseña y destinatarios. En Gmail hace falta una *contraseña de aplicación* |
+| **Push** | En cada celular: abre el panel, **Notificaciones → Activar notificaciones aquí** (o 🔔 *Recibir en este dispositivo* en la campana) y acepta el permiso. Llegan aunque el panel esté cerrado |
+
+**App instalable (PWA)**: el panel se puede instalar en el celular como una app
+(ícono propio, pantalla completa, sesión que dura `sesion_dias`, 30 por defecto).
+En Android/Chrome: menú ⋮ → *Instalar aplicación*. En iPhone/Safari: *Compartir* →
+*Agregar a pantalla de inicio* (en iPhone las notificaciones push sólo funcionan
+con la app instalada y iOS 16.4 o superior).
+
+> **Importante:** la app instalable y las notificaciones push exigen **HTTPS**.
+> Entra por el dominio con certificado (`deploy/admin_dominio.sh`), no por
+> `http://IP:8600`. Telegram y correo funcionan igual con HTTP.
+
+Las notificaciones push usan el estándar Web Push con claves VAPID propias
+(generadas la primera vez en `var/vapid.json`; si se borran, cada celular tiene que
+volver a activarlas). No dependen de ningún servicio externo más que el del
+navegador (Google, Mozilla o Apple). Requiere la librería `cryptography`
+(incluida en `requirements.txt`).
+
+Todo el panel se adapta al celular: menú ☰, tarjetas en dos columnas, tablas
+desplazables y ventanas a pantalla completa.
 
 ## Usuarios y permisos
 
@@ -438,6 +486,14 @@ inaccesibles o certificados vencidos: sirve para cron o alertas.
 | `GET /api/acciones` | Historial de acciones (requiere `ver_excluidos`) |
 | `GET /api/cron` | Tareas programadas del servidor (crontabs y timers de systemd), sólo lectura |
 | `GET/POST /export.xlsx`, `/export.csv` | Exportaciones (aceptan `?tipo=` y `?q=`; por POST, `{"ids": [...]}` para exportar sólo esas filas y en ese orden) |
+| `GET /api/notificaciones` | Historial, no leídas y alertas activas (`?limite=`) |
+| `POST /api/notificaciones/leidas` | Marca como leídas (`{"ids": [...]}` o todas) |
+| `POST /api/notificaciones/revisar` | Revisa las alertas ahora |
+| `GET/POST /api/notificaciones/config` | Configuración de canales y reglas (administradores) |
+| `POST /api/notificaciones/probar` | Envía una prueba (`{"canal": "telegram"\|"correo"\|"push"}`) |
+| `GET /api/notificaciones/telegram-chats` | Chats que escribieron al bot |
+| `GET /api/push/clave`, `POST /api/push/suscribir`, `POST /api/push/desuscribir`, `GET /api/push/dispositivos` | Suscripciones push de los celulares |
+| `GET /manifest.webmanifest`, `GET /sw.js` | App instalable (sin login) |
 | `GET /healthz` | Chequeo de salud (sin autenticación) |
 
 Acciones disponibles: `iniciar`, `detener`, `reiniciar`, `habilitar`,

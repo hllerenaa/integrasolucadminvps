@@ -2473,11 +2473,535 @@
     });
   }
 
+  // ---------------------------------------------------------- notificaciones
+  var notif = { datos: null, ultimaVista: null, poll: null, instalar: null, primera: true };
+  var ICONO_NIVEL = { error: '🔴', aviso: '🟠', ok: '🟢', info: '🔵' };
+
+  function hace(fecha) {
+    if (!fecha) return '';
+    var t = new Date(fecha.replace(' ', 'T'));
+    if (isNaN(t)) return fecha;
+    var s = Math.round((Date.now() - t.getTime()) / 1000);
+    if (s < 60) return 'hace un momento';
+    if (s < 3600) return 'hace ' + Math.round(s / 60) + ' min';
+    if (s < 86400) return 'hace ' + Math.round(s / 3600) + ' h';
+    return fecha.slice(0, 16);
+  }
+
+  function itemNotif(n) {
+    return '<a class="item-notif nivel-' + esc(n.nivel) + (n.leida ? '' : ' no-leida') + '" href="' +
+      esc(n.ruta || '/notificaciones') + '" data-notif="' + esc(n.id) + '">' +
+      '<span class="icono-notif">' + (ICONO_NIVEL[n.nivel] || '🔵') + '</span>' +
+      '<span class="texto-notif"><strong>' + esc(n.titulo) + '</strong>' +
+      '<span class="sub">' + esc(n.mensaje || '') + '</span>' +
+      '<span class="fecha-notif" title="' + esc(n.fecha) + '">' + esc(hace(n.fecha)) + '</span></span></a>';
+  }
+
+  function cargarNotificaciones() {
+    if (!$('#btn-campana')) return Promise.resolve();
+    var limite = MODO === 'notificaciones' ? 300 : 20;
+    return fetch('/api/notificaciones?limite=' + limite, { credentials: 'same-origin' })
+      .then(function (r) { return r.status === 401 ? null : r.json(); })
+      .then(function (d) {
+        if (!d) return;
+        var anterior = notif.datos;
+        notif.datos = d;
+        var c = $('#campana-contador');
+        c.textContent = d.no_leidas > 99 ? '99+' : d.no_leidas;
+        c.classList.toggle('oculto', !d.no_leidas);
+        document.title = document.title.replace(/^\(\d+\+?\) /, '');
+        if (d.no_leidas) document.title = '(' + (d.no_leidas > 99 ? '99+' : d.no_leidas) + ') ' + document.title;
+        // Con el panel abierto se avisa de lo nuevo aunque no haya push.
+        if (anterior && !notif.primera) {
+          var vistos = {};
+          (anterior.notificaciones || []).forEach(function (n) { vistos[n.id] = 1; });
+          var nuevas = (d.notificaciones || []).filter(function (n) { return !vistos[n.id]; });
+          if (nuevas.length) {
+            aviso((ICONO_NIVEL[nuevas[0].nivel] || '') + ' ' + nuevas[0].titulo +
+                  (nuevas.length > 1 ? ' (y ' + (nuevas.length - 1) + ' más)' : ''),
+                  nuevas[0].nivel === 'ok' ? 'aviso-ok' : (nuevas[0].nivel === 'error' ? 'aviso-error' : 'aviso-info'));
+          }
+        }
+        notif.primera = false;
+        pintarPanelNotif();
+        if (MODO === 'notificaciones') pintarPaginaNotif();
+      })
+      .catch(function () {});
+  }
+
+  function pintarPanelNotif() {
+    var d = notif.datos;
+    if (!d || !$('#lista-notif')) return;
+    $('#lista-notif').innerHTML = (d.notificaciones || []).slice(0, 20).map(itemNotif).join('') ||
+      '<p class="tenue" style="padding:14px">Sin notificaciones todavía.</p>';
+  }
+
+  function marcarLeidas(ids) {
+    return fetch('/api/notificaciones/leidas', {
+      method: 'POST', credentials: 'same-origin', keepalive: true,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(ids ? { ids: ids } : {})
+    }).then(cargarNotificaciones);
+  }
+
+  function alternarPanelNotif(forzarCerrar) {
+    var panel = $('#panel-notif');
+    if (!panel) return;
+    var abrir = !forzarCerrar && panel.classList.contains('oculto');
+    panel.classList.toggle('oculto', !abrir);
+    if (abrir) { cargarNotificaciones(); estadoPush(); }
+  }
+
+  // ------------------------------------------------------------- push
+  function pushSoportado() {
+    return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  }
+
+  function claveAplicacion(texto) {
+    var b = atob(texto.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((texto.length + 3) % 4));
+    var arr = new Uint8Array(b.length);
+    for (var i = 0; i < b.length; i++) arr[i] = b.charCodeAt(i);
+    return arr;
+  }
+
+  function suscripcionActual() {
+    if (!pushSoportado()) return Promise.resolve(null);
+    return navigator.serviceWorker.getRegistration('/').then(function (reg) {
+      return reg ? reg.pushManager.getSubscription() : null;
+    });
+  }
+
+  function esIOS() { return /iphone|ipad|ipod/i.test(navigator.userAgent); }
+  function instalada() {
+    return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) ||
+      window.navigator.standalone === true;
+  }
+
+  function motivoSinPush() {
+    if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
+      return 'Las notificaciones push y la app instalable necesitan HTTPS. Entra al panel por su ' +
+        'dominio con certificado (deploy/admin_dominio.sh) en vez de http://IP:puerto.';
+    }
+    if (esIOS() && !instalada()) {
+      return 'En iPhone primero instala la app: botón Compartir → «Agregar a pantalla de inicio», ' +
+        'ábrela desde el ícono y activa las notificaciones ahí (iOS 16.4 o superior).';
+    }
+    if (!pushSoportado()) return 'Este navegador no admite notificaciones push.';
+    return null;
+  }
+
+  function activarPush() {
+    var motivo = motivoSinPush();
+    if (motivo) { aviso(motivo); return Promise.resolve(); }
+    return Notification.requestPermission().then(function (permiso) {
+      if (permiso !== 'granted') {
+        throw new Error('No diste permiso para notificaciones. Actívalo en los ajustes del ' +
+          'navegador para este sitio y vuelve a intentar.');
+      }
+      return Promise.all([
+        navigator.serviceWorker.register('/sw.js', { scope: '/' }).then(function () {
+          return navigator.serviceWorker.ready;
+        }),
+        fetch('/api/push/clave', { credentials: 'same-origin' }).then(function (r) { return r.json(); })
+      ]);
+    }).then(function (res) {
+      var reg = res[0], d = res[1];
+      if (!d.ok) throw new Error(d.error || 'El servidor no tiene clave VAPID');
+      return reg.pushManager.getSubscription().then(function (previa) {
+        return previa || reg.pushManager.subscribe({
+          userVisibleOnly: true, applicationServerKey: claveAplicacion(d.clave) });
+      });
+    }).then(function (sus) {
+      return fetch('/api/push/suscribir', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ suscripcion: sus.toJSON() })
+      }).then(function (r) { return r.json(); });
+    }).then(function (d) {
+      if (!d.ok) throw new Error(d.error || 'No se pudo registrar el dispositivo');
+      aviso('Listo: este dispositivo recibirá las notificaciones. Envía una prueba para comprobarlo.', 'aviso-ok');
+      estadoPush();
+    }).catch(function (e) { aviso(e.message); });
+  }
+
+  function desactivarPush() {
+    return suscripcionActual().then(function (sus) {
+      if (!sus) return;
+      var endpoint = sus.endpoint;
+      return sus.unsubscribe().then(function () {
+        return fetch('/api/push/desuscribir', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ endpoint: endpoint })
+        });
+      });
+    }).then(function () { aviso('Este dispositivo ya no recibirá notificaciones push.', 'aviso-ok'); estadoPush(); });
+  }
+
+  function probarCanal(canal, boton) {
+    if (boton) boton.disabled = true;
+    return fetch('/api/notificaciones/probar', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ canal: canal })
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d.ok) {
+          aviso('Prueba de ' + canal + ' enviada' + (d.enviados !== undefined ? ' (' + d.enviados +
+                ' destino/s)' : '') + '. Revisa que haya llegado.', 'aviso-ok');
+        } else {
+          aviso('La prueba de ' + canal + ' falló: ' + (d.error || 'error desconocido'));
+        }
+      })
+      .catch(function (e) { aviso(e.message); })
+      .then(function () { if (boton) boton.disabled = false; });
+  }
+
+  function estadoPush() {
+    var rapido = $('#btn-push-rapido');
+    var caja = $('#estado-push');
+    return suscripcionActual().then(function (sus) {
+      var motivo = motivoSinPush();
+      if (rapido) rapido.classList.toggle('oculto', !!sus || !!motivo);
+      if (!caja) return;
+      if (motivo) {
+        caja.innerHTML = '<p class="aviso-inline">' + esc(motivo) + '</p>';
+        return;
+      }
+      var permiso = Notification.permission;
+      caja.innerHTML = sus
+        ? '<p>' + badge('verde', 'activas') + ' Este dispositivo recibe las notificaciones.</p>' +
+          '<p><button class="boton mini" type="button" id="btn-push-probar">Enviar prueba</button> ' +
+          '<button class="boton mini" type="button" id="btn-push-desactivar">Desactivar aquí</button></p>'
+        : '<p>' + (permiso === 'denied'
+            ? badge('rojo', 'bloqueadas') + ' El navegador bloqueó las notificaciones de este sitio: ' +
+              'actívalas en los ajustes del sitio y recarga.'
+            : badge('gris', 'inactivas') + ' Este dispositivo todavía no recibe notificaciones.') + '</p>' +
+          (permiso === 'denied' ? '' :
+            '<p><button class="boton" type="button" id="btn-push-activar">Activar notificaciones aquí</button></p>');
+      caja.innerHTML += '<div id="dispositivos-push" class="sub"></div>';
+      fetch('/api/push/dispositivos', { credentials: 'same-origin' })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          var lista = d.dispositivos || [];
+          $('#dispositivos-push').innerHTML = lista.length
+            ? 'Dispositivos registrados (' + lista.length + '):<br>' + lista.map(function (x) {
+                var nombre = /android/i.test(x.agente) ? 'Android' : /iphone|ipad/i.test(x.agente) ? 'iPhone/iPad'
+                  : /windows/i.test(x.agente) ? 'Windows' : /mac os/i.test(x.agente) ? 'Mac'
+                  : /linux/i.test(x.agente) ? 'Linux' : 'Navegador';
+                var nav = /edg\//i.test(x.agente) ? 'Edge' : /chrome|crios/i.test(x.agente) ? 'Chrome'
+                  : /firefox|fxios/i.test(x.agente) ? 'Firefox' : /safari/i.test(x.agente) ? 'Safari' : '';
+                return '• ' + esc(nombre + (nav ? ' · ' + nav : '')) + ' de ' + esc(x.usuario) +
+                  ' <span class="tenue">(' + esc(x.desde) + ')</span>' +
+                  (sus && sus.endpoint === x.endpoint ? ' ' + badge('azul', 'este') : '');
+              }).join('<br>')
+            : 'Ningún dispositivo registrado todavía.';
+        }).catch(function () {});
+    });
+  }
+
+  function estadoInstalar() {
+    var caja = $('#estado-instalar');
+    if (!caja) return;
+    if (instalada()) {
+      caja.innerHTML = '<p>' + badge('verde', 'instalada') + ' Estás usando la app instalada.</p>';
+    } else if (notif.instalar) {
+      caja.innerHTML = '<p>Instálala para abrirla desde el escritorio del celular, a pantalla completa.</p>' +
+        '<p><button class="boton" type="button" id="btn-instalar-app">Instalar la app</button></p>';
+    } else if (esIOS()) {
+      caja.innerHTML = '<p>En iPhone/iPad (Safari): toca <strong>Compartir</strong> → ' +
+        '<strong>Agregar a pantalla de inicio</strong>. Luego ábrela desde el ícono.</p>';
+    } else if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
+      caja.innerHTML = '<p class="aviso-inline">Para instalarla hace falta entrar por HTTPS (dominio con certificado).</p>';
+    } else {
+      caja.innerHTML = '<p>En Android (Chrome): menú <strong>⋮</strong> → <strong>Instalar aplicación</strong> ' +
+        '(o «Agregar a la pantalla principal»). En la computadora, el ícono de instalar en la barra de direcciones.</p>';
+    }
+  }
+
+  window.addEventListener('beforeinstallprompt', function (e) {
+    e.preventDefault();
+    notif.instalar = e;
+    estadoInstalar();
+  });
+  window.addEventListener('appinstalled', function () { notif.instalar = null; estadoInstalar(); });
+
+  // ----------------------------------------------------- página de notificaciones
+  function pintarPaginaNotif() {
+    var d = notif.datos;
+    if (!d || !$('#historial-notif')) return;
+    var activas = d.activas || [];
+    $('#alertas-activas').innerHTML = activas.length
+      ? '<div class="lista-notif lista-notif-pagina">' + activas.map(function (a) {
+          return itemNotif({ id: a.clave, nivel: a.nivel, titulo: a.titulo, leida: true,
+                             mensaje: a.mensaje, ruta: a.ruta, fecha: a.desde });
+        }).join('') + '</div>'
+      : '<p class="aviso aviso-ok" style="margin:0">' + '🟢 Todo en orden: no hay alertas activas.</p>';
+    $('#resumen-revision').textContent = 'Última revisión automática: ' + (d.ultima_revision || 'todavía no') +
+      '. Una alerta se envía cuando se confirma en varias revisiones seguidas.';
+    var filtro = $('#filtro-notif-nivel').value;
+    var lista = (d.notificaciones || []).filter(function (n) {
+      if (filtro === 'no-leidas') return !n.leida;
+      return !filtro || n.nivel === filtro;
+    });
+    $('#historial-notif').innerHTML = lista.map(itemNotif).join('') ||
+      '<p class="tenue" style="padding:14px">Sin notificaciones.</p>';
+  }
+
+  function cargarConfigNotif() {
+    var caja = $('#config-notif');
+    if (!caja) return;
+    fetch('/api/notificaciones/config', { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (c) {
+        if (c.ok === false) { caja.innerHTML = '<div class="aviso-error">' + esc(c.error) + '</div>'; return; }
+        pintarConfigNotif(c);
+      })
+      .catch(function (e) { caja.innerHTML = '<div class="aviso-error">' + esc(e.message) + '</div>'; });
+  }
+
+  function campo(etiqueta, id, valor, tipo, ayuda, extra) {
+    return '<label>' + esc(etiqueta) + '<input id="' + id + '" type="' + (tipo || 'text') + '" value="' +
+      esc(valor === null || valor === undefined ? '' : valor) + '"' + (extra || '') + '>' +
+      (ayuda ? '<span class="ayuda">' + ayuda + '</span>' : '') + '</label>';
+  }
+  function casilla(etiqueta, id, marcado) {
+    return '<label class="check"><input type="checkbox" id="' + id + '"' + (marcado ? ' checked' : '') + '> ' +
+      esc(etiqueta) + '</label>';
+  }
+
+  function pintarConfigNotif(c) {
+    var tg = c.telegram || {}, co = c.correo || {}, pu = c.push || {}, r = c.reglas || {};
+    $('#config-notif').innerHTML =
+      '<div class="grid-detalle">' +
+      '<div class="bloque"><h3>General</h3><div class="formulario formulario-1">' +
+        casilla('Enviar notificaciones', 'n-enabled', c.enabled) +
+        campo('Revisar cada (segundos)', 'n-intervalo', c.intervalo, 'number', 'Mínimo 60.', ' min="60"') +
+        campo('Confirmar en N revisiones seguidas', 'n-confirmaciones', c.confirmaciones, 'number',
+              'Evita avisos por un reinicio de segundos. Con 2 y 300 s: se avisa a los ~5-10 min.', ' min="1"') +
+        campo('Recordar alertas activas cada (horas)', 'n-repetir', c.repetir_horas, 'number', '0 = no recordar.', ' min="0"') +
+        casilla('Avisar también cuando se resuelve', 'n-recuperacion', c.avisar_recuperacion) +
+        campo('Dirección pública del panel', 'n-url', c.url_panel, 'url',
+              'Para los enlaces de Telegram y correo. Vacío = la que usas ahora' +
+              (c.url_detectada ? ' (' + esc(c.url_detectada) + ')' : '') + '.') +
+      '</div></div>' +
+
+      '<div class="bloque"><h3>Qué avisar</h3><div class="formulario formulario-1">' +
+        casilla('Servicio de una instancia caído', 'r-servicio', r.servicio_caido) +
+        casilla('La web de una instancia no responde', 'r-url', r.url_caida) +
+        casilla('Base de datos inaccesible', 'r-base', r.base_caida) +
+        casilla('Apache / nginx caído', 'r-web', r.servidor_web_caido) +
+        casilla('Sin renovación automática de certificados', 'r-auto', r.renovacion_automatica) +
+        casilla('Backups atrasados', 'r-backup', r.backup_atrasado) +
+        casilla('Fin de tareas (backups, altas, certbot)', 'r-tareas', r.tareas) +
+        campo('Certificado que vence en (días) o menos', 'r-ssl', r.ssl_dias, 'number', '0 = no avisar.') +
+        campo('Disco lleno a partir del %', 'r-disco', r.disco_pct, 'number', '0 = no avisar.') +
+        campo('RAM a partir del %', 'r-ram', r.ram_pct, 'number', '0 = no avisar.') +
+      '</div></div>' +
+
+      '<div class="bloque"><h3>Telegram</h3><div class="formulario formulario-1">' +
+        casilla('Enviar por Telegram', 't-enabled', tg.enabled) +
+        campo('Token del bot', 't-token', tg.bot_token, 'text',
+              'Créalo con <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a> → /newbot.',
+              ' autocomplete="off"') +
+        campo('Chat ID (varios separados por coma)', 't-chats', (tg.chat_ids || []).join(', '), 'text',
+              'Escríbele cualquier mensaje a tu bot (o agrégalo a un grupo), guarda el token y pulsa «Detectar».') +
+        '<div><button class="boton mini" type="button" id="btn-tg-detectar">Detectar chat</button> ' +
+        '<button class="boton mini" type="button" data-probar="telegram">Enviar prueba</button></div>' +
+        '<div id="tg-chats"></div>' +
+      '</div></div>' +
+
+      '<div class="bloque"><h3>Correo (SMTP)</h3><div class="formulario formulario-1">' +
+        casilla('Enviar por correo', 'c-enabled', co.enabled) +
+        campo('Servidor SMTP', 'c-servidor', co.servidor, 'text', 'Gmail: smtp.gmail.com · Outlook: smtp.office365.com') +
+        '<div class="formulario">' +
+          campo('Puerto', 'c-puerto', co.puerto, 'number') +
+          '<label>Seguridad<select id="c-seguridad">' + ['starttls', 'ssl', 'ninguna'].map(function (v) {
+            return '<option value="' + v + '"' + (co.seguridad === v ? ' selected' : '') + '>' +
+              { starttls: 'STARTTLS (587)', ssl: 'SSL/TLS (465)', ninguna: 'Sin cifrado (25)' }[v] + '</option>';
+          }).join('') + '</select></label>' +
+        '</div>' +
+        campo('Usuario', 'c-usuario', co.usuario, 'text', null, ' autocomplete="off"') +
+        campo('Contraseña', 'c-clave', co.clave, 'password',
+              'En Gmail usa una «contraseña de aplicación» (con verificación en 2 pasos activa).',
+              ' autocomplete="new-password"') +
+        campo('Remitente', 'c-remitente', co.remitente, 'text', 'Vacío = el usuario.') +
+        campo('Destinatarios (separados por coma)', 'c-destinatarios', (co.destinatarios || []).join(', ')) +
+        '<div><button class="boton mini" type="button" data-probar="correo">Enviar prueba</button></div>' +
+      '</div></div>' +
+
+      '<div class="bloque"><h3>Push (app en el celular)</h3><div class="formulario formulario-1">' +
+        casilla('Enviar notificaciones push', 'p-enabled', pu.enabled) +
+        campo('Contacto (correo o URL)', 'p-sujeto', pu.sujeto, 'text',
+              'Lo exige el estándar para identificar al remitente. Vacío = la dirección del panel.') +
+        (pu.disponible ? '' : '<p class="aviso-inline">Falta la librería cryptography en el servidor ' +
+          '(pip install -r requirements.txt).</p>') +
+        '<p class="sub">Cada celular se activa desde «Este dispositivo», arriba.</p>' +
+      '</div></div>' +
+      '</div>' +
+      '<div style="margin-top:12px;text-align:right"><button class="boton" type="button" id="btn-guardar-notif">' +
+        'Guardar configuración</button></div>';
+  }
+
+  function valorNum(id) { var v = parseInt($('#' + id).value, 10); return isNaN(v) ? 0 : v; }
+
+  function guardarConfigNotif(boton) {
+    var datos = {
+      enabled: $('#n-enabled').checked, intervalo: valorNum('n-intervalo'),
+      confirmaciones: valorNum('n-confirmaciones'), repetir_horas: valorNum('n-repetir'),
+      avisar_recuperacion: $('#n-recuperacion').checked, url_panel: $('#n-url').value.trim(),
+      reglas: {
+        servicio_caido: $('#r-servicio').checked, url_caida: $('#r-url').checked,
+        base_caida: $('#r-base').checked, servidor_web_caido: $('#r-web').checked,
+        renovacion_automatica: $('#r-auto').checked, backup_atrasado: $('#r-backup').checked,
+        tareas: $('#r-tareas').checked, ssl_dias: valorNum('r-ssl'), disco_pct: valorNum('r-disco'),
+        ram_pct: valorNum('r-ram')
+      },
+      telegram: { enabled: $('#t-enabled').checked, bot_token: $('#t-token').value.trim(),
+                  chat_ids: $('#t-chats').value },
+      correo: { enabled: $('#c-enabled').checked, servidor: $('#c-servidor').value.trim(),
+                puerto: valorNum('c-puerto'), seguridad: $('#c-seguridad').value,
+                usuario: $('#c-usuario').value.trim(), clave: $('#c-clave').value,
+                remitente: $('#c-remitente').value.trim(), destinatarios: $('#c-destinatarios').value },
+      push: { enabled: $('#p-enabled').checked, sujeto: $('#p-sujeto').value.trim() }
+    };
+    if (boton) boton.disabled = true;
+    return fetch('/api/notificaciones/config', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(datos)
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) { aviso(d.error || 'No se pudo guardar'); return; }
+        aviso('Configuración de notificaciones guardada', 'aviso-ok');
+        pintarConfigNotif(d);
+      })
+      .catch(function (e) { aviso(e.message); })
+      .then(function () { if (boton) boton.disabled = false; });
+  }
+
+  function detectarChats() {
+    var caja = $('#tg-chats');
+    caja.innerHTML = '<p class="tenue">Consultando a Telegram…</p>';
+    // Primero se guarda (por si se acaba de pegar el token).
+    guardarConfigNotif().then(function () {
+      return fetch('/api/notificaciones/telegram-chats', { credentials: 'same-origin' });
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) { caja.innerHTML = '<p class="aviso-inline">' + esc(d.error) + '</p>'; return; }
+        if (!(d.chats || []).length) {
+          caja.innerHTML = '<p class="aviso-inline">El bot no tiene mensajes: escríbele algo (por ejemplo ' +
+            '/start) desde tu Telegram y vuelve a pulsar «Detectar».</p>';
+          return;
+        }
+        caja.innerHTML = '<p class="sub">Toca uno para agregarlo:</p>' + d.chats.map(function (c) {
+          return '<button class="boton mini" type="button" data-chat="' + esc(c.id) + '">' +
+            esc(c.nombre || c.id) + ' · ' + esc(c.tipo) + ' · ' + esc(c.id) + '</button>';
+        }).join(' ');
+      })
+      .catch(function (e) { caja.innerHTML = '<p class="aviso-inline">' + esc(e.message) + '</p>'; });
+  }
+
+  function revisarAhora(boton) {
+    if (boton) boton.disabled = true;
+    fetch('/api/notificaciones/revisar', { method: 'POST', credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function () {
+        aviso('Revisión hecha. Las alertas nuevas se envían cuando se confirman en revisiones seguidas.', 'aviso-ok');
+        cargarNotificaciones();
+      })
+      .catch(function (e) { aviso(e.message); })
+      .then(function () { if (boton) boton.disabled = false; });
+  }
+
+  // ------------------------------------------------------ menú en el celular
+  function prepararCabeceraMovil() {
+    var der = document.querySelector('.cabecera-der');
+    if (!der || $('#btn-menu-movil')) return;
+    var boton = document.createElement('button');
+    boton.id = 'btn-menu-movil';
+    boton.type = 'button';
+    boton.className = 'boton secundario boton-menu-movil';
+    boton.setAttribute('aria-label', 'Menú');
+    boton.innerHTML = '&#9776;';
+    der.appendChild(boton);
+  }
+
+  function iniciarNotificaciones() {
+    prepararCabeceraMovil();
+    if (!$('#btn-campana')) return;
+    cargarNotificaciones();
+    estadoPush();
+    if (notif.poll) clearInterval(notif.poll);
+    notif.poll = setInterval(function () {
+      if (!document.hidden) cargarNotificaciones();
+    }, 60000);
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden) cargarNotificaciones();
+    });
+    if (navigator.serviceWorker) {
+      navigator.serviceWorker.addEventListener('message', function (e) {
+        if (e.data && e.data.tipo === 'notificacion') cargarNotificaciones();
+      });
+    }
+    if (MODO === 'notificaciones') {
+      estadoInstalar();
+      cargarConfigNotif();
+      var tarea = (location.search.match(/[?&]tarea=([^&]+)/) || [])[1];
+      if (tarea) verTarea(decodeURIComponent(tarea));
+    }
+  }
+
   function iniciar() {
     // Un solo manejador delegado: si algo falla, no se cae el resto del panel.
     document.addEventListener('click', function (e) {
       var el = e.target;
       try {
+        // Controles con ícono o texto dentro: se toma el botón o enlace que lo contiene.
+        var contenedor = el.closest && el.closest('button, a');
+        if (contenedor && contenedor !== el && (contenedor.id || contenedor.hasAttribute('data-probar') ||
+            contenedor.hasAttribute('data-chat') || contenedor.hasAttribute('data-notif'))) {
+          el = contenedor;
+        }
+        if (el.id === 'btn-campana') return alternarPanelNotif();
+        if (!el.closest('.campana') && $('#panel-notif') && !$('#panel-notif').classList.contains('oculto')) {
+          alternarPanelNotif(true);
+        }
+        if (el.id === 'btn-menu-movil') {
+          return document.querySelector('.cabecera').classList.toggle('abierta');
+        }
+        if (el.hasAttribute && el.hasAttribute('data-notif')) {
+          marcarLeidas([el.getAttribute('data-notif')]);
+          return;   // el enlace sigue su curso
+        }
+        if (el.id === 'btn-notif-leidas' || el.id === 'btn-notif-leidas-todas') return marcarLeidas(null);
+        if (el.id === 'btn-notif-borrar') {
+          if (!window.confirm('¿Vaciar todo el historial de notificaciones?')) return;
+          return fetch('/api/notificaciones/borrar', { method: 'POST', credentials: 'same-origin' })
+            .then(cargarNotificaciones);
+        }
+        if (el.id === 'btn-push-rapido' || el.id === 'btn-push-activar') return activarPush();
+        if (el.id === 'btn-push-desactivar') return desactivarPush();
+        if (el.id === 'btn-push-probar') return probarCanal('push', el);
+        if (el.hasAttribute && el.hasAttribute('data-probar')) {
+          // Se guarda antes para probar con lo que está escrito en el formulario.
+          var canal = el.getAttribute('data-probar');
+          return guardarConfigNotif(el).then(function () { return probarCanal(canal, el); });
+        }
+        if (el.id === 'btn-instalar-app' && notif.instalar) {
+          notif.instalar.prompt();
+          return notif.instalar.userChoice.then(function () { notif.instalar = null; estadoInstalar(); });
+        }
+        if (el.id === 'btn-guardar-notif') return guardarConfigNotif(el);
+        if (el.id === 'btn-tg-detectar') return detectarChats();
+        if (el.hasAttribute && el.hasAttribute('data-chat')) {
+          var chats = $('#t-chats').value.split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+          if (chats.indexOf(el.getAttribute('data-chat')) === -1) chats.push(el.getAttribute('data-chat'));
+          $('#t-chats').value = chats.join(', ');
+          aviso('Chat agregado: pulsa «Guardar configuración» o «Enviar prueba».', 'aviso-info');
+          return;
+        }
+        if (el.id === 'btn-revisar-ahora') return revisarAhora(el);
         if (el.id === 'btn-refrescar') return refrescar({}, el);
         if (el.id === 'btn-media') return refrescar({ media: true }, el);
         var sufijo = (MODO === 'excluidos') ? '?ocultas=1' : '';
@@ -2627,6 +3151,7 @@
       if (el.id === 'filtro-backup-estado') return pintarBackups();
       if (el.id === 'solo-sin-uso') return pintarBases();
       if (el.id === 'consumo-auto') return programarConsumo();
+      if (el.id === 'filtro-notif-nivel') return pintarPaginaNotif();
       if (el.id === 'orden-consumo-inst') return pintarConsumoInstancias();
       if (el.id === 'filtro-servicio-cat') return pintarServicios();
       if (el.id === 'procesos-por') return pintarProcesos();
@@ -2650,13 +3175,19 @@
 
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape') {
-        ['#modal', '#modal-campo', '#modal-nueva', '#modal-tarea'].forEach(function (sel) {
+        if (document.querySelector('.cabecera')) document.querySelector('.cabecera').classList.remove('abierta');
+        ['#modal', '#modal-campo', '#modal-nueva', '#modal-tarea', '#panel-notif'].forEach(function (sel) {
           if ($(sel)) $(sel).classList.add('oculto');
         });
         if (tareaPoll) { clearInterval(tareaPoll); tareaPoll = null; }
       }
     });
 
+    iniciarNotificaciones();
+    if (MODO === 'notificaciones') {
+      cargarCapacidades();
+      return;
+    }
     if (MODO === 'certificados') {
       cargarCapacidades().then(function () { verCertificados('#contenido'); });
       return;

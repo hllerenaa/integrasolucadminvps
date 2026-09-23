@@ -265,3 +265,75 @@ tr.fila-oculta .cliente{text-decoration:line-through;text-decoration-color:var(-
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:#f4f6fa;
   border-radius:4px;padding:1px 5px}
 .linea-total{border-top:1px solid var(--borde);margin-top:3px;padding-top:3px;font-weight:600}
+
+/* ----------------------------------------------------- campana de avisos */
+.campana{position:relative}
+.boton-campana{position:relative;display:inline-flex;align-items:center;justify-content:center;padding:6px 10px}
+.campana-contador{position:absolute;top:-5px;right:-6px;background:#e5484d;color:#fff;border-radius:10px;
+  font-size:10.5px;font-weight:700;min-width:18px;height:18px;line-height:18px;padding:0 5px;text-align:center;
+  box-shadow:0 0 0 2px var(--azul-oscuro)}
+.panel-notif{position:absolute;right:0;top:40px;width:380px;max-width:calc(100vw - 24px);background:#fff;
+  color:var(--texto);border-radius:12px;box-shadow:0 18px 50px rgba(10,20,40,.35);z-index:70;overflow:hidden}
+.panel-notif-cabecera,.panel-notif-pie{display:flex;justify-content:space-between;align-items:center;gap:8px;
+  padding:10px 12px;border-bottom:1px solid var(--borde)}
+.panel-notif-pie{border-bottom:0;border-top:1px solid var(--borde);flex-wrap:wrap}
+.panel-notif .lista-notif{max-height:min(60vh,460px);overflow:auto}
+.lista-notif-pagina{background:#fff;border:1px solid var(--borde);border-radius:10px;box-shadow:var(--sombra)}
+.item-notif{display:flex;gap:10px;padding:10px 12px;border-bottom:1px solid var(--borde);color:inherit;
+  text-decoration:none;border-left:3px solid transparent}
+.item-notif:hover{background:#f2f7ff;text-decoration:none}
+.item-notif:last-child{border-bottom:0}
+.item-notif.no-leida{background:#f5f8ff;border-left-color:var(--azul)}
+.item-notif.no-leida strong{color:var(--azul-oscuro)}
+.icono-notif{font-size:14px;line-height:20px}
+.texto-notif{display:flex;flex-direction:column;min-width:0;flex:1}
+.texto-notif strong{font-size:13px}
+.texto-notif .sub{white-space:pre-line;word-break:break-word;color:var(--suave)}
+.fecha-notif{font-size:11px;color:var(--suave);margin-top:2px}
+.formulario-1{grid-template-columns:1fr}
+.ayuda{display:block;font-size:11px;color:var(--suave);margin-top:3px}
+.boton-menu-movil{display:none;font-size:18px;line-height:1;padding:6px 11px}
+
+/* ------------------------------------------------------------- celular */
+@media (max-width:760px){
+  body{font-size:14px}
+  .cabecera{position:static;padding:calc(10px + env(safe-area-inset-top)) 12px 10px;gap:8px}
+  .cabecera h1{font-size:15px;max-width:52vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .cabecera-izq{flex:1;min-width:0}
+  .cabecera .etiqueta-version{display:none}
+  .estado-refresco{font-size:11px;width:100%}
+  .boton-menu-movil{display:inline-flex}
+  /* Cerrado: sólo título, campana y el botón de menú. */
+  .cabecera:not(.abierta) .menu-principal,
+  .cabecera:not(.abierta) .cabecera-der > :not(.campana):not(.boton-menu-movil){display:none}
+  .cabecera.abierta .menu-principal{display:flex;flex-direction:column;width:100%;margin:6px 0 0;gap:2px}
+  .cabecera.abierta .menu-principal a{padding:11px 12px;font-size:15px}
+  .cabecera.abierta .cabecera-der{width:100%;justify-content:flex-start}
+  .cabecera.abierta .cabecera-der > .campana,.cabecera.abierta .boton-menu-movil{order:-1}
+  .cabecera-der .boton{padding:8px 12px}
+  .panel-notif{position:fixed;left:8px;right:8px;top:calc(56px + env(safe-area-inset-top));width:auto;max-width:none}
+  .tarjetas{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:10px 10px 2px}
+  .tarjeta .valor{font-size:18px}
+  .barra{padding:10px}
+  .barra input[type=search]{min-width:0;flex:1 1 100%}
+  .barra select{flex:1 1 45%;min-width:0}
+  .seccion{margin:14px 10px}
+  .tabla-envoltura{margin:6px 6px 14px;-webkit-overflow-scrolling:touch}
+  .tabla th,.tabla td{padding:7px 8px}
+  .grid-detalle{grid-template-columns:1fr}
+  .modal{padding:0}
+  .modal-caja{border-radius:0;min-height:100%;max-width:none}
+  .modal-cabecera{border-radius:0;padding-top:calc(12px + env(safe-area-inset-top))}
+  .modal-cuerpo{padding:12px}
+  .boton.mini{padding:7px 10px}
+  .formulario{grid-template-columns:1fr}
+  .login-caja{width:calc(100vw - 32px)}
+  #scroll-superior{display:none}
+  .aviso{margin:8px 10px 0}
+  pre.log{max-height:55vh}
+}
+@media (display-mode: standalone){
+  .cabecera{padding-top:calc(12px + env(safe-area-inset-top))}
+}
+.formulario label.check{display:flex;align-items:center;gap:8px;color:var(--texto);font-size:13px}
+.formulario label.check input{width:auto;margin:0;flex:none}

@@ -4,6 +4,7 @@
   <a href="/consumo" class="{% if seccion == 'consumo' %}activo{% endif %}">Consumo</a>
   <a href="/backups" class="{% if seccion == 'backups' %}activo{% endif %}">Bases y backups</a>
   <a href="/nueva" class="{% if seccion == 'nueva' %}activo{% endif %}">Nueva instancia</a>
+  <a href="/notificaciones" class="{% if seccion == 'notificaciones' %}activo{% endif %}">Notificaciones</a>
   {# /excluidos sigue funcionando para quien la administra, pero no se enlaza
      desde el menú: se entra escribiendo la dirección. #}
   {% if seccion == 'excluidos' %}
