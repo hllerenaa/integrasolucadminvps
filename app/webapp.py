@@ -11,7 +11,8 @@ from flask import (Flask, Response, jsonify, redirect, render_template,
                    request, session, url_for)
 
 from . import (__version__, acciones as mod_acciones, aprovisionar,
-               backups as mod_backups, certificados as mod_certificados, consumo,
+               backups as mod_backups, certificados as mod_certificados, cobros as mod_cobros,
+               consumo,
                credenciales as mod_credenciales, cron as mod_cron, dbstats,
                discovery, excluidos as mod_excluidos, exportar, units, webpush)
 from flask import send_file, send_from_directory
@@ -42,7 +43,9 @@ def crear_app(config=None):
     app.config['COLECTOR'] = colector
     tareas = GestorTareas(config)
     app.config['TAREAS'] = tareas
-    notificador = Notificador(config, colector)
+    cobros = mod_cobros.Cobros(config)
+    app.config['COBROS'] = cobros
+    notificador = Notificador(config, colector, cobros)
     app.config['NOTIFICADOR'] = notificador
     tareas.al_terminar = notificador.tarea_terminada
 
@@ -221,6 +224,10 @@ def crear_app(config=None):
                                   buscar=request.args.get('q') or None,
                                   incluir_ocultas=incluir, solo_ocultas=solo)
         datos['version'] = __version__
+        # Estado de cobro de cada instancia, para la columna «Cobro» del listado.
+        registros = cobros.todos()
+        for inst in datos['instancias']:
+            inst['cobro'] = mod_cobros.compacto(mod_cobros.calcular(registros.get(inst.get('id'))))
         datos['capacidades'] = {
             'bd': bool(config.get('consultar_bd', True)),
             'media': bool(config.get('medir_media', True)),
@@ -239,6 +246,7 @@ def crear_app(config=None):
             'credenciales_editar': bool((config.get('credenciales') or {}).get('editar', True)),
             'credenciales_secretos': bool((config.get('credenciales') or {}).get('mostrar_secretos', True)),
             'aprovisionar': bool((config.get('aprovisionamiento') or {}).get('enabled', True)),
+            'cobros_editar': permisos()['gestionar_excluidos'],
         }
         return jsonify(datos)
 
@@ -900,6 +908,90 @@ def crear_app(config=None):
             mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             headers={'Content-Disposition': 'attachment; filename=%s' % nombre},
         )
+
+    # ------------------------------------------------------------------ cobros
+    @app.route('/cobros')
+    @requiere_login
+    def pagina_cobros():
+        return render_template('cobros.html', seccion='cobros', permisos=permisos(),
+                               titulo=config.get('titulo'), version=__version__,
+                               auth_activa=bool((config.get('auth') or {}).get('enabled')))
+
+    def _instancia_visible(ident):
+        """La instancia sólo si este usuario puede verla (las ocultas según permiso)."""
+        incluir, _solo = ambito_ocultas('1')
+        for inst in colector.snapshot(incluir_ocultas=incluir)['instancias']:
+            if inst.get('id') == ident:
+                return inst
+        return None
+
+    @app.route('/api/cobros')
+    @requiere_login
+    def api_cobros():
+        incluir, _solo = ambito_ocultas('1')
+        resultado = cobros.resumen(colector.snapshot(incluir_ocultas=incluir)['instancias'])
+        resultado['editable'] = permisos()['gestionar_excluidos']
+        return jsonify(resultado)
+
+    @app.route('/api/cobros/<path:ident>')
+    @requiere_login
+    def api_cobro(ident):
+        inst = _instancia_visible(ident)
+        if not inst:
+            return jsonify({'ok': False, 'error': 'instancia no encontrada'}), 404
+        return jsonify({'ok': True, 'id': ident, 'cliente': inst.get('cliente'),
+                        'tipo': inst.get('tipo'), 'cobro': cobros.estado(ident),
+                        'editable': permisos()['gestionar_excluidos']})
+
+    def _requiere_cobros():
+        if not permisos()['gestionar_excluidos']:
+            return jsonify({'ok': False, 'error': 'Sólo un administrador del panel registra cobros'}), 403
+        return None
+
+    @app.route('/api/cobros/<path:ident>/plan', methods=['POST'])
+    @requiere_login
+    def api_cobro_plan(ident):
+        denegado = _requiere_cobros()
+        if denegado:
+            return denegado
+        inst = _instancia_visible(ident)
+        if not inst:
+            return jsonify({'ok': False, 'error': 'instancia no encontrada'}), 404
+        cuerpo = request.get_json(silent=True) or {}
+        try:
+            estado = cobros.configurar(ident, cuerpo, usuario=session.get('usuario') or 'api')
+        except (ValueError, TypeError) as ex:
+            return jsonify({'ok': False, 'error': str(ex)}), 400
+        mod_acciones.registrar_evento(
+            config, session.get('usuario') or 'api', 'cobro_plan', inst.get('cliente'), 0,
+            '%s %s desde %s' % (estado.get('plan') or 'sin plan', estado.get('monto') or '',
+                                estado.get('primera_fecha') or ''))
+        notificador.invalidar_alertas()
+        return jsonify({'ok': True, 'cobro': estado})
+
+    @app.route('/api/cobros/<path:ident>/pago', methods=['POST'])
+    @requiere_login
+    def api_cobro_pago(ident):
+        denegado = _requiere_cobros()
+        if denegado:
+            return denegado
+        inst = _instancia_visible(ident)
+        if not inst:
+            return jsonify({'ok': False, 'error': 'instancia no encontrada'}), 404
+        cuerpo = request.get_json(silent=True) or {}
+        periodo = (cuerpo.get('periodo') or '').strip()
+        pagado = bool(cuerpo.get('pagado'))
+        try:
+            estado = cobros.registrar(ident, periodo, pagado, monto=cuerpo.get('monto'),
+                                      fecha=cuerpo.get('fecha'), nota=cuerpo.get('nota') or '',
+                                      usuario=session.get('usuario') or 'api')
+        except (ValueError, TypeError) as ex:
+            return jsonify({'ok': False, 'error': str(ex)}), 400
+        mod_acciones.registrar_evento(
+            config, session.get('usuario') or 'api', 'cobro_pagado' if pagado else 'cobro_no_pagado',
+            inst.get('cliente'), 0, periodo)
+        notificador.invalidar_alertas()
+        return jsonify({'ok': True, 'cobro': estado})
 
     # ------------------------------------------------------------ notificaciones
     def requiere_administrar(vista):

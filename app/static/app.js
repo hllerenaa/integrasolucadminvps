@@ -473,6 +473,17 @@
         if (!fac.disponible) return '<span class="tenue">—</span>';
         return porAnio(fac.por_anio, 4, true);
       } },
+    { id: 'cobro', titulo: 'Cobro', grupo: 'actividad',
+      valor: function (i) {
+        var c = i.cobro || {};
+        // Primero lo que más debe, luego lo que vence antes.
+        return (ORDEN_COBRO[c.estado] === undefined ? 9 : ORDEN_COBRO[c.estado]) * 100000 +
+               (c.estado === 'vencido' ? 50000 - (c.dias_vencido || 0) : 50000 + ((c.proximo || {}).dias || 0));
+      },
+      render: function (i) {
+        return '<a class="enlace-cobro" href="/cobros?q=' + encodeURIComponent(i.cliente) + '">' +
+          celdaCobro(i.cobro) + '</a>';
+      } },
     { id: 'primera_venta', titulo: 'Primera venta', grupo: 'actividad', requiere: 'bd',
       valor: function (i) { return (i.resumen || {}).primera_venta || ''; },
       render: function (i) { return guion((i.resumen || {}).primera_venta); } },
@@ -552,7 +563,15 @@
     'url-ok': function (i) { return !!(i.url_estado || {}).responde; },
     'url-caida': function (i) { return !(i.url_estado || {}).responde; },
     'db-ok': function (i) { return !!(i.resumen || {}).db_ok; },
-    'db-caida': function (i) { return !(i.resumen || {}).db_ok; }
+    'db-caida': function (i) { return !(i.resumen || {}).db_ok; },
+    'cobro-vencido': function (i) { return (i.cobro || {}).estado === 'vencido'; },
+    'cobro-deuda': function (i) { return ['vencido', 'en-gracia'].indexOf((i.cobro || {}).estado) !== -1; },
+    'cobro-por-vencer': function (i) { return (i.cobro || {}).estado === 'por-vencer'; },
+    'cobro-al-dia': function (i) { return (i.cobro || {}).estado === 'al-dia'; },
+    'cobro-sin-deuda': function (i) {
+      return !!(i.cobro || {}).plan && ['vencido', 'en-gracia'].indexOf(i.cobro.estado) === -1;
+    },
+    'cobro-sin-plan': function (i) { return !(i.cobro || {}).plan; }
   };
 
   function filtrar(lista) {
@@ -698,6 +717,15 @@
         clase: r.db_caidas ? 'mal' : 'ok',
         chips: parChips('estado', 'db-ok', 'db-caida', r.db_activas, r.total, 'accesibles', 'caídas') });
       t.push({ rotulo: 'Tamaño total BD', valor: r.db_tamano || '-' });
+    }
+    var conPlan = (estado.datos || []).filter(function (i) { return (i.cobro || {}).plan; });
+    if (conPlan.length) {
+      var deben = conPlan.filter(FILTROS_ESTADO['cobro-deuda']);
+      var monto = deben.reduce(function (a, i) { return a + ((i.cobro || {}).total_vencido || 0); }, 0);
+      t.push({ rotulo: 'Cobros', valor: deben.length ? dinero(monto) + ' vencido' : 'al día',
+        clase: deben.length ? 'mal' : 'ok',
+        chips: parChips('estado', 'cobro-sin-deuda', 'cobro-deuda', conPlan.length - deben.length,
+                        conPlan.length, 'sin deuda', 'deben') });
     }
     var web = estado.servidoresWeb || {};
     var demonios = Object.keys(web);
@@ -2526,6 +2554,266 @@
     });
   }
 
+  // ------------------------------------------------------------------ cobros
+  var cobrosDatos = null, cobroActual = null;
+  var ORDEN_COBRO = { 'vencido': 0, 'en-gracia': 1, 'por-vencer': 2, 'al-dia': 3, 'sin-plan': 4 };
+  var ETIQUETA_COBRO = { 'vencido': ['rojo', 'vencido'], 'en-gracia': ['ambar', 'en gracia'],
+                         'por-vencer': ['ambar', 'por vencer'], 'al-dia': ['verde', 'al día'],
+                         'sin-plan': ['gris', 'sin plan'], 'pagado': ['verde', 'pagado'],
+                         'pendiente': ['gris', 'pendiente'] };
+
+  function hoyISO() {
+    var d = new Date();
+    return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+  }
+
+  // «vence en 3 días», «venció hace 12 días», «vence hoy»
+  function textoDias(dias) {
+    if (dias === null || dias === undefined) return '';
+    if (dias === 0) return 'vence hoy';
+    if (dias > 0) return 'vence en ' + dias + (dias === 1 ? ' día' : ' días');
+    return 'venció hace ' + (-dias) + (dias === -1 ? ' día' : ' días');
+  }
+
+  function badgeCobro(estadoCobro, texto) {
+    var e = ETIQUETA_COBRO[estadoCobro] || ['gris', estadoCobro];
+    return badge(e[0], texto || e[1]);
+  }
+
+  // Resumen de una celda (listado de instancias y tabla de cobros).
+  function celdaCobro(c) {
+    c = c || {};
+    if (!c.plan) return '<span class="tenue">sin plan</span>';
+    var p = c.proximo;
+    if (c.estado === 'vencido') {
+      return badgeCobro('vencido', 'debe ' + dinero(c.total_vencido)) +
+        '<div class="sub">' + c.vencidos + ' periodo' + (c.vencidos === 1 ? '' : 's') +
+        ' · hace ' + c.dias_vencido + ' días</div>';
+    }
+    return badgeCobro(c.estado) + (p ? '<div class="sub">' + esc(p.nombre) + ' · ' + esc(textoDias(p.dias)) + '</div>' : '');
+  }
+
+  function cargarCobros() {
+    return fetch('/api/cobros', { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) { cobrosDatos = d; pintarCobros(); })
+      .catch(function (e) { aviso('No se pudieron leer los cobros: ' + e.message); });
+  }
+
+  function pintarCobros() {
+    var d = cobrosDatos;
+    if (!d) return;
+    var t = d.totales || {};
+    var tarjeta = function (rotulo, valor, extra, clase, filtro) {
+      return '<div class="tarjeta ' + (clase || '') + (filtro !== undefined ? ' clicable' : '') + '"' +
+        (filtro !== undefined ? ' data-filtro-cobro="' + filtro + '"' : '') + '>' +
+        '<div class="rotulo">' + esc(rotulo) + '</div><div class="valor">' + esc(valor) + '</div>' +
+        (extra ? '<div class="rotulo">' + esc(extra) + '</div>' : '') + '</div>';
+    };
+    $('#tarjetas-cobros').innerHTML = [
+      tarjeta('Con plan de cobro', (t.con_plan || 0) + '/' + (d.instancias || []).length,
+              (t.sin_plan || 0) + ' sin plan', '', 'sin-plan'),
+      tarjeta('Vencidos', t.vencidos || 0, 'deben ' + dinero(t.total_vencido), t.vencidos ? 'mal' : 'ok', 'vencido'),
+      tarjeta('En días de gracia', t.en_gracia || 0, 'ya pasó el corte', t.en_gracia ? 'mal' : 'ok', 'en-gracia'),
+      tarjeta('Por vencer', t.por_vencer || 0, 'dentro de los días de aviso', '', 'por-vencer'),
+      tarjeta('Al día', t.al_dia || 0, '', 'ok', 'al-dia'),
+      tarjeta('Total vencido', dinero(t.total_vencido), 'sin cobrar', t.total_vencido ? 'mal' : 'ok'),
+      tarjeta('A cobrar en 30 días', dinero(t.cobrar_30_dias), 'periodos que vencen pronto'),
+      tarjeta('Ingreso mensual', dinero(t.mensual_esperado), 'anuales prorrateados')
+    ].join('');
+
+    var txt = ($('#filtro-cobros').value || '').toLowerCase().trim();
+    var fEstado = $('#filtro-cobro-estado').value, fPlan = $('#filtro-cobro-plan').value;
+    var filas = (d.instancias || []).filter(function (f) {
+      var c = f.cobro || {};
+      if (fEstado === 'con-deuda' && ['vencido', 'en-gracia'].indexOf(c.estado) === -1) return false;
+      if (fEstado && fEstado !== 'con-deuda' && c.estado !== fEstado) return false;
+      if (fPlan && c.plan !== fPlan) return false;
+      if (txt && [f.cliente, f.empresa, f.dominio].join(' ').toLowerCase().indexOf(txt) === -1) return false;
+      return true;
+    }).sort(function (a, b) {
+      var ca = a.cobro || {}, cb = b.cobro || {};
+      var oa = ORDEN_COBRO[ca.estado], ob = ORDEN_COBRO[cb.estado];
+      if (oa !== ob) return oa - ob;
+      if (ca.estado === 'vencido') return (cb.dias_vencido || 0) - (ca.dias_vencido || 0);
+      var da = (ca.proximo || {}).dias, db = (cb.proximo || {}).dias;
+      if (da !== db && da !== undefined && db !== undefined) return da - db;
+      return (a.cliente || '').localeCompare(b.cliente || '');
+    });
+
+    var editable = d.editable;
+    $('#cuerpo-cobros').innerHTML = filas.map(function (f) {
+      var c = f.cobro || {}, p = c.proximo;
+      return '<tr data-cobro="' + esc(f.id) + '">' +
+        '<td class="cliente">' + esc(f.cliente) + ' <span class="chip ' + esc(f.tipo) + '">' + esc(f.tipo) + '</span>' +
+          (f.oculta ? ' <span class="badge gris">oculta</span>' : '') +
+          (f.servicio_activo ? '' : ' ' + badge('rojo', 'servicio no activo')) +
+          '<div class="sub">' + esc(f.empresa || f.dominio || '') + '</div></td>' +
+        '<td>' + (c.plan ? '<strong>' + esc(c.plan) + '</strong> · ' + dinero(c.monto) +
+            '<div class="sub">corte: ' + esc(c.corte) + (c.dias_gracia ? ' · ' + c.dias_gracia + ' días de gracia' : '') + '</div>'
+          : '<span class="tenue">—</span>') + '</td>' +
+        '<td>' + (p ? esc(p.nombre) + '<div class="sub">' + esc(p.vence) + ' · ' + esc(textoDias(p.dias)) + '</div>'
+                    : (c.plan ? '<span class="tenue">todo pagado</span>' : '—')) + '</td>' +
+        '<td>' + badgeCobro(c.estado) + '</td>' +
+        '<td class="num">' + (c.vencidos ? '<strong class="texto-rojo">' + dinero(c.total_vencido) + '</strong>' +
+            '<div class="sub">' + c.vencidos + ' periodo' + (c.vencidos === 1 ? '' : 's') + ' · ' +
+            c.dias_vencido + ' días</div>' : (c.plan ? '$0.00' : '—')) + '</td>' +
+        '<td>' + guion(c.pagado_hasta) + '</td>' +
+        '<td>' + (c.ultimo_pago ? esc(c.ultimo_pago.fecha) + '<div class="sub">' + dinero(c.ultimo_pago.monto) + '</div>'
+                                : '<span class="tenue">—</span>') + '</td>' +
+        '<td style="white-space:nowrap">' +
+          (c.plan ? '<button class="boton mini cobro-pagos" type="button" data-id="' + esc(f.id) + '">' +
+                      (editable ? 'Registrar pagos' : 'Ver pagos') + '</button> ' : '') +
+          (editable ? '<button class="boton mini cobro-plan" type="button" data-id="' + esc(f.id) + '">' +
+                      (c.plan ? 'Plan' : 'Configurar cobro') + '</button>' : '') + '</td></tr>';
+    }).join('') || '<tr><td class="vacio" colspan="8">Sin instancias que coincidan</td></tr>';
+    $('#contador-cobros').textContent = filas.length + ' de ' + (d.instancias || []).length + ' instancias';
+  }
+
+  function abrirCobro(id, vista) {
+    return fetch('/api/cobros/' + encodeURIComponent(id), { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) { aviso(d.error || 'No se pudo abrir'); return; }
+        cobroActual = d;
+        $('#modal-cobro').classList.remove('oculto');
+        if (vista === 'plan' || !d.cobro.plan) pintarPlanCobro(); else pintarPagosCobro();
+      })
+      .catch(function (e) { aviso(e.message); });
+  }
+
+  function pintarPlanCobro() {
+    var d = cobroActual, c = d.cobro || {};
+    $('#cobro-titulo').textContent = 'Plan de cobro · ' + d.cliente;
+    var plan = c.plan || '';
+    $('#cobro-cuerpo').innerHTML =
+      '<div class="formulario">' +
+        '<label>Plan<select id="cp-plan">' +
+          [['', 'Sin plan (no se cobra)'], ['mensual', 'Mensual'], ['anual', 'Anual']].map(function (o) {
+            return '<option value="' + o[0] + '"' + (plan === o[0] ? ' selected' : '') + '>' + o[1] + '</option>';
+          }).join('') + '</select></label>' +
+        '<label>Monto por periodo (USD)<input id="cp-monto" type="number" step="0.01" min="0" value="' +
+          esc(c.monto || '') + '"></label>' +
+        '<label>Primera fecha de corte<input id="cp-fecha" type="date" value="' + esc(c.primera_fecha || hoyISO()) + '">' +
+          '<span class="ayuda">Mensual: vence ese mismo día cada mes (si el mes es más corto, el último día). ' +
+          'Anual: esa misma fecha cada año. Los periodos se cuentan desde aquí.</span></label>' +
+        '<label>Días de gracia<input id="cp-gracia" type="number" min="0" value="' + esc(c.dias_gracia || 0) + '">' +
+          '<span class="ayuda">Días después del corte antes de contarlo como vencido.</span></label>' +
+        '<label>Avisar cuántos días antes<input id="cp-aviso" type="number" min="0" value="' +
+          esc(c.dias_aviso !== undefined ? c.dias_aviso : 5) + '"></label>' +
+        '<label>Notas<input id="cp-notas" value="' + esc(c.notas || '') + '" placeholder="Ej.: paga por transferencia"></label>' +
+      '</div>' +
+      '<div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">' +
+        (c.plan ? '<button class="boton mini" type="button" id="cp-ver-pagos">Ver pagos</button>' : '') +
+        '<button class="boton" type="button" id="cp-guardar">Guardar plan</button></div>';
+  }
+
+  function guardarPlanCobro(boton) {
+    var datos = {
+      plan: $('#cp-plan').value, monto: $('#cp-monto').value, primera_fecha: $('#cp-fecha').value,
+      dias_gracia: parseInt($('#cp-gracia').value, 10) || 0, dias_aviso: parseInt($('#cp-aviso').value, 10) || 0,
+      notas: $('#cp-notas').value
+    };
+    boton.disabled = true;
+    fetch('/api/cobros/' + encodeURIComponent(cobroActual.id) + '/plan', {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(datos)
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) { aviso(d.error || 'No se pudo guardar'); return; }
+        cobroActual.cobro = d.cobro;
+        aviso('Plan de cobro guardado', 'aviso-ok');
+        cargarCobros();
+        if (d.cobro.plan) pintarPagosCobro(); else $('#modal-cobro').classList.add('oculto');
+      })
+      .catch(function (e) { aviso(e.message); })
+      .then(function () { boton.disabled = false; });
+  }
+
+  function pintarPagosCobro() {
+    var d = cobroActual, c = d.cobro || {}, editable = d.editable;
+    $('#cobro-titulo').textContent = 'Pagos · ' + d.cliente;
+    var periodos = (c.periodos || []).slice().reverse();      // lo más reciente arriba
+    var sinPagar = (c.periodos || []).filter(function (p) { return p.estado === 'vencido' || p.estado === 'en-gracia'; });
+    $('#cobro-cuerpo').innerHTML =
+      '<div class="resumen-cobro">' + celdaCobro(c) +
+        '<span class="tenue"> · ' + esc(c.plan) + ' ' + dinero(c.monto) + ' · corte ' + esc(c.corte) +
+        ' · pagado: ' + c.pagados + ' periodo' + (c.pagados === 1 ? '' : 's') + ' (' + dinero(c.total_pagado) + ')' +
+        (c.notas ? ' · ' + esc(c.notas) : '') + '</span></div>' +
+      (editable
+        ? '<div class="barra" style="padding:10px 0">' +
+            '<label class="check">Fecha de pago <input type="date" id="cobro-fecha" value="' + hoyISO() + '"></label>' +
+            '<input type="text" id="cobro-nota" placeholder="Nota (transferencia, efectivo, factura…)" style="flex:1;min-width:160px">' +
+            (sinPagar.length ? '<button class="boton mini" type="button" id="cobro-pagar-todo">✔ Pagó todo lo vencido (' +
+              sinPagar.length + ' · ' + dinero(sinPagar.reduce(function (a, p) { return a + p.monto; }, 0)) + ')</button>' : '') +
+            '<button class="boton mini" type="button" id="cobro-editar-plan">Plan</button>' +
+          '</div>'
+        : '') +
+      '<div class="lista-periodos">' + periodos.map(function (p) {
+        var pago = p.pago || {};
+        return '<div class="periodo-cobro estado-' + esc(p.estado) + '">' +
+          '<div class="periodo-info"><strong>' + esc(p.nombre) + '</strong>' +
+            '<span class="sub">corte ' + esc(p.vence) + (p.pagado ? '' : ' · ' + esc(textoDias(p.dias))) + '</span></div>' +
+          '<div class="periodo-estado">' + badgeCobro(p.estado) +
+            (p.pagado ? '<div class="sub">el ' + esc(pago.fecha) + ' · ' + dinero(pago.monto) +
+               (pago.nota ? ' · ' + esc(pago.nota) : '') + (pago.usuario ? ' · ' + esc(pago.usuario) : '') + '</div>'
+             : '<div class="sub">' + dinero(p.monto) + '</div>') + '</div>' +
+          (editable
+            ? '<div class="periodo-acciones">' +
+                (p.pagado
+                  ? '<button class="boton mini cobro-marcar" type="button" data-periodo="' + esc(p.periodo) +
+                      '" data-pagado="0">✖ No pagó</button>'
+                  : '<input type="number" step="0.01" min="0" class="monto-periodo" value="' + esc(p.monto) +
+                      '" title="Monto pagado"> <button class="boton mini boton-si cobro-marcar" type="button" data-periodo="' +
+                      esc(p.periodo) + '" data-pagado="1">✔ Sí pagó</button>') +
+              '</div>'
+            : '') +
+          '</div>';
+      }).join('') + '</div>' +
+      '<p class="tenue" style="margin-top:10px">Se muestran los periodos desde la primera fecha de corte y los ' +
+        'dos siguientes, para registrar pagos adelantados.</p>';
+  }
+
+  function marcarPeriodo(boton) {
+    var periodo = boton.getAttribute('data-periodo');
+    var pagado = boton.getAttribute('data-pagado') === '1';
+    var fila = boton.closest('.periodo-cobro');
+    var montoInput = fila && fila.querySelector('.monto-periodo');
+    if (!pagado && !window.confirm('¿Quitar el pago registrado de ' + periodo + '?')) return Promise.resolve();
+    boton.disabled = true;
+    return enviarPago(periodo, pagado, montoInput ? montoInput.value : null)
+      .then(function (d) {
+        if (!d.ok) { aviso(d.error || 'No se pudo registrar'); boton.disabled = false; return; }
+        cobroActual.cobro = d.cobro;
+        pintarPagosCobro();
+        cargarCobros();
+      });
+  }
+
+  function enviarPago(periodo, pagado, monto) {
+    return fetch('/api/cobros/' + encodeURIComponent(cobroActual.id) + '/pago', {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ periodo: periodo, pagado: pagado, monto: monto,
+                             fecha: $('#cobro-fecha') ? $('#cobro-fecha').value : null,
+                             nota: $('#cobro-nota') ? $('#cobro-nota').value : '' })
+    }).then(function (r) { return r.json(); })
+      .catch(function (e) { return { ok: false, error: e.message }; });
+  }
+
+  function pagarTodoVencido(boton) {
+    var pendientes = (cobroActual.cobro.periodos || []).filter(function (p) {
+      return p.estado === 'vencido' || p.estado === 'en-gracia'; });
+    if (!pendientes.length || !window.confirm('¿Registrar como pagados ' + pendientes.length + ' periodo(s)?')) return;
+    boton.disabled = true;
+    var cadena = Promise.resolve();
+    pendientes.forEach(function (p) {
+      cadena = cadena.then(function () {
+        return enviarPago(p.periodo, true, p.monto).then(function (d) { if (d.ok) cobroActual.cobro = d.cobro; });
+      });
+    });
+    cadena.then(function () { pintarPagosCobro(); cargarCobros(); aviso('Pagos registrados', 'aviso-ok'); });
+  }
+
   // ---------------------------------------------------------- notificaciones
   var notif = { datos: null, ultimaVista: null, poll: null, instalar: null, primera: true };
   var ICONO_NIVEL = { error: '🔴', aviso: '🟠', ok: '🟢', info: '🔵' };
@@ -2956,6 +3244,7 @@
         casilla('Apache / nginx caído', 'r-web', r.servidor_web_caido) +
         casilla('Sin renovación automática de certificados', 'r-auto', r.renovacion_automatica) +
         casilla('Backups atrasados', 'r-backup', r.backup_atrasado) +
+        casilla('Pagos de clientes vencidos', 'r-cobro', r.cobro_vencido) +
         casilla('Fin de tareas (backups, altas, certbot)', 'r-tareas', r.tareas) +
         campo('Certificado que vence en (días) o menos', 'r-ssl', r.ssl_dias, 'number', '0 = no avisar.') +
         campo('Disco lleno a partir del %', 'r-disco', r.disco_pct, 'number', '0 = no avisar.') +
@@ -3017,6 +3306,7 @@
         servicio_caido: $('#r-servicio').checked, url_caida: $('#r-url').checked,
         base_caida: $('#r-base').checked, servidor_web_caido: $('#r-web').checked,
         renovacion_automatica: $('#r-auto').checked, backup_atrasado: $('#r-backup').checked,
+        cobro_vencido: $('#r-cobro').checked,
         tareas: $('#r-tareas').checked, ssl_dias: valorNum('r-ssl'), disco_pct: valorNum('r-disco'),
         ram_pct: valorNum('r-ram')
       },
@@ -3276,6 +3566,20 @@
                                 el.getAttribute('data-accion'), el);
         }
         if (el.classList.contains('chip-filtro')) return aplicarChip(el);
+        if (el.classList.contains('cobro-pagos')) return abrirCobro(el.getAttribute('data-id'), 'pagos');
+        if (el.classList.contains('cobro-plan')) return abrirCobro(el.getAttribute('data-id'), 'plan');
+        if (el.classList.contains('cobro-marcar')) return marcarPeriodo(el);
+        if (el.id === 'cp-guardar') return guardarPlanCobro(el);
+        if (el.id === 'cp-ver-pagos') return pintarPagosCobro();
+        if (el.id === 'cobro-editar-plan') return pintarPlanCobro();
+        if (el.id === 'cobro-pagar-todo') return pagarTodoVencido(el);
+        if (el.id === 'btn-cobros-recargar') return cargarCobros();
+        if (el.id === 'cobro-cerrar' || el.id === 'modal-cobro') return $('#modal-cobro').classList.add('oculto');
+        var tarjetaCobro = el.closest('.tarjeta[data-filtro-cobro]');
+        if (tarjetaCobro) {
+          $('#filtro-cobro-estado').value = tarjetaCobro.getAttribute('data-filtro-cobro');
+          return pintarCobros();
+        }
         var tarjeta = el.closest('.tarjeta.clicable');
         if (tarjeta) {
           if (tarjeta.getAttribute('data-filtro-api') && $('#filtro-api')) {
@@ -3321,6 +3625,7 @@
       if (el.id === 'solo-sin-uso') return pintarBases();
       if (el.id === 'consumo-auto') return programarConsumo();
       if (el.id === 'filtro-notif-nivel') return pintarPaginaNotif();
+      if (el.id === 'filtro-cobro-estado' || el.id === 'filtro-cobro-plan') return pintarCobros();
       if (el.id === 'orden-consumo-inst') return pintarConsumoInstancias();
       if (el.id === 'filtro-servicio-cat') return pintarServicios();
       if (el.id === 'procesos-por') return pintarProcesos();
@@ -3340,13 +3645,14 @@
       if (['filtro-backups', 'filtro-backup-estado'].indexOf(e.target.id) !== -1) pintarBackups();
       if (e.target.id === 'filtro-cert') { estadoCert.filtro = e.target.value; pintarFilasCert(); }
       if (e.target.id === 'filtro-consumo-inst') pintarConsumoInstancias();
+      if (e.target.id === 'filtro-cobros') pintarCobros();
     });
 
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape') {
         if (document.querySelector('.cabecera')) document.querySelector('.cabecera').classList.remove('abierta');
         if ($('#modal-alertas') && !$('#modal-alertas').classList.contains('oculto')) cerrarModalAlertas(true);
-        ['#modal', '#modal-campo', '#modal-nueva', '#modal-tarea', '#panel-notif'].forEach(function (sel) {
+        ['#modal', '#modal-campo', '#modal-nueva', '#modal-tarea', '#panel-notif', '#modal-cobro'].forEach(function (sel) {
           if ($(sel)) $(sel).classList.add('oculto');
         });
         if (tareaPoll) { clearInterval(tareaPoll); tareaPoll = null; }
@@ -3356,6 +3662,13 @@
     iniciarNotificaciones();
     if (MODO === 'notificaciones') {
       cargarCapacidades();
+      return;
+    }
+    if (MODO === 'cobros') {
+      var q = (location.search.match(/[?&]q=([^&]+)/) || [])[1];
+      if (q) $('#filtro-cobros').value = decodeURIComponent(q.replace(/\+/g, ' '));
+      cargarCapacidades();
+      cargarCobros();
       return;
     }
     if (MODO === 'certificados') {

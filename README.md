@@ -86,6 +86,7 @@ socket.
 |---|---|
 | **Instancias** (`/`) | El listado completo con todos los datos y las acciones sobre cada instalación |
 | **Certificados** (`/certificados`) | Certificados de Let's Encrypt: emisión, vencimiento, renovar (normal o forzada, comprobando que la fecha cambió), pausar la renovación o eliminar; **emitir** certificados para las instancias que no tienen; **recargar o reiniciar Apache/nginx** validando antes la configuración; y aviso si no hay renovación automática (`certbot.timer` o cron) |
+| **Cobros** (`/cobros`) | Plan de cobro de cada cliente (mensual o anual), fecha de corte, periodos marcados como pagados o no, días para el vencimiento, cuánto y desde cuándo está vencido (ver abajo) |
 | **Consumo** (`/consumo`) | Qué consume cada cosa: CPU, RAM, swap y discos del servidor; RAM/CPU/disco de cada instancia; todos los servicios de systemd en ejecución (instancias, infraestructura como PostgreSQL/Apache/nginx y sistema) con la CPU medida en 1 s; los procesos que más RAM o CPU usan (con la instancia a la que pertenecen); las bases más grandes y las carpetas que más ocupan (backups, PostgreSQL, logs, journal…) |
 | **Bases y backups** (`/backups`) | Respaldos por instancia o de cualquier base, verificados y descargables, retención, y todas las bases del servidor con su **detalle**: tablas más pesadas, filas muertas, vacuum, conexiones abiertas con su consulta, aciertos de caché y actividad |
 | **Notificaciones** (`/notificaciones`) | Alertas activas, historial, activar las notificaciones push en el celular, instalar la app y configurar Telegram, correo y qué avisar (ver abajo) |
@@ -99,6 +100,41 @@ En la barra superior, además:
 | **Tareas** | Lo que el servidor tiene programado (crontabs de los usuarios, `/etc/crontab`, `/etc/cron.d` y los `.timer` de systemd, con el horario traducido) y las tareas que el panel ha lanzado en segundo plano, con su log |
 | **Historial** (sólo con permiso `ver_excluidos`) | Todo lo hecho desde el panel: arrancar/parar servicios, activar o desactivar sitios, abrir o guardar credenciales, cambios de RUC o de API cédula y operaciones de certbot, con usuario, resultado y salida del comando |
 | **Excel** / **CSV** | Exportan exactamente las filas que están en pantalla, en el mismo orden y con los mismos filtros |
+
+## Cobros a los clientes
+
+En **Cobros** cada instancia puede tener un plan:
+
+| Plan | Fecha de corte | Periodo |
+|---|---|---|
+| **Mensual** | El mismo día de la *primera fecha de corte*, todos los meses (si el mes es más corto, el último día: el 31 pasa a 30 o 28) | «Septiembre 2026» |
+| **Anual** | La misma fecha cada año | «Año 2026» |
+
+Se configura con **Configurar cobro / Plan**: plan, monto por periodo (USD), primera
+fecha de corte (desde ahí se cuentan los periodos), días de gracia, cuántos días antes
+avisar y notas.
+
+**Registrar pagos** muestra todos los periodos, desde el primero hasta los dos
+siguientes (para pagos adelantados), y en cada uno **✔ Sí pagó** (con el monto, la
+fecha de pago y una nota) o **✖ No pagó** para deshacerlo. «Pagó todo lo vencido»
+registra de una vez todos los periodos atrasados.
+
+Estados de cada cliente:
+
+- **Vencido**: hay periodos sin pagar con el corte (más los días de gracia) ya
+  pasado. Muestra cuántos periodos, cuánto debe y hace cuántos días venció el más antiguo.
+- **En gracia**: pasó el corte pero todavía está dentro de los días de gracia.
+- **Por vencer**: el próximo corte llega dentro de los días de aviso.
+- **Al día** o **Sin plan**.
+
+Las tarjetas suman lo vencido, lo que hay que cobrar en los próximos 30 días y el
+ingreso mensual esperado (los anuales prorrateados). El listado de **Instancias**
+tiene la columna **Cobro** y la tarjeta «Cobros» con los botones *sin deuda* / *deben*.
+Los pagos vencidos también llegan como alerta y notificación (regla «Pagos de clientes
+vencidos»). Ver es para todos los usuarios; registrar pagos y planes, sólo para quien
+administra el panel (`gestionar_excluidos`). Todo queda en el historial de acciones.
+
+Los datos se guardan en `var/cobros.json`: inclúyelo en tus respaldos del servidor.
 
 ## Notificaciones, celular y app instalable
 
@@ -517,6 +553,10 @@ inaccesibles o certificados vencidos: sirve para cron o alertas.
 | `GET /api/notificaciones/telegram-chats` | Chats que escribieron al bot |
 | `GET /api/push/clave`, `POST /api/push/suscribir`, `POST /api/push/desuscribir`, `GET /api/push/dispositivos` | Suscripciones push de los celulares |
 | `GET /manifest.webmanifest`, `GET /sw.js` | App instalable (sin login) |
+| `GET /api/cobros` | Estado de cobro de cada instancia y totales |
+| `GET /api/cobros/<id>` | Periodos y pagos de una instancia |
+| `POST /api/cobros/<id>/plan` | Plan (`{"plan": "mensual"\|"anual"\|"", "monto", "primera_fecha", "dias_gracia", "dias_aviso", "notas"}`) |
+| `POST /api/cobros/<id>/pago` | Marca un periodo (`{"periodo": "2026-09", "pagado": true, "monto", "fecha", "nota"}`) |
 | `GET /healthz` | Chequeo de salud (sin autenticación) |
 
 Acciones disponibles: `iniciar`, `detener`, `reiniciar`, `habilitar`,

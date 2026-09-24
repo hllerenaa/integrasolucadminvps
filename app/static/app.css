@@ -373,3 +373,25 @@ tr.fila-oculta .cliente{text-decoration:line-through;text-decoration-color:var(-
 .chip-filtro.elegido{background:var(--azul);border-color:var(--azul);color:#fff}
 .chip-filtro[disabled]{opacity:.45;cursor:default}
 @media (max-width:760px){.chip-filtro{padding:6px 10px;font-size:12.5px}}
+
+/* ------------------------------------------------------------------ cobros */
+.texto-rojo{color:var(--rojo)}
+.enlace-cobro{color:inherit;text-decoration:none;display:block}
+.enlace-cobro:hover{text-decoration:none;opacity:.8}
+.resumen-cobro{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:13px}
+.resumen-cobro .sub{display:inline;margin-left:4px}
+.lista-periodos{border:1px solid var(--borde);border-radius:10px;overflow:hidden}
+.periodo-cobro{display:grid;grid-template-columns:minmax(150px,1.2fr) minmax(150px,1.3fr) auto;gap:10px;
+  align-items:center;padding:9px 12px;border-bottom:1px solid var(--borde);border-left:4px solid transparent}
+.periodo-cobro:last-child{border-bottom:0}
+.periodo-info{display:flex;flex-direction:column}
+.periodo-cobro.estado-pagado{border-left-color:var(--verde);background:#f7fcf9}
+.periodo-cobro.estado-vencido{border-left-color:var(--rojo);background:#fff8f8}
+.periodo-cobro.estado-en-gracia,.periodo-cobro.estado-por-vencer{border-left-color:var(--ambar);background:#fffbf3}
+.periodo-acciones{display:flex;gap:6px;align-items:center;justify-content:flex-end}
+.monto-periodo{width:86px;padding:5px 7px;border:1px solid var(--borde);border-radius:6px;font:inherit;font-size:12.5px}
+.boton.mini.boton-si{background:var(--verde);color:#fff}
+@media (max-width:760px){
+  .periodo-cobro{grid-template-columns:1fr auto}
+  .periodo-acciones{grid-column:1 / -1;justify-content:flex-start}
+}
