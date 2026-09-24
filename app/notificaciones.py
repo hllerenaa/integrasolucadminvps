@@ -57,6 +57,7 @@ DEFAULTS = {
         'disco_pct': 85,
         'ram_pct': 92,
         'backup_atrasado': False,
+        'cobro_vencido': True,
         'renovacion_automatica': True,
         'tareas': True,
     },
@@ -84,9 +85,10 @@ def _lista(valor):
 
 
 class Notificador(object):
-    def __init__(self, config, colector):
+    def __init__(self, config, colector, cobros=None):
         self.config = config
         self.colector = colector
+        self.cobros = cobros
         self._lock = threading.Lock()
         self._parar = threading.Event()
         self._hilo = None
@@ -522,6 +524,17 @@ class Notificador(object):
                                         recursos.get('ram_total_legible')),
                    nivel='aviso', ruta='/consumo')
 
+        if reglas.get('cobro_vencido') and self.cobros is not None:
+            for fila in self.cobros.resumen(instantanea['instancias'])['instancias']:
+                cobro = fila['cobro']
+                if cobro.get('estado') != 'vencido':
+                    continue
+                alerta('cobro:%s' % fila['id'],
+                       'Pago vencido: %s' % fila['cliente'],
+                       '%s periodo(s) sin pagar · $%.2f · el más antiguo hace %s días.'
+                       % (cobro['vencidos'], cobro['total_vencido'], cobro['dias_vencido']),
+                       nivel='aviso', ruta='/cobros?q=%s' % fila['cliente'])
+
         if reglas.get('backup_atrasado') and (self.config.get('backups') or {}).get('enabled', True):
             datos = mod_backups.listar(self.config, instantanea['instancias'])
             for fila in datos['instancias']:
@@ -561,6 +574,10 @@ class Notificador(object):
             if previo[1]:
                 salida.append((nombre, previo[1]))
         return salida
+
+    def invalidar_alertas(self):
+        """Tras un cambio hecho desde el panel (p. ej. un pago), recalcular al momento."""
+        self._cache_alertas = None
 
     def alertas_actuales(self, ttl=30):
         """Lo que está mal AHORA, sin esperar confirmaciones: para el modal del panel.
