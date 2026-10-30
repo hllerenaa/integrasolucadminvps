@@ -37,7 +37,11 @@ class Instancia(object):
 
     @property
     def dominio(self):
-        return (self.credenciales.get('DOMINIO_GENERAL') or '').strip()
+        # Puede venir como dominio («x.com») o como URL («https://x.com/»).
+        valor = (self.credenciales.get('DOMINIO_GENERAL') or '').strip()
+        if '://' in valor:
+            valor = valor.split('://', 1)[1]
+        return valor.split('/', 1)[0]
 
     @property
     def url(self):

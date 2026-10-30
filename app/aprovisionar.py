@@ -27,7 +27,8 @@ from .utils import bytes_legible, revisar_dns
 
 RE_NOMBRE = re.compile(r'^[a-z][a-z0-9_-]{1,30}$')
 RE_DB = re.compile(r'^[a-z][a-z0-9_]{1,40}$')
-RE_DOMINIO = re.compile(r'^[a-z0-9.-]{4,120}$')
+# Al menos un punto: «icecream» a secas no es un dominio y deja la URL rota.
+RE_DOMINIO = re.compile(r'^(?=.{4,120}$)[a-z0-9-]+(\.[a-z0-9-]+)+$')
 
 EXCLUIR_COPIA = ('media/backups', '__pycache__', '*.pyc', '*.log')
 
@@ -108,6 +109,40 @@ def _contar_tablas(credenciales, nombre):
     return int(valor) if ok and valor.isdigit() else None
 
 
+def _base_incompleta(credenciales, base, origen):
+    """Compara la base con la de origen del template.
+
+    Devuelve (incompleta, texto). Una restauración cortada deja menos tablas o
+    las tablas sin datos (mucho más pequeña que el origen).
+    """
+    tablas = _contar_tablas(credenciales, base) or 0
+    tablas_origen = _contar_tablas(credenciales, origen) if origen else None
+    tamano = _tamano_base(credenciales, base)
+    tamano_origen = _tamano_base(credenciales, origen) if origen else None
+    texto = '%s tablas, %s' % (tablas, bytes_legible(tamano) if tamano is not None else '?')
+    if tablas_origen:
+        texto += ' · origen %s tablas, %s' % (
+            tablas_origen, bytes_legible(tamano_origen) if tamano_origen is not None else '?')
+    incompleta = bool(
+        not tablas
+        or (tablas_origen and tablas < tablas_origen)
+        or (tamano is not None and tamano_origen and tamano < tamano_origen * 0.5))
+    return incompleta, texto
+
+
+def _valor_dominio(actual, dominio, ssl):
+    """DOMINIO_GENERAL con el mismo formato que trae el template.
+
+    new_instance_*.sh lo documenta como URL completa («https://dominio»); si el
+    template lo tiene así se respeta (https con certificado, http sin él), y si
+    lo tiene como dominio a secas se deja a secas.
+    """
+    actual = (actual or '').strip()
+    if '://' in actual:
+        return '%s://%s' % ('https' if ssl else 'http', dominio)
+    return dominio
+
+
 def _libre(ruta):
     """Bytes libres en el disco donde está (o estará) la ruta."""
     while ruta and not os.path.exists(ruta):
@@ -161,6 +196,54 @@ def puerto_libre(config, usados=None):
     return None
 
 
+def _dominio_base(config, instancias):
+    """dominio_base de config.json o, si falta, el sufijo más usado por las instancias."""
+    fijo = (config.get('aprovisionamiento') or {}).get('dominio_base')
+    if fijo:
+        return fijo.strip().lower().strip('.')
+    conteo = {}
+    for inst in instancias:
+        partes = (inst.get('dominio') or '').lower().split('.')
+        if len(partes) >= 3:
+            sufijo = '.'.join(partes[1:])
+            conteo[sufijo] = conteo.get(sufijo, 0) + 1
+    return max(conteo, key=conteo.get) if conteo else ''
+
+
+def _previo(config, tipo, cliente, base):
+    """Lo que ya existe de un intento anterior con ese nombre (para reanudar)."""
+    proyecto = (config.get('proyectos') or {}).get(tipo, '')
+    carpeta = os.path.join(_base_dir(config), cliente)
+    destino = os.path.join(carpeta, proyecto) if proyecto else carpeta
+    previo = {'carpeta': carpeta, 'destino': destino,
+              'carpeta_existe': os.path.exists(carpeta),
+              'copia_completa': (os.path.isfile(os.path.join(destino, 'manage.py'))
+                                 and os.path.isfile(os.path.join(destino, 'credenciales.json'))),
+              'db_credenciales': None, 'unidad': None, 'vhosts': []}
+    if previo['copia_completa']:
+        try:
+            with open(os.path.join(destino, 'credenciales.json'), 'r', encoding='utf-8') as fh:
+                previo['db_credenciales'] = (json.load(fh) or {}).get('POSTGRES_DBNAME')
+        except (OSError, ValueError):
+            pass
+    for unidad in units.cargar_unidades(config):
+        if unidad['unidad'] == cliente:
+            previo['unidad'] = unidad
+    for vhost in webserver.cargar_vhosts(config):
+        if vhost.get('sitio') in (cliente, '%s-le-ssl' % cliente):
+            previo['vhosts'].append(vhost)
+    return previo
+
+
+def _es_propia(previo, ruta):
+    """True si la ruta (WorkingDirectory) cae dentro de la carpeta de esta instancia."""
+    if not ruta:
+        return False
+    ruta = os.path.normpath(ruta)
+    return ruta == os.path.normpath(previo['carpeta']) or ruta.startswith(
+        os.path.normpath(previo['carpeta']) + os.sep)
+
+
 def opciones(config, colector):
     """Datos para armar el formulario del asistente."""
     cfg = config.get('aprovisionamiento') or {}
@@ -179,7 +262,7 @@ def opciones(config, colector):
         'templates': {t: {'ruta': d.get('ruta'), 'db_origen': d.get('db_origen'),
                           'existe': os.path.isdir(d.get('ruta') or '')}
                       for t, d in (cfg.get('templates') or {}).items()},
-        'dominio_base': cfg.get('dominio_base') or '',
+        'dominio_base': _dominio_base(config, instancias),
         'base_dir': _base_dir(config),
         'venv': cfg.get('venv'),
         'puerto_sugerido': puerto_libre(config, usados),
@@ -209,12 +292,17 @@ def validar(config, colector, datos):
     base = (datos.get('base') or '').strip().lower()
     dominio = (datos.get('dominio') or '').strip().lower()
     puerto = datos.get('puerto')
+    reanudar = bool(datos.get('reanudar'))
+    pista = 'Si viene de un intento anterior, marca «Reanudar / corregir»'
 
     revisar(tipo in (config.get('proyectos') or {}), 'Sistema válido (%s)' % tipo)
     revisar(bool(RE_NOMBRE.match(cliente)),
             'Nombre de instancia válido: minúsculas, números, - o _ («%s»)' % cliente)
     revisar(bool(RE_DB.match(base)), 'Nombre de base válido («%s»)' % base)
-    revisar(not dominio or bool(RE_DOMINIO.match(dominio)), 'Dominio válido («%s»)' % dominio)
+    revisar(not dominio or bool(RE_DOMINIO.match(dominio)), 'Dominio válido («%s»)' % dominio,
+            detalle=None if not dominio or RE_DOMINIO.match(dominio)
+            else 'Debe ser un dominio completo, p. ej. %s.%s'
+                 % (cliente or 'cliente', _dominio_base(config, []) or 'integrasoluc.net'))
 
     try:
         puerto = int(puerto)
@@ -227,9 +315,23 @@ def validar(config, colector, datos):
         return revisiones
 
     carpeta = os.path.join(_base_dir(config), cliente)
-    proyecto = (config.get('proyectos') or {}).get(tipo, '')
-    revisar(not os.path.exists(carpeta), 'La carpeta %s está libre' % carpeta,
-            detalle=None if not os.path.exists(carpeta) else 'Ya existe, elige otro nombre')
+    previo = _previo(config, tipo, cliente, base)
+    if reanudar:
+        revisar(True, 'Modo reanudar / corregir: se reutiliza lo que ya existe de «%s» y sólo '
+                      'se crea lo que falta' % cliente)
+    if not previo['carpeta_existe']:
+        revisar(True, 'La carpeta %s está libre' % carpeta)
+    elif not reanudar:
+        revisar(False, 'La carpeta %s ya existe' % carpeta,
+                detalle='%s; si no, elige otro nombre' % pista)
+    elif previo['copia_completa'] and previo['db_credenciales'] not in (None, base):
+        revisar(False, 'La carpeta %s es de esta instancia' % carpeta,
+                detalle='su credenciales.json usa la base «%s», no «%s»'
+                        % (previo['db_credenciales'], base))
+    else:
+        revisar(True, 'La carpeta %s ya existe: %s' % (
+            carpeta, 'se reutiliza la copia' if previo['copia_completa']
+            else 'copia incompleta, se vuelve a copiar el template'))
 
     plantilla = (cfg.get('templates') or {}).get(tipo) or {}
     ruta_template = plantilla.get('ruta') or ''
@@ -253,8 +355,24 @@ def validar(config, colector, datos):
                 detalle=None if conecta else detalle)
         if conecta:
             existe = _existe_base(config, tipo, base) if RE_DB.match(base or '') else None
-            if existe is not None:
-                revisar(not existe, 'La base «%s» no existe todavía' % base)
+            if existe and reanudar:
+                incompleta, resumen = _base_incompleta(credenciales_tpl, base,
+                                                       plantilla.get('db_origen'))
+                if datos.get('recrear_base'):
+                    revisar(True, 'La base «%s» ya existe: se borra y se vuelve a restaurar desde '
+                                  'el backup de %s' % (base, plantilla.get('db_origen')),
+                            detalle=resumen)
+                elif incompleta:
+                    revisar(False, 'La base «%s» ya existe pero parece incompleta' % base,
+                            detalle='%s. Marca «Recrear la base desde el backup del template»' % resumen)
+                else:
+                    revisar(True, 'La base «%s» ya existe y está completa: se reutiliza' % base,
+                            detalle=resumen)
+            elif existe is not None:
+                # El texto describe lo encontrado: «✖ no existe todavía» se leía al revés.
+                revisar(not existe, ('La base «%s» ya existe (de un intento anterior o de otra instancia)'
+                                     if existe else 'La base «%s» no existe todavía') % base,
+                        detalle=pista if existe else None)
             puede, valor = _psql_valor(
                 credenciales_tpl, "SELECT rolcreatedb OR rolsuper FROM pg_roles "
                                   "WHERE rolname = current_user")
@@ -278,17 +396,49 @@ def validar(config, colector, datos):
     else:
         revisar(False, 'No se pudieron leer las credenciales de PostgreSQL del template')
 
-    unidades = {u['unidad'] for u in units.cargar_unidades(config)}
-    revisar(cliente not in unidades, 'No hay un servicio systemd llamado «%s»' % cliente)
+    unidad_previa = previo['unidad']
+    if not unidad_previa:
+        revisar(True, 'No hay un servicio systemd llamado «%s»' % cliente)
+    elif not reanudar:
+        revisar(False, 'Ya existe un servicio systemd llamado «%s»' % cliente, detalle=pista)
+    elif not _es_propia(previo, unidad_previa.get('workingdirectory')):
+        revisar(False, 'El servicio «%s» es de esta instancia' % cliente,
+                detalle='su WorkingDirectory es %s' % unidad_previa.get('workingdirectory'))
+    else:
+        revisar(True, 'El servicio «%s» ya existe: se reescribe y se reinicia' % cliente)
 
     if puerto:
-        revisar(puerto not in puertos_usados(config), 'El puerto %s no está usado por otra instancia' % puerto)
-        revisar(not _puerto_escuchando(puerto), 'Nada escucha ya en el puerto %s' % puerto)
+        # Puertos de esta misma instancia (servicio y vhost de un intento anterior).
+        sitios_propios = (cliente, '%s-le-ssl' % cliente)
+        propios = set()
+        if unidad_previa and unidad_previa.get('puerto'):
+            propios.add(unidad_previa['puerto'])
+        for vhost in previo['vhosts']:
+            propios.update(vhost.get('puertos_proxy') or [])
+        otros = set()
+        for unidad in units.cargar_unidades(config):
+            if unidad.get('puerto') and not (reanudar and unidad['unidad'] == cliente):
+                otros.add(unidad['puerto'])
+        for vhost in webserver.cargar_vhosts(config):
+            if not (reanudar and vhost.get('sitio') in sitios_propios):
+                otros.update(vhost.get('puertos_proxy') or [])
+        es_propio = puerto in propios
+        revisar(puerto not in otros, ('El puerto %s ya lo usa otra instancia' if puerto in otros
+                                      else 'El puerto %s no está usado por otra instancia') % puerto,
+                detalle=pista if puerto in otros and es_propio else None)
+        escucha = _puerto_escuchando(puerto)
+        if escucha and reanudar and es_propio:
+            revisar(True, 'El puerto %s lo usa el propio servicio «%s» (se reinicia)' % (puerto, cliente))
+        else:
+            revisar(not escucha, ('Ya hay algo escuchando en el puerto %s' if escucha
+                                  else 'Nada escucha ya en el puerto %s') % puerto,
+                    detalle=pista if escucha and es_propio else None)
 
     if dominio and RE_DOMINIO.match(dominio):
         chocan = [v['nombre'] for v in webserver.cargar_vhosts(config)
-                  if (v.get('servername') or '').lower() == dominio
-                  or dominio in [a.lower() for a in v.get('alias') or []]]
+                  if not (reanudar and v.get('sitio') in (cliente, '%s-le-ssl' % cliente))
+                  and ((v.get('servername') or '').lower() == dominio
+                       or dominio in [a.lower() for a in v.get('alias') or []])]
         revisar(not chocan, 'El dominio %s no está en otro vhost' % dominio,
                 detalle=', '.join(chocan) if chocan else None)
         dns = revisar_dns(dominio)
@@ -510,8 +660,13 @@ def crear_instancia(tarea, config, colector):
     args_pg = _psql_args(credenciales_tpl)
     clave_pg = credenciales_tpl.get('POSTGRES_PASSWORD')
 
+    reanudar = bool(datos.get('reanudar'))
+
     if simular:
         tarea.log('MODO SIMULACIÓN: se valida y se muestran los comandos, no se ejecuta nada.', 'aviso')
+    if reanudar:
+        tarea.log('MODO REANUDAR / CORREGIR: se reutiliza lo que ya existe y se rehace la '
+                  'configuración (credenciales, servicio, vhost).', 'aviso')
 
     # 1 -------------------------------------------------------------- validar
     indice = tarea.paso('Validar prerequisitos')
@@ -525,6 +680,16 @@ def crear_instancia(tarea, config, colector):
         tarea.paso_error(indice, 'No se puede continuar')
         raise TareaError('Validaciones fallidas: %s' % '; '.join(criticos))
     tarea.paso_ok(indice, '%s comprobaciones correctas' % len(revisiones))
+
+    # Qué quedó de un intento anterior (sólo cuenta en modo reanudar).
+    previo = _previo(config, tipo, cliente, base)
+    base_existia = bool(reanudar and _existe_base(config, tipo, base))
+    tablas_existentes = (_contar_tablas(credenciales_tpl, base) or 0) if base_existia else 0
+    reutilizar_copia = bool(reanudar and previo['copia_completa'])
+    unidad_existia = bool(reanudar and previo['unidad'])
+    vhost_existia = bool(reanudar and any(v.get('sitio') == cliente for v in previo['vhosts']))
+    recrear = bool(base_existia and datos.get('recrear_base'))
+    restaurar = recrear or not tablas_existentes
 
     # 2 --------------------------------------------------- actualizar template
     if datos.get('actualizar_template'):
@@ -543,46 +708,55 @@ def crear_instancia(tarea, config, colector):
 
     # 3 ------------------------------------------------------------ pg_dump
     indice = tarea.paso('Generar dump de la base origen')
-    carpeta_backups = cfg.get('backups_dir') or os.path.join(ruta_template, 'media', 'backups')
-    if not simular:
-        os.makedirs(carpeta_backups, exist_ok=True)
-    dump = os.path.join(carpeta_backups, 'template_%s_%s.sql' % (tipo, tarea.id))
-    comando = ['pg_dump'] + args_pg + ['--exclude-table-data=django_migrations',
-                                       '-f', dump, plantilla['db_origen']]
-    tarea.ejecutar(comando, entorno=entorno_pg, timeout=3600, simular=simular, ocultar=[clave_pg])
-    if not simular:
-        tamano = os.path.getsize(dump) if os.path.isfile(dump) else 0
-        if tamano < 1024:
-            raise TareaError('El dump salió vacío o demasiado pequeño (%s bytes)' % tamano)
-        tarea.paso_ok(indice, '%s (%.1f MB)' % (dump, tamano / 1048576.0))
+    dump = None
+    if not restaurar:
+        tarea.paso_ok(indice, 'No hace falta: la base %s ya tiene %s tablas' % (base, tablas_existentes))
     else:
-        tarea.paso_ok(indice, dump)
+        carpeta_backups = cfg.get('backups_dir') or os.path.join(ruta_template, 'media', 'backups')
+        if not simular:
+            os.makedirs(carpeta_backups, exist_ok=True)
+        dump = os.path.join(carpeta_backups, 'template_%s_%s.sql' % (tipo, tarea.id))
+        comando = ['pg_dump'] + args_pg + ['--exclude-table-data=django_migrations',
+                                           '-f', dump, plantilla['db_origen']]
+        tarea.ejecutar(comando, entorno=entorno_pg, timeout=3600, simular=simular, ocultar=[clave_pg])
+        if not simular:
+            tamano = os.path.getsize(dump) if os.path.isfile(dump) else 0
+            if tamano < 1024:
+                raise TareaError('El dump salió vacío o demasiado pequeño (%s bytes)' % tamano)
+            tarea.paso_ok(indice, '%s (%.1f MB)' % (dump, tamano / 1048576.0))
+        else:
+            tarea.paso_ok(indice, dump)
 
     # 4 ------------------------------------------------------------ copiar
     indice = tarea.paso('Copiar el template a %s' % destino)
-    if not simular:
-        os.makedirs(destino_base, exist_ok=True)
-        tarea.registrar_deshacer('carpeta', destino_base)
-    if shutil.which('rsync'):
-        comando = ['rsync', '-a']
-        for patron in EXCLUIR_COPIA:
-            comando += ['--exclude', patron]
-        comando += [ruta_template.rstrip('/') + '/', destino.rstrip('/') + '/']
-        tarea.ejecutar(comando, timeout=3600, simular=simular)
+    if reutilizar_copia:
+        tarea.paso_ok(indice, 'Ya hay una copia completa del intento anterior: se reutiliza')
     else:
-        # Sin rsync se copia desde Python para respetar las exclusiones
-        # (cp -r no las soporta y arrastraría media/backups completo).
-        tarea.log('$ copia con exclusiones: %s' % ', '.join(EXCLUIR_COPIA), 'cmd')
         if not simular:
-            shutil.copytree(ruta_template, destino,
-                            ignore=shutil.ignore_patterns(*[os.path.basename(p) for p in EXCLUIR_COPIA]),
-                            symlinks=True, dirs_exist_ok=True)
+            os.makedirs(destino_base, exist_ok=True)
+            # Sólo se deshace lo que crea esta tarea, nunca una carpeta previa.
+            if not previo['carpeta_existe']:
+                tarea.registrar_deshacer('carpeta', destino_base)
+        if shutil.which('rsync'):
+            comando = ['rsync', '-a']
             for patron in EXCLUIR_COPIA:
-                if '/' in patron:
-                    sobra = os.path.join(destino, patron)
-                    if os.path.isdir(sobra):
-                        shutil.rmtree(sobra, ignore_errors=True)
-    tarea.paso_ok(indice, 'Copia lista')
+                comando += ['--exclude', patron]
+            comando += [ruta_template.rstrip('/') + '/', destino.rstrip('/') + '/']
+            tarea.ejecutar(comando, timeout=3600, simular=simular)
+        else:
+            # Sin rsync se copia desde Python para respetar las exclusiones
+            # (cp -r no las soporta y arrastraría media/backups completo).
+            tarea.log('$ copia con exclusiones: %s' % ', '.join(EXCLUIR_COPIA), 'cmd')
+            if not simular:
+                shutil.copytree(ruta_template, destino,
+                                ignore=shutil.ignore_patterns(*[os.path.basename(p) for p in EXCLUIR_COPIA]),
+                                symlinks=True, dirs_exist_ok=True)
+                for patron in EXCLUIR_COPIA:
+                    if '/' in patron:
+                        sobra = os.path.join(destino, patron)
+                        if os.path.isdir(sobra):
+                            shutil.rmtree(sobra, ignore_errors=True)
+        tarea.paso_ok(indice, 'Copia lista')
 
     # 5 ------------------------------------------------------------ permisos
     indice = tarea.paso('Aplicar permisos')
@@ -595,40 +769,58 @@ def crear_instancia(tarea, config, colector):
 
     # 6 ------------------------------------------------------- crear y restaurar
     indice = tarea.paso('Crear la base %s y restaurar el dump' % base)
-    tarea.ejecutar(['psql'] + args_pg + ['-c', 'CREATE DATABASE %s;' % base, 'postgres'],
-                   entorno=entorno_pg, simular=simular, ocultar=[clave_pg])
-    if not simular:
-        tarea.registrar_deshacer('base', base)
-    codigo, salida = tarea.ejecutar(
-        ['psql'] + args_pg + ['-q', '-v', 'ON_ERROR_STOP=0', '-d', base, '-f', dump],
-        entorno=entorno_pg, timeout=7200, critico=False, simular=simular, ocultar=[clave_pg])
-    if codigo != 0:
-        tarea.log('  La restauración devolvió código %s; revisa los errores de arriba' % codigo, 'aviso')
-    if not simular:
-        # Con ON_ERROR_STOP=0 psql sigue ante errores: se cuentan y se compara
-        # la cantidad de tablas con la base origen para saber si quedó completa.
-        errores = [l for l in (salida or '').splitlines() if 'ERROR:' in l]
-        if errores:
-            tarea.log('  La restauración tuvo %s error(es); los primeros:' % len(errores), 'aviso')
-            for linea in errores[:5]:
-                tarea.log('    %s' % linea.strip(), 'aviso')
-        tablas_origen = _contar_tablas(credenciales_tpl, plantilla['db_origen'])
-        tablas_nueva = _contar_tablas(credenciales_tpl, base)
-        tarea.log('  Tablas: origen %s · nueva %s' % (tablas_origen, tablas_nueva))
-        if not tablas_nueva:
-            tarea.paso_error(indice, 'La base quedó vacía')
-            raise TareaError('La restauración no creó ninguna tabla en %s' % base)
-        if tablas_origen and tablas_nueva < tablas_origen:
-            tarea.log('  Faltan %s tabla(s) respecto al origen' % (tablas_origen - tablas_nueva), 'aviso')
-        try:
-            os.remove(dump)
-            tarea.log('  Dump temporal eliminado (%s)' % dump)
-        except OSError:
-            pass
-        tarea.paso_ok(indice, 'Base restaurada (%s tablas%s)'
-                      % (tablas_nueva, ', %s errores' % len(errores) if errores else ''))
+    if not restaurar:
+        tarea.paso_ok(indice, 'La base ya existe con %s tablas: se reutiliza' % tablas_existentes)
     else:
-        tarea.paso_ok(indice, 'Base restaurada')
+        if recrear:
+            # La instancia no debe tener conexiones abiertas para poder borrar la base.
+            if previo['unidad']:
+                tarea.ejecutar(['systemctl', 'stop', cliente], critico=False, simular=simular)
+            tarea.ejecutar(['psql'] + args_pg + [
+                '-c', "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                      "WHERE datname = '%s' AND pid <> pg_backend_pid();" % base, 'postgres'],
+                entorno=entorno_pg, critico=False, simular=simular, ocultar=[clave_pg])
+            tarea.ejecutar(['psql'] + args_pg + ['-c', 'DROP DATABASE IF EXISTS %s;' % base, 'postgres'],
+                           entorno=entorno_pg, simular=simular, ocultar=[clave_pg])
+            tarea.ejecutar(['psql'] + args_pg + ['-c', 'CREATE DATABASE %s;' % base, 'postgres'],
+                           entorno=entorno_pg, simular=simular, ocultar=[clave_pg])
+        elif base_existia:
+            tarea.log('  La base %s ya existe pero está vacía: sólo se restaura' % base)
+        else:
+            tarea.ejecutar(['psql'] + args_pg + ['-c', 'CREATE DATABASE %s;' % base, 'postgres'],
+                           entorno=entorno_pg, simular=simular, ocultar=[clave_pg])
+            if not simular:
+                tarea.registrar_deshacer('base', base)
+        codigo, salida = tarea.ejecutar(
+            ['psql'] + args_pg + ['-q', '-v', 'ON_ERROR_STOP=0', '-d', base, '-f', dump],
+            entorno=entorno_pg, timeout=7200, critico=False, simular=simular, ocultar=[clave_pg])
+        if codigo != 0:
+            tarea.log('  La restauración devolvió código %s; revisa los errores de arriba' % codigo, 'aviso')
+        if not simular:
+            # Con ON_ERROR_STOP=0 psql sigue ante errores: se cuentan y se compara
+            # la cantidad de tablas con la base origen para saber si quedó completa.
+            errores = [l for l in (salida or '').splitlines() if 'ERROR:' in l]
+            if errores:
+                tarea.log('  La restauración tuvo %s error(es); los primeros:' % len(errores), 'aviso')
+                for linea in errores[:5]:
+                    tarea.log('    %s' % linea.strip(), 'aviso')
+            tablas_origen = _contar_tablas(credenciales_tpl, plantilla['db_origen'])
+            tablas_nueva = _contar_tablas(credenciales_tpl, base)
+            tarea.log('  Tablas: origen %s · nueva %s' % (tablas_origen, tablas_nueva))
+            if not tablas_nueva:
+                tarea.paso_error(indice, 'La base quedó vacía')
+                raise TareaError('La restauración no creó ninguna tabla en %s' % base)
+            if tablas_origen and tablas_nueva < tablas_origen:
+                tarea.log('  Faltan %s tabla(s) respecto al origen' % (tablas_origen - tablas_nueva), 'aviso')
+            try:
+                os.remove(dump)
+                tarea.log('  Dump temporal eliminado (%s)' % dump)
+            except OSError:
+                pass
+            tarea.paso_ok(indice, 'Base restaurada (%s tablas%s)'
+                          % (tablas_nueva, ', %s errores' % len(errores) if errores else ''))
+        else:
+            tarea.paso_ok(indice, 'Base restaurada')
 
     # 7 -------------------------------------------------------- credenciales
     indice = tarea.paso('Configurar credenciales.json')
@@ -638,14 +830,16 @@ def crear_instancia(tarea, config, colector):
             nuevas = json.load(fh)
         nuevas['POSTGRES_DBNAME'] = base
         if dominio:
-            nuevas['DOMINIO_GENERAL'] = dominio
+            nuevas['DOMINIO_GENERAL'] = _valor_dominio(nuevas.get('DOMINIO_GENERAL'), dominio,
+                                                       bool(datos.get('certbot')))
         nuevas['USE_SSL'] = bool(datos.get('certbot'))
         nuevas['DEBUG'] = bool(datos.get('debug', False))
         with open(archivo_credenciales, 'w', encoding='utf-8') as fh:
             json.dump(nuevas, fh, indent=2, ensure_ascii=False)
             fh.write('\n')
     tarea.log('  POSTGRES_DBNAME=%s · DOMINIO_GENERAL=%s · USE_SSL=%s'
-              % (base, dominio or '(sin cambio)', bool(datos.get('certbot'))))
+              % (base, nuevas.get('DOMINIO_GENERAL') if not simular and dominio
+                 else (dominio or '(sin cambio)'), bool(datos.get('certbot'))))
     tarea.paso_ok(indice)
 
     # 8 ------------------------------------------------------------ migrate
@@ -679,9 +873,12 @@ def crear_instancia(tarea, config, colector):
         if not simular:
             with open(archivo_unidad, 'w', encoding='utf-8') as fh:
                 fh.write(texto)
-            tarea.registrar_deshacer('unidad', cliente)
+            if not unidad_existia:
+                tarea.registrar_deshacer('unidad', cliente)
         tarea.ejecutar(['systemctl', 'daemon-reload'], simular=simular)
-        tarea.ejecutar(['systemctl', 'enable', '--now', cliente], simular=simular)
+        tarea.ejecutar(['systemctl', 'enable', cliente], simular=simular)
+        # restart (no «start») para que tome el credenciales.json nuevo si ya corría.
+        tarea.ejecutar(['systemctl', 'restart', cliente], simular=simular)
         tarea.paso_ok(indice, archivo_unidad)
 
     # 10 ------------------------------------------------------------- apache
@@ -709,7 +906,21 @@ def crear_instancia(tarea, config, colector):
         if not simular:
             with open(archivo_vhost, 'w', encoding='utf-8') as fh:
                 fh.write(texto)
-            tarea.registrar_deshacer('vhost', cliente)
+            if not vhost_existia:
+                tarea.registrar_deshacer('vhost', cliente)
+        # Un vhost SSL de certbot de un intento anterior con otro dominio
+        # dejaría el sitio viejo activo: se desactiva y se guarda aparte.
+        for viejo in previo['vhosts'] if reanudar else []:
+            if (viejo.get('sitio') == '%s-le-ssl' % cliente
+                    and (viejo.get('servername') or '').lower() != dominio):
+                tarea.log('  %s usa el dominio anterior (%s): se desactiva'
+                          % (viejo['archivo'], viejo.get('servername')), 'aviso')
+                tarea.ejecutar(['a2dissite', viejo['sitio']], critico=False, simular=simular)
+                respaldo = '%s.bak-%s' % (viejo['archivo'], tarea.id)
+                tarea.log('$ mv %s %s%s' % (viejo['archivo'], respaldo,
+                                            '   [simulación, no se ejecuta]' if simular else ''), 'cmd')
+                if not simular and os.path.isfile(viejo['archivo']):
+                    os.rename(viejo['archivo'], respaldo)
         tarea.ejecutar(['apache2ctl', 'configtest'], critico=False, simular=simular)
         tarea.ejecutar(['a2ensite', cliente], simular=simular)
         tarea.ejecutar(['systemctl', 'reload', 'apache2'], simular=simular)

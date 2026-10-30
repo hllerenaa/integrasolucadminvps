@@ -339,6 +339,20 @@ Botón **+ Nueva instancia**. Reproduce lo que hacen `new_instance_inventario.sh
    `Host`), la base accesible con el nuevo `credenciales.json` y la URL pública.
 5. Si algo falla a mitad, la tarea muestra un botón **Deshacer** que elimina
    sólo lo que ella creó (carpeta, base, unidad y vhost). Nunca se ejecuta solo.
+6. **Reanudar / corregir**: si un intento anterior falló o quedó mal (p. ej. con
+   el dominio equivocado), marca esa casilla (o usa **Reintentar** en la tarea
+   fallida). Se reutilizan la carpeta, la base y el servicio de esa misma
+   instancia, se reescriben `credenciales.json`, el `.service` y el vhost, se
+   reinicia el servicio y sólo se crea lo que falta. Un vhost SSL viejo con otro
+   dominio se desactiva y se guarda como `.bak-<tarea>`. Si la carpeta o el
+   servicio pertenecen a otra base/ruta, la validación lo bloquea igual.
+   Si la base existe pero quedó a medio restaurar (menos tablas o menos de la
+   mitad del tamaño de la base origen), la validación lo marca y ofrece
+   **Recrear la base desde el backup del template**: detiene el servicio, cierra
+   las conexiones, borra la base y la restaura con un `pg_dump` nuevo del origen.
+
+Si `dominio_base` no está en config.json, el formulario lo deduce del dominio
+más usado por las instancias; un dominio sin punto (p. ej. `icecream`) se rechaza.
 
 El botón **Tareas** lista las ejecuciones con su log. Cada alta queda además en
 el historial de acciones.
