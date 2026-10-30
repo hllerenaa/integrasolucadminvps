@@ -288,8 +288,8 @@ def validar(config, colector, datos):
     if not previo['carpeta_existe']:
         revisar(True, 'La carpeta %s está libre' % carpeta)
     elif not reanudar:
-        revisar(False, 'La carpeta %s está libre' % carpeta,
-                detalle='Ya existe. %s; si no, elige otro nombre' % pista)
+        revisar(False, 'La carpeta %s ya existe' % carpeta,
+                detalle='%s; si no, elige otro nombre' % pista)
     elif previo['copia_completa'] and previo['db_credenciales'] not in (None, base):
         revisar(False, 'La carpeta %s es de esta instancia' % carpeta,
                 detalle='su credenciales.json usa la base «%s», no «%s»'
@@ -327,7 +327,9 @@ def validar(config, colector, datos):
                     base, 'se reutiliza (%s tablas)' % tablas if tablas
                     else 'está vacía, se restaura el dump'))
             elif existe is not None:
-                revisar(not existe, 'La base «%s» no existe todavía' % base,
+                # El texto describe lo encontrado: «✖ no existe todavía» se leía al revés.
+                revisar(not existe, ('La base «%s» ya existe (de un intento anterior o de otra instancia)'
+                                     if existe else 'La base «%s» no existe todavía') % base,
                         detalle=pista if existe else None)
             puede, valor = _psql_valor(
                 credenciales_tpl, "SELECT rolcreatedb OR rolsuper FROM pg_roles "
@@ -356,7 +358,7 @@ def validar(config, colector, datos):
     if not unidad_previa:
         revisar(True, 'No hay un servicio systemd llamado «%s»' % cliente)
     elif not reanudar:
-        revisar(False, 'No hay un servicio systemd llamado «%s»' % cliente, detalle=pista)
+        revisar(False, 'Ya existe un servicio systemd llamado «%s»' % cliente, detalle=pista)
     elif not _es_propia(previo, unidad_previa.get('workingdirectory')):
         revisar(False, 'El servicio «%s» es de esta instancia' % cliente,
                 detalle='su WorkingDirectory es %s' % unidad_previa.get('workingdirectory'))
@@ -379,13 +381,15 @@ def validar(config, colector, datos):
             if not (reanudar and vhost.get('sitio') in sitios_propios):
                 otros.update(vhost.get('puertos_proxy') or [])
         es_propio = puerto in propios
-        revisar(puerto not in otros, 'El puerto %s no está usado por otra instancia' % puerto,
+        revisar(puerto not in otros, ('El puerto %s ya lo usa otra instancia' if puerto in otros
+                                      else 'El puerto %s no está usado por otra instancia') % puerto,
                 detalle=pista if puerto in otros and es_propio else None)
         escucha = _puerto_escuchando(puerto)
         if escucha and reanudar and es_propio:
             revisar(True, 'El puerto %s lo usa el propio servicio «%s» (se reinicia)' % (puerto, cliente))
         else:
-            revisar(not escucha, 'Nada escucha ya en el puerto %s' % puerto,
+            revisar(not escucha, ('Ya hay algo escuchando en el puerto %s' if escucha
+                                  else 'Nada escucha ya en el puerto %s') % puerto,
                     detalle=pista if escucha and es_propio else None)
 
     if dominio and RE_DOMINIO.match(dominio):
