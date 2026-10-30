@@ -109,6 +109,27 @@ def _contar_tablas(credenciales, nombre):
     return int(valor) if ok and valor.isdigit() else None
 
 
+def _base_incompleta(credenciales, base, origen):
+    """Compara la base con la de origen del template.
+
+    Devuelve (incompleta, texto). Una restauración cortada deja menos tablas o
+    las tablas sin datos (mucho más pequeña que el origen).
+    """
+    tablas = _contar_tablas(credenciales, base) or 0
+    tablas_origen = _contar_tablas(credenciales, origen) if origen else None
+    tamano = _tamano_base(credenciales, base)
+    tamano_origen = _tamano_base(credenciales, origen) if origen else None
+    texto = '%s tablas, %s' % (tablas, bytes_legible(tamano) if tamano is not None else '?')
+    if tablas_origen:
+        texto += ' · origen %s tablas, %s' % (
+            tablas_origen, bytes_legible(tamano_origen) if tamano_origen is not None else '?')
+    incompleta = bool(
+        not tablas
+        or (tablas_origen and tablas < tablas_origen)
+        or (tamano is not None and tamano_origen and tamano < tamano_origen * 0.5))
+    return incompleta, texto
+
+
 def _libre(ruta):
     """Bytes libres en el disco donde está (o estará) la ruta."""
     while ruta and not os.path.exists(ruta):
@@ -322,10 +343,18 @@ def validar(config, colector, datos):
         if conecta:
             existe = _existe_base(config, tipo, base) if RE_DB.match(base or '') else None
             if existe and reanudar:
-                tablas = _contar_tablas(credenciales_tpl, base)
-                revisar(True, 'La base «%s» ya existe: %s' % (
-                    base, 'se reutiliza (%s tablas)' % tablas if tablas
-                    else 'está vacía, se restaura el dump'))
+                incompleta, resumen = _base_incompleta(credenciales_tpl, base,
+                                                       plantilla.get('db_origen'))
+                if datos.get('recrear_base'):
+                    revisar(True, 'La base «%s» ya existe: se borra y se vuelve a restaurar desde '
+                                  'el backup de %s' % (base, plantilla.get('db_origen')),
+                            detalle=resumen)
+                elif incompleta:
+                    revisar(False, 'La base «%s» ya existe pero parece incompleta' % base,
+                            detalle='%s. Marca «Recrear la base desde el backup del template»' % resumen)
+                else:
+                    revisar(True, 'La base «%s» ya existe y está completa: se reutiliza' % base,
+                            detalle=resumen)
             elif existe is not None:
                 # El texto describe lo encontrado: «✖ no existe todavía» se leía al revés.
                 revisar(not existe, ('La base «%s» ya existe (de un intento anterior o de otra instancia)'
@@ -646,7 +675,8 @@ def crear_instancia(tarea, config, colector):
     reutilizar_copia = bool(reanudar and previo['copia_completa'])
     unidad_existia = bool(reanudar and previo['unidad'])
     vhost_existia = bool(reanudar and any(v.get('sitio') == cliente for v in previo['vhosts']))
-    restaurar = not tablas_existentes
+    recrear = bool(base_existia and datos.get('recrear_base'))
+    restaurar = recrear or not tablas_existentes
 
     # 2 --------------------------------------------------- actualizar template
     if datos.get('actualizar_template'):
@@ -729,7 +759,19 @@ def crear_instancia(tarea, config, colector):
     if not restaurar:
         tarea.paso_ok(indice, 'La base ya existe con %s tablas: se reutiliza' % tablas_existentes)
     else:
-        if base_existia:
+        if recrear:
+            # La instancia no debe tener conexiones abiertas para poder borrar la base.
+            if previo['unidad']:
+                tarea.ejecutar(['systemctl', 'stop', cliente], critico=False, simular=simular)
+            tarea.ejecutar(['psql'] + args_pg + [
+                '-c', "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                      "WHERE datname = '%s' AND pid <> pg_backend_pid();" % base, 'postgres'],
+                entorno=entorno_pg, critico=False, simular=simular, ocultar=[clave_pg])
+            tarea.ejecutar(['psql'] + args_pg + ['-c', 'DROP DATABASE IF EXISTS %s;' % base, 'postgres'],
+                           entorno=entorno_pg, simular=simular, ocultar=[clave_pg])
+            tarea.ejecutar(['psql'] + args_pg + ['-c', 'CREATE DATABASE %s;' % base, 'postgres'],
+                           entorno=entorno_pg, simular=simular, ocultar=[clave_pg])
+        elif base_existia:
             tarea.log('  La base %s ya existe pero está vacía: sólo se restaura' % base)
         else:
             tarea.ejecutar(['psql'] + args_pg + ['-c', 'CREATE DATABASE %s;' % base, 'postgres'],

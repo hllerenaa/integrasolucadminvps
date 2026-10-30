@@ -1208,6 +1208,10 @@
           '<label class="check" title="Para un intento anterior que falló o quedó mal (p. ej. dominio equivocado): ' +
             'reutiliza la carpeta, la base y el servicio de esa misma instancia y sólo crea lo que falta">' +
             '<input type="checkbox" id="f-reanudar"> Reanudar / corregir un intento anterior</label>' +
+          '<label class="check" title="Sólo con «Reanudar»: borra la base existente y la vuelve a crear ' +
+            'con el backup (pg_dump) de la base origen del template">' +
+            '<input type="checkbox" id="f-recrear-base"> Recrear la base desde el backup del template ' +
+            '(borra la actual)</label>' +
         '</div>' +
         '<div id="resultado-validacion"></div>' +
         '<div style="margin-top:12px;text-align:right">' +
@@ -1246,7 +1250,8 @@
       crear_vhost: $('#f-vhost').checked,
       certbot: $('#f-certbot').checked,
       debug: $('#f-debug').checked,
-      reanudar: $('#f-reanudar').checked
+      reanudar: $('#f-reanudar').checked,
+      recrear_base: $('#f-reanudar').checked && $('#f-recrear-base').checked
     };
   }
 
@@ -1267,6 +1272,11 @@
             esc(datosAlta().cliente) + '» de un intento anterior. Puedes reanudarlo: se reutiliza lo ' +
             'creado y se corrige el resto (credenciales, dominio, servicio y vhost). ' +
             '<button class="boton mini" type="button" id="btn-reanudar">Reanudar / corregir</button></div>'
+          : '') + (!$('#f-recrear-base').checked && (d.revisiones || []).some(function (r) {
+            return r.critico && /Recrear la base/.test(r.detalle || '');
+          })
+          ? '<div class="aviso-error" style="margin-top:8px">La base quedó a medio restaurar. ' +
+            '<button class="boton mini" type="button" id="btn-recrear-base">Recrear la base desde el backup</button></div>'
           : '');
         return d.ok;
       });
@@ -1307,7 +1317,9 @@
       datos.simular = !!simular;
       if (!simular && !window.confirm(datos.reanudar
           ? 'Se va a reanudar / corregir la instancia "' + datos.cliente + '": se reutiliza lo que ya ' +
-            'existe, se reescriben credenciales.json, el servicio y el vhost y se reinicia. ¿Continuar?'
+            'existe, se reescriben credenciales.json, el servicio y el vhost y se reinicia.' +
+            (datos.recrear_base ? '\n\nATENCIÓN: la base ' + datos.base + ' se BORRA y se vuelve a ' +
+              'restaurar desde el backup del template.' : '') + ' ¿Continuar?'
           : 'Se va a crear la instancia "' + datos.cliente +
             '": carpeta /home/' + datos.cliente + ', base ' + datos.base +
             ', servicio y vhost. ¿Continuar?')) return;
@@ -3106,6 +3118,9 @@
         if (el.id === 'btn-crear') return crearInstancia(false);
         if (el.id === 'btn-deshacer') return deshacerTarea(el.getAttribute('data-id'));
         if (el.id === 'btn-reanudar') { $('#f-reanudar').checked = true; return validarAlta(); }
+        if (el.id === 'btn-recrear-base') {
+          $('#f-reanudar').checked = true; $('#f-recrear-base').checked = true; return validarAlta();
+        }
         if (el.id === 'btn-reintentar') return reintentarTarea(el.getAttribute('data-id'));
         if (el.hasAttribute && el.hasAttribute('data-tarea')) return verTarea(el.getAttribute('data-tarea'));
         if (el.id === 'btn-ver-nueva') {
