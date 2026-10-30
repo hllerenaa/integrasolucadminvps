@@ -130,6 +130,19 @@ def _base_incompleta(credenciales, base, origen):
     return incompleta, texto
 
 
+def _valor_dominio(actual, dominio, ssl):
+    """DOMINIO_GENERAL con el mismo formato que trae el template.
+
+    new_instance_*.sh lo documenta como URL completa («https://dominio»); si el
+    template lo tiene así se respeta (https con certificado, http sin él), y si
+    lo tiene como dominio a secas se deja a secas.
+    """
+    actual = (actual or '').strip()
+    if '://' in actual:
+        return '%s://%s' % ('https' if ssl else 'http', dominio)
+    return dominio
+
+
 def _libre(ruta):
     """Bytes libres en el disco donde está (o estará) la ruta."""
     while ruta and not os.path.exists(ruta):
@@ -817,14 +830,16 @@ def crear_instancia(tarea, config, colector):
             nuevas = json.load(fh)
         nuevas['POSTGRES_DBNAME'] = base
         if dominio:
-            nuevas['DOMINIO_GENERAL'] = dominio
+            nuevas['DOMINIO_GENERAL'] = _valor_dominio(nuevas.get('DOMINIO_GENERAL'), dominio,
+                                                       bool(datos.get('certbot')))
         nuevas['USE_SSL'] = bool(datos.get('certbot'))
         nuevas['DEBUG'] = bool(datos.get('debug', False))
         with open(archivo_credenciales, 'w', encoding='utf-8') as fh:
             json.dump(nuevas, fh, indent=2, ensure_ascii=False)
             fh.write('\n')
     tarea.log('  POSTGRES_DBNAME=%s · DOMINIO_GENERAL=%s · USE_SSL=%s'
-              % (base, dominio or '(sin cambio)', bool(datos.get('certbot'))))
+              % (base, nuevas.get('DOMINIO_GENERAL') if not simular and dominio
+                 else (dominio or '(sin cambio)'), bool(datos.get('certbot'))))
     tarea.paso_ok(indice)
 
     # 8 ------------------------------------------------------------ migrate
