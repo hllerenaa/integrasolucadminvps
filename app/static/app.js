@@ -1205,6 +1205,9 @@
           '<label class="check"><input type="checkbox" id="f-certbot"' +
             (d.certbot ? ' checked' : '') + '> Emitir certificado con certbot</label>' +
           '<label class="check"><input type="checkbox" id="f-debug"> DEBUG = true en credenciales.json</label>' +
+          '<label class="check" title="Para un intento anterior que falló o quedó mal (p. ej. dominio equivocado): ' +
+            'reutiliza la carpeta, la base y el servicio de esa misma instancia y sólo crea lo que falta">' +
+            '<input type="checkbox" id="f-reanudar"> Reanudar / corregir un intento anterior</label>' +
         '</div>' +
         '<div id="resultado-validacion"></div>' +
         '<div style="margin-top:12px;text-align:right">' +
@@ -1242,7 +1245,8 @@
       crear_servicio: $('#f-servicio').checked,
       crear_vhost: $('#f-vhost').checked,
       certbot: $('#f-certbot').checked,
-      debug: $('#f-debug').checked
+      debug: $('#f-debug').checked,
+      reanudar: $('#f-reanudar').checked
     };
   }
 
@@ -1255,7 +1259,15 @@
       body: JSON.stringify(datosAlta())
     }).then(function (r) { return r.json(); })
       .then(function (d) {
-        caja.innerHTML = listaRevisiones(d.revisiones);
+        var previo = !$('#f-reanudar').checked && (d.revisiones || []).some(function (r) {
+          return r.critico && /Reanudar/.test(r.detalle || '');
+        });
+        caja.innerHTML = listaRevisiones(d.revisiones) + (previo
+          ? '<div class="aviso-error" style="margin-top:8px">Ya existe parte de «' +
+            esc(datosAlta().cliente) + '» de un intento anterior. Puedes reanudarlo: se reutiliza lo ' +
+            'creado y se corrige el resto (credenciales, dominio, servicio y vhost). ' +
+            '<button class="boton mini" type="button" id="btn-reanudar">Reanudar / corregir</button></div>'
+          : '');
         return d.ok;
       });
   }
@@ -1293,9 +1305,12 @@
       if (!ok) return;
       var datos = datosAlta();
       datos.simular = !!simular;
-      if (!simular && !window.confirm('Se va a crear la instancia "' + datos.cliente +
-          '": carpeta /home/' + datos.cliente + ', base ' + datos.base +
-          ', servicio y vhost. ¿Continuar?')) return;
+      if (!simular && !window.confirm(datos.reanudar
+          ? 'Se va a reanudar / corregir la instancia "' + datos.cliente + '": se reutiliza lo que ya ' +
+            'existe, se reescriben credenciales.json, el servicio y el vhost y se reinicia. ¿Continuar?'
+          : 'Se va a crear la instancia "' + datos.cliente +
+            '": carpeta /home/' + datos.cliente + ', base ' + datos.base +
+            ', servicio y vhost. ¿Continuar?')) return;
       fetch('/api/aprovisionar/crear', {
         method: 'POST', credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
@@ -1349,6 +1364,12 @@
                   (d.deshacer || []).map(function (x) { return esc(x.tipo) + ' ' + esc(x.valor); }).join(', ') +
                   '<button class="boton peligro" type="button" id="btn-deshacer" data-id="' + esc(d.id) +
                   '" style="margin-left:10px">Deshacer</button></div>'
+                : '') +
+              (d.estado === 'error' && d.tipo === 'crear_instancia' && $('#f-cliente')
+                ? '<div class="aviso" style="margin-top:10px">Corrige el dato que falló y vuelve a ' +
+                  'intentarlo sin empezar de cero: ' +
+                  '<button class="boton mini" type="button" id="btn-reintentar" data-id="' + esc(d.id) +
+                  '">Reintentar (reanudar)</button></div>'
                 : '') +
               enlacesDescarga(d) +
               (d.estado === 'ok' && d.datos && d.datos.instancia_id
@@ -1449,6 +1470,31 @@
     ]).then(function (respuestas) {
       $('#tarea-cuerpo').innerHTML = tablaCron(respuestas[0]) + tablaTareas(respuestas[1]);
     }).catch(function (e) { aviso(e.message); });
+  }
+
+  // Carga en el formulario los datos de una creación que falló, con «reanudar»
+  // marcado, para corregir lo necesario (p. ej. el dominio) y volver a lanzarla.
+  function reintentarTarea(id) {
+    fetch('/api/tarea/' + encodeURIComponent(id) + '?desde=1000000000', { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (t) {
+        var d = t.datos || {};
+        if (!$('#f-cliente')) return;
+        var poner = function (sel, valor) { if ($(sel) && valor !== undefined && valor !== null) $(sel).value = valor; };
+        poner('#f-tipo', d.tipo); poner('#f-cliente', d.cliente); poner('#f-base', d.base);
+        poner('#f-dominio', d.dominio); poner('#f-puerto', d.puerto);
+        poner('#f-modelo-servicio', d.modelo_servicio || ''); poner('#f-modelo-vhost', d.modelo_vhost || '');
+        $('#f-base').dataset.tocado = '1'; $('#f-dominio').dataset.tocado = '1';
+        [['#f-actualizar', 'actualizar_template'], ['#f-servicio', 'crear_servicio'],
+         ['#f-vhost', 'crear_vhost'], ['#f-certbot', 'certbot'], ['#f-debug', 'debug']]
+          .forEach(function (par) { if (par[1] in d) $(par[0]).checked = !!d[par[1]]; });
+        $('#f-reanudar').checked = true;
+        if (tareaPoll) { clearInterval(tareaPoll); tareaPoll = null; }
+        $('#modal-tarea').classList.add('oculto');
+        $('#f-dominio').focus();
+        validarAlta();
+      })
+      .catch(function (e) { aviso(e.message); });
   }
 
   function deshacerTarea(id) {
@@ -3059,6 +3105,8 @@
         if (el.id === 'btn-simular') return crearInstancia(true);
         if (el.id === 'btn-crear') return crearInstancia(false);
         if (el.id === 'btn-deshacer') return deshacerTarea(el.getAttribute('data-id'));
+        if (el.id === 'btn-reanudar') { $('#f-reanudar').checked = true; return validarAlta(); }
+        if (el.id === 'btn-reintentar') return reintentarTarea(el.getAttribute('data-id'));
         if (el.hasAttribute && el.hasAttribute('data-tarea')) return verTarea(el.getAttribute('data-tarea'));
         if (el.id === 'btn-ver-nueva') {
           $('#modal-tarea').classList.add('oculto');

@@ -366,6 +366,8 @@ def crear_app(config=None):
             return jsonify({'error': 'Faltan datos: %s' % ', '.join(faltan)}), 400
 
         titulo = 'Crear instancia %s (%s)' % (cuerpo.get('cliente'), cuerpo.get('tipo'))
+        if cuerpo.get('reanudar'):
+            titulo = 'Reanudar / corregir instancia %s (%s)' % (cuerpo.get('cliente'), cuerpo.get('tipo'))
         if cuerpo.get('simular'):
             titulo = '[simulación] ' + titulo
         tarea = tareas.crear('crear_instancia', titulo, cuerpo,
