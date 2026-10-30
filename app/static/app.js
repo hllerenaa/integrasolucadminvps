@@ -1315,6 +1315,67 @@
       $('#' + id).addEventListener('input', function () { this.dataset.tocado = '1'; });
     });
     cliente.focus();
+    restaurarBorradorAlta();
+  }
+
+  // ------------------------------------------------- reconexión sin pulsar F5
+  function guardarSesion(clave, valor) {
+    try { sessionStorage.setItem('panel-' + clave, JSON.stringify(valor)); } catch (e) {}
+  }
+  function leerSesion(clave) {
+    try { return JSON.parse(sessionStorage.getItem('panel-' + clave) || 'null'); } catch (e) { return null; }
+  }
+  function borrarSesion(clave) {
+    try { sessionStorage.removeItem('panel-' + clave); } catch (e) {}
+  }
+
+  // El formulario de alta sobrevive a la recarga automática por versión nueva.
+  function restaurarBorradorAlta() {
+    var b = leerSesion('borrador-alta');
+    if (!b) return;
+    borrarSesion('borrador-alta');
+    var poner = function (sel, v) { if ($(sel) && v !== undefined && v !== null) $(sel).value = v; };
+    poner('#f-tipo', b.tipo); poner('#f-cliente', b.cliente); poner('#f-base', b.base);
+    poner('#f-dominio', b.dominio); poner('#f-puerto', b.puerto);
+    poner('#f-modelo-servicio', b.modelo_servicio || ''); poner('#f-modelo-vhost', b.modelo_vhost || '');
+    if (b.base) $('#f-base').dataset.tocado = '1';
+    if (b.dominio) $('#f-dominio').dataset.tocado = '1';
+    [['#f-actualizar', 'actualizar_template'], ['#f-servicio', 'crear_servicio'], ['#f-vhost', 'crear_vhost'],
+     ['#f-certbot', 'certbot'], ['#f-debug', 'debug'], ['#f-reanudar', 'reanudar'],
+     ['#f-recrear-base', 'recrear_base']]
+      .forEach(function (par) { if ($(par[0]) && par[1] in b) $(par[0]).checked = !!b[par[1]]; });
+  }
+
+  // Cada 10 s se pregunta la versión al servidor. Si el panel se reinició con
+  // una versión nueva (update.sh) se recarga solo, guardando el formulario y la
+  // tarea abierta; si sólo estuvo caído, se avisa y se vuelve a cargar al volver.
+  var latido = { caido: false };
+  function vigilarServidor() {
+    fetch('/api/version', { credentials: 'same-origin', cache: 'no-store' })
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function (d) {
+        if (window.PANEL_VERSION && d.version && d.version !== window.PANEL_VERSION) {
+          if ($('#f-cliente') && ($('#f-cliente').value || '').trim()) guardarSesion('borrador-alta', datosAlta());
+          window.location.reload();
+          return;
+        }
+        if (latido.caido) {
+          latido.caido = false;
+          if ($('#aviso-caido')) $('#aviso-caido').remove();
+          if (!tareaPoll) refrescarPaginaTrasTarea({});
+        }
+      })
+      .catch(function () {
+        if (latido.caido) return;
+        latido.caido = true;
+        if ($('#avisos') && !$('#aviso-caido')) {
+          var nota = document.createElement('div');
+          nota.id = 'aviso-caido';
+          nota.className = 'aviso';
+          nota.textContent = 'Sin conexión con el panel (¿se está reiniciando?). Se reconecta solo…';
+          $('#avisos').appendChild(nota);
+        }
+      });
   }
 
   function datosAlta() {
@@ -1421,6 +1482,8 @@
   // ------------------------------------------------------------------ tareas
   function verTarea(id) {
     tareaActual = id; tareaLineas = 0;
+    guardarSesion('tarea-abierta', id);
+    var fallos = 0;
     $('#tarea-titulo').textContent = 'Tarea en curso';
     $('#tarea-cuerpo').innerHTML = '<div id="tarea-pasos"></div>' +
       '<pre class="log" id="tarea-log"></pre><div id="tarea-pie"></div>';
@@ -1429,11 +1492,24 @@
     var tick = function () {
       fetch('/api/tarea/' + encodeURIComponent(id) + '?desde=' + tareaLineas,
             { credentials: 'same-origin' })
-        .then(function (r) { return r.json(); })
+        .then(function (r) {
+          if (r.status === 404) return { noEncontrada: true };
+          if (r.status === 401) { window.location.href = '/login'; return null; }
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        })
         .then(function (d) {
-          if (d.error) { clearInterval(tareaPoll); return; }
+          if (!d) return;
+          if (d.noEncontrada) {
+            clearInterval(tareaPoll); tareaPoll = null;
+            $('#tarea-pie').innerHTML = '<div class="aviso-error" style="margin-top:10px">La tarea ya no ' +
+              'está en el panel.</div>';
+            return;
+          }
+          if (fallos) { fallos = 0; if ($('#tarea-reconectando')) $('#tarea-reconectando').remove(); }
+          var final = d.estado === 'ok' || d.estado === 'error' || d.estado === 'interrumpida';
           $('#tarea-titulo').innerHTML = esc(d.titulo) + ' ' +
-            badge(d.estado === 'ok' ? 'verde' : (d.estado === 'error' ? 'rojo' : 'ambar'), d.estado);
+            badge(d.estado === 'ok' ? 'verde' : (final ? 'rojo' : 'ambar'), d.estado);
           $('#tarea-pasos').innerHTML = (d.pasos || []).map(function (p) {
             var icono = p.estado === 'ok' ? '✔' : (p.estado === 'error' ? '✖' : '…');
             return '<div class="paso paso-' + esc(p.estado) + '">' + icono + ' ' + esc(p.nombre) +
@@ -1448,17 +1524,21 @@
           });
           tareaLineas = d.total_lineas;
           log.scrollTop = log.scrollHeight;
-          if (d.estado === 'ok' || d.estado === 'error') {
+          if (final) {
             clearInterval(tareaPoll); tareaPoll = null;
+            borrarSesion('tarea-abierta');
             $('#tarea-pie').innerHTML =
-              (d.estado === 'error' && (d.deshacer || []).length
+              (d.estado === 'interrumpida'
+                ? '<div class="aviso-error" style="margin-top:10px">' + esc(d.error || 'La tarea quedó a medias') + '</div>'
+                : '') +
+              (d.estado !== 'ok' && (d.deshacer || []).length
                 ? '<div class="aviso-error" style="margin-top:10px">La tarea falló después de crear cosas. ' +
                   'Puedes revertir lo creado: ' +
                   (d.deshacer || []).map(function (x) { return esc(x.tipo) + ' ' + esc(x.valor); }).join(', ') +
                   '<button class="boton peligro" type="button" id="btn-deshacer" data-id="' + esc(d.id) +
                   '" style="margin-left:10px">Deshacer</button></div>'
                 : '') +
-              (d.estado === 'error' && d.tipo === 'crear_instancia' && $('#f-cliente')
+              (d.estado !== 'ok' && d.tipo === 'crear_instancia' && $('#f-cliente')
                 ? '<div class="aviso" style="margin-top:10px">Corrige el dato que falló y vuelve a ' +
                   'intentarlo sin empezar de cero: ' +
                   '<button class="boton mini" type="button" id="btn-reintentar" data-id="' + esc(d.id) +
@@ -1477,7 +1557,19 @@
             refrescarPaginaTrasTarea(d);
           }
         })
-        .catch(function () {});
+        .catch(function () {
+          // Apache recargando (vhost, certbot) o el panel reiniciándose: se sigue
+          // intentando solo, sin tener que pulsar F5.
+          fallos++;
+          if (fallos >= 2 && !$('#tarea-reconectando') && $('#tarea-pie')) {
+            var nota = document.createElement('div');
+            nota.id = 'tarea-reconectando';
+            nota.className = 'aviso';
+            nota.style.marginTop = '10px';
+            nota.textContent = 'Reconectando con el panel (el servidor web se está reiniciando)…';
+            $('#tarea-pie').appendChild(nota);
+          }
+        });
     };
     tick();
     tareaPoll = setInterval(tick, 1500);
@@ -3567,6 +3659,7 @@
         if (el.id === 'nueva-cerrar' || el.id === 'modal-nueva') return $('#modal-nueva').classList.add('oculto');
         if (el.id === 'tarea-cerrar' || el.id === 'modal-tarea') {
           if (tareaPoll) { clearInterval(tareaPoll); tareaPoll = null; }
+          borrarSesion('tarea-abierta');
           return $('#modal-tarea').classList.add('oculto');
         }
         if (el.id === 'btn-validar') return validarAlta();
@@ -3769,9 +3862,17 @@
       .catch(function () {});
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', iniciar);
-  } else {
+  function arrancar() {
     iniciar();
+    setInterval(vigilarServidor, 10000);
+    // Si la página se recargó con una tarea abierta, se vuelve a mostrar su log.
+    var abierta = leerSesion('tarea-abierta');
+    if (abierta && $('#modal-tarea')) setTimeout(function () { verTarea(abierta); }, 300);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', arrancar);
+  } else {
+    arrancar();
   }
 })();
