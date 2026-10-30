@@ -16,6 +16,7 @@
 </head>
 <body class="{% block body_class %}{% endblock %}">
 {% block contenido %}{% endblock %}
+<script>window.PANEL_VERSION = '{{ version }}';</script>
 {% block scripts %}{% endblock %}
 <script>
   // App instalable y notificaciones push: el service worker sólo funciona con
