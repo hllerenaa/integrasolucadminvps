@@ -70,7 +70,9 @@
       "restaurante": {
         "ruta": "/home/template_restaurante/pryrestaurante",
         "db_origen": "template_restaurante",
-        "rama": "master"
+        "rama": "master",
+        "git_pull": true,
+        "git_clean": false
       }
     },
     "backups_dir": "",

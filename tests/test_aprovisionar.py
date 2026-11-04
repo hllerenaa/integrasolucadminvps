@@ -11,6 +11,7 @@ import unittest
 from unittest import mock
 
 from app import aprovisionar as ap
+from app import config as config_app
 
 
 class ConfigPrueba(dict):
@@ -194,6 +195,26 @@ class Protecciones(Base):
             'certificado': '/etc/letsencrypt/live/prueba.x.net/fullchain.pem',
             'nombre': 'otro.conf', 'contenido': '/home/otro/', 'sockets_unix': []}]
         self.assertIn(('certificado', 'prueba.x.net'), self.recursos(self.plan()['conservar']))
+
+
+class FlujoGit(unittest.TestCase):
+    @staticmethod
+    def pasos(tipo):
+        plantilla = config_app.DEFAULTS['aprovisionamiento']['templates'][tipo]
+        return [c[0][3] for c in ap.comandos_git_template(plantilla)]
+
+    def test_inventario_como_su_script(self):
+        self.assertEqual(self.pasos('inventario'), ['fetch', 'reset', 'clean'])
+
+    def test_restaurante_como_su_script(self):
+        self.assertEqual(self.pasos('restaurante'), ['fetch', 'reset', 'pull'])
+
+    def test_origenes_de_cada_script(self):
+        plantillas = config_app.DEFAULTS['aprovisionamiento']['templates']
+        self.assertEqual(plantillas['inventario']['db_origen'], 'inventario_template')
+        self.assertEqual(plantillas['restaurante']['db_origen'], 'template_restaurante')
+        self.assertEqual(plantillas['restaurante']['ruta'],
+                         '/home/template_restaurante/pryrestaurante')
 
 
 class ValidarCampo(Base):

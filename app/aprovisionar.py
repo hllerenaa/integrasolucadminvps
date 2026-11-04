@@ -848,6 +848,23 @@ def _configurar_ssl(tarea, config, cliente, dominio, destino, con_servicio=True,
     return True
 
 
+def comandos_git_template(plantilla):
+    """Comandos git del paso 1, como los hace el .sh de cada sistema: [(comando, crítico)].
+
+    new_instance_inventario.sh termina con git clean; new_instance_restaurante.sh
+    no limpia y hace git pull después del reset.
+    """
+    ruta = plantilla['ruta']
+    rama = plantilla.get('rama') or 'master'
+    comandos = [(['git', '-C', ruta, 'fetch', 'origin'], True),
+                (['git', '-C', ruta, 'reset', '--hard', 'origin/%s' % rama], True)]
+    if plantilla.get('git_pull', False):
+        comandos.append((['git', '-C', ruta, 'pull'], True))
+    if plantilla.get('git_clean', True):
+        comandos.append((['git', '-C', ruta, 'clean', '-fd'], False))
+    return comandos
+
+
 # ------------------------------------------------------------------- ejecución
 def crear_instancia(tarea, config, colector):
     """Corre todos los pasos de creación. Pensado para GestorTareas.lanzar().
@@ -924,9 +941,8 @@ def crear_instancia(tarea, config, colector):
     else:
         indice = tarea.paso('Actualizar el template desde git')
         rama = plantilla.get('rama') or 'master'
-        tarea.ejecutar(['git', '-C', ruta_template, 'fetch', 'origin'], simular=simular)
-        tarea.ejecutar(['git', '-C', ruta_template, 'reset', '--hard', 'origin/%s' % rama], simular=simular)
-        tarea.ejecutar(['git', '-C', ruta_template, 'clean', '-fd'], critico=False, simular=simular)
+        for comando, critico in comandos_git_template(plantilla):
+            tarea.ejecutar(comando, critico=critico, simular=simular)
         tarea.ejecutar([python, 'manage.py', 'makemigrations', '--noinput'],
                        cwd=ruta_template, simular=simular)
         tarea.ejecutar([python, 'manage.py', 'migrate', '--noinput'],
