@@ -359,6 +359,13 @@ más usado por las instancias; un dominio sin punto (p. ej. `icecream`) se recha
 El botón **Tareas** lista las ejecuciones con su log. Cada alta queda además en
 el historial de acciones.
 
+### Diferencia entre inventario y restaurante
+
+Los pasos son los mismos; solo cambia la actualización del template, como en cada
+`.sh`: inventario hace `fetch`, `reset --hard` y `clean -fd`; restaurante hace
+`fetch`, `reset --hard` y `pull`, sin limpiar. Se ajusta con `git_pull` y
+`git_clean` en cada entrada de `aprovisionamiento.templates`.
+
 ### Socket, un solo `.conf` y certificado
 
 Cada instancia usa `/run/<cliente>.sock` con `<cliente>.socket` y
