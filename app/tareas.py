@@ -136,8 +136,9 @@ class TareaGuardada(object):
     «corriendo» es que el reinicio la cortó a mitad: se marca «interrumpida».
     """
 
-    def __init__(self, datos):
+    def __init__(self, datos, config=None):
         self._d = dict(datos)
+        self._config = config
         if self._d.get('estado') in ('pendiente', 'corriendo'):
             self._d['estado'] = 'interrumpida'
             self._d['error'] = ('El panel se reinició mientras corría la tarea: quedó a medias. '
@@ -146,9 +147,20 @@ class TareaGuardada(object):
         self.tipo = self._d.get('tipo')
         self.titulo = self._d.get('titulo')
         self.estado = self._d.get('estado')
-        self.datos = self._d.get('datos') or {}
+        self._d['datos'] = self._d.get('datos') or {}
+        self.datos = self._d['datos']
         self.deshacer = self._d.get('deshacer') or []
         self.creado_por = self._d.get('creado_por')
+
+    def _persistir(self):
+        if not self._config:
+            return
+        ruta = os.path.join(self._config.var_dir, 'tareas', '%s.json' % self.id)
+        try:
+            with open(ruta, 'w', encoding='utf-8') as fh:
+                json.dump(self._d, fh, ensure_ascii=False)
+        except OSError:
+            pass
 
     def as_dict(self, desde=0):
         datos = dict(self._d)
@@ -195,10 +207,19 @@ class GestorTareas(object):
             ruta = os.path.join(self.config.var_dir, 'tareas', '%s.json' % ident)
             try:
                 with open(ruta, 'r', encoding='utf-8') as fh:
-                    tarea = TareaGuardada(json.load(fh))
+                    tarea = TareaGuardada(json.load(fh), self.config)
             except (OSError, ValueError):
                 tarea = None
         return tarea
+
+    def en_curso(self, tipos):
+        """Tarea real (no simulación) de esos tipos que siga corriendo, si hay alguna."""
+        with self._lock:
+            for tarea in self._tareas.values():
+                if (tarea.tipo in tipos and tarea.estado in ('pendiente', 'corriendo')
+                        and not (tarea.datos or {}).get('simular')):
+                    return tarea
+        return None
 
     def listar(self):
         with self._lock:

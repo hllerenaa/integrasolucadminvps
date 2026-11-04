@@ -312,6 +312,11 @@ def _volcar(tarea, config, credenciales, base, clave, indice):
             'tamano': bytes_legible(tamano)}
 
 
+def respaldar_base(tarea, config, credenciales, base, clave, indice):
+    """pg_dump verificado de una base. Devuelve {ok, archivo, error, ...}."""
+    return _volcar(tarea, config, credenciales, base, clave, indice)
+
+
 def crear(tarea, config, colector, ids=None, bases=None):
     """Genera el pg_dump comprimido y verificado de instancias y/o bases sueltas."""
     instantanea = colector.snapshot(incluir_ocultas=True)

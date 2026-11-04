@@ -64,7 +64,7 @@
     "templates": {
       "inventario": {
         "ruta": "/home/template/pryinventario",
-        "db_origen": "demo_soluciones",
+        "db_origen": "inventario_template",
         "rama": "master"
       },
       "restaurante": {
@@ -74,14 +74,9 @@
       }
     },
     "backups_dir": "",
-    "puerto_inicial": 8000,
-    "puerto_final": 8999,
     "dominio_base": "integrasoluc.net",
-    "modelo_servicio": "",
-    "modelo_vhost": "",
-    "actualizar_template": true,
     "certbot": {
-      "enabled": false,
+      "enabled": true,
       "email": ""
     },
     "base_dir": ""

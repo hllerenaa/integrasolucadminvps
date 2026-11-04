@@ -1,14 +1,18 @@
 [Unit]
-Description=__CLIENTE__ (__SISTEMA__) - gunicorn
+Description=gunicorn daemon __CLIENTE__
+Requires=__CLIENTE__.socket
 After=network.target
 
 [Service]
-Type=simple
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=5
+Restart=on-failure
+RestartSec=10
 User=root
+Group=www-data
 WorkingDirectory=__RUTA__
-ExecStart=__VENV__/bin/gunicorn --workers 3 --timeout 120 --bind 127.0.0.1:__PUERTO__ __PROYECTO__.wsgi:application
-Restart=always
-RestartSec=5
+ExecStart=__VENV__/bin/gunicorn --workers 1 --threads 4 --timeout 300 --bind unix:__SOCKET__ __PROYECTO__.wsgi:application
 
 [Install]
 WantedBy=multi-user.target

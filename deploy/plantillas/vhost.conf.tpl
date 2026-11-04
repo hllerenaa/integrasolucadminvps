@@ -4,18 +4,19 @@
     ProxyPreserveHost On
     ProxyPass /static/ !
     ProxyPass /media/ !
-    ProxyPass / http://127.0.0.1:__PUERTO__/
-    ProxyPassReverse / http://127.0.0.1:__PUERTO__/
+    ProxyPass / unix:__SOCKET__|http://localhost/
+    ProxyPassReverse / unix:__SOCKET__|http://localhost/
 
     Alias /static/ __RUTA__/static/
-    Alias /media/ __RUTA__/media/
-    <Directory __RUTA__/static>
-        Require all granted
-    </Directory>
-    <Directory __RUTA__/media>
+    <Directory __RUTA__/static/>
         Require all granted
     </Directory>
 
-    ErrorLog ${APACHE_LOG_DIR}/__CLIENTE__-error.log
-    CustomLog ${APACHE_LOG_DIR}/__CLIENTE__-access.log combined
+    Alias /media/ __RUTA__/media/
+    <Directory __RUTA__/media/>
+        Require all granted
+    </Directory>
+
+    ErrorLog ${APACHE_LOG_DIR}/__CLIENTE___error.log
+    CustomLog ${APACHE_LOG_DIR}/__CLIENTE___access.log combined
 </VirtualHost>

@@ -246,6 +246,8 @@ def crear_app(config=None):
             'credenciales_editar': bool((config.get('credenciales') or {}).get('editar', True)),
             'credenciales_secretos': bool((config.get('credenciales') or {}).get('mostrar_secretos', True)),
             'aprovisionar': bool((config.get('aprovisionamiento') or {}).get('enabled', True)),
+            'eliminables': (sorted(aprovisionar.registro_listar(config))
+                            if permisos()['gestionar_excluidos'] else []),
             'cobros_editar': permisos()['gestionar_excluidos'],
         }
         return jsonify(datos)
@@ -339,6 +341,30 @@ def crear_app(config=None):
     def _aprovisionamiento_activo():
         return bool((config.get('aprovisionamiento') or {}).get('enabled', True))
 
+    TAREAS_EXCLUYENTES = ('crear_instancia', 'eliminar_instancia', 'reintentar_ssl', 'deshacer')
+    lock_altas = threading.Lock()
+
+    def _lanzar_excluyente(tipo, titulo, cuerpo, funcion, evento, objetivo, simular=False):
+        """Una sola operación a la vez: dos altas o bajas juntas se pisarían en el servidor."""
+        with lock_altas:
+            otra = None if simular else tareas.en_curso(TAREAS_EXCLUYENTES)
+            if otra:
+                return jsonify({'ok': False, 'error': 'Ya está corriendo: %s' % otra.titulo,
+                                'tarea': otra.id}), 409
+            tarea = tareas.crear(tipo, titulo, cuerpo, usuario=session.get('usuario') or 'api')
+        mod_acciones.registrar_evento(config, tarea.creado_por, evento, objetivo, 0,
+                                      'simulación' if simular else 'tarea %s' % tarea.id)
+        tareas.lanzar(tarea, funcion)
+        return jsonify({'ok': True, 'tarea': tarea.id}), 202
+
+    def _solo_administrador():
+        if not _aprovisionamiento_activo():
+            return jsonify({'ok': False, 'error': 'Creación de instancias desactivada'}), 403
+        if not permisos()['gestionar_excluidos']:
+            return jsonify({'ok': False, 'error': 'Sólo un administrador del panel puede '
+                                                  'hacer esto'}), 403
+        return None
+
     @app.route('/api/aprovisionar/opciones')
     @requiere_login
     def api_aprovisionar_opciones():
@@ -356,6 +382,65 @@ def crear_app(config=None):
         return jsonify({'revisiones': revisiones,
                         'ok': not any(r['critico'] for r in revisiones)})
 
+    @app.route('/api/aprovisionar/validar-campo', methods=['POST'])
+    @requiere_login
+    def api_aprovisionar_validar_campo():
+        if not _aprovisionamiento_activo():
+            return jsonify({'error': 'Creación de instancias desactivada'}), 403
+        cuerpo = request.get_json(silent=True) or {}
+        return jsonify(aprovisionar.validar_campo(config, cuerpo.get('campo'), cuerpo))
+
+    @app.route('/api/aprovisionar/instancias')
+    @requiere_login
+    def api_aprovisionar_instancias():
+        rechazo = _solo_administrador()
+        if rechazo:
+            return rechazo
+        return jsonify({'instancias': aprovisionar.instancias_registradas(config, tareas)})
+
+    @app.route('/api/aprovisionar/ssl', methods=['POST'])
+    @requiere_login
+    def api_aprovisionar_ssl():
+        rechazo = _solo_administrador()
+        if rechazo:
+            return rechazo
+        cliente = (request.get_json(silent=True) or {}).get('cliente')
+        if not aprovisionar.registro_obtener(config, cliente):
+            return jsonify({'ok': False, 'error': 'Esa instancia no fue creada desde el panel'}), 404
+        return _lanzar_excluyente(
+            'reintentar_ssl', 'Reintentar SSL de %s' % cliente, {'cliente': cliente},
+            lambda t: aprovisionar.reintentar_ssl(t, config, colector), 'instancia_ssl', cliente)
+
+    @app.route('/api/aprovisionar/eliminacion/<cliente>')
+    @requiere_login
+    def api_aprovisionar_plan_eliminar(cliente):
+        rechazo = _solo_administrador()
+        if rechazo:
+            return rechazo
+        plan = aprovisionar.plan_eliminacion(config, cliente)
+        if not plan:
+            return jsonify({'ok': False, 'error': 'Esa instancia no fue creada desde el panel'}), 404
+        return jsonify(dict(plan, ok=True))
+
+    @app.route('/api/aprovisionar/eliminar/<cliente>', methods=['POST'])
+    @requiere_login
+    def api_aprovisionar_eliminar(cliente):
+        rechazo = _solo_administrador()
+        if rechazo:
+            return rechazo
+        cuerpo = request.get_json(silent=True)
+        if not isinstance(cuerpo, dict) or cuerpo.get('confirmacion') != cliente:
+            return jsonify({'ok': False, 'error': 'Escribe el nombre de la instancia para confirmar'}), 400
+        if not aprovisionar.registro_obtener(config, cliente):
+            return jsonify({'ok': False, 'error': 'Esa instancia no fue creada desde el panel'}), 404
+        # Sin indicar lo contrario se hace la copia: omitirla debe ser explícito.
+        con_backup = cuerpo.get('backup') is not False
+        return _lanzar_excluyente(
+            'eliminar_instancia', 'Eliminar instancia %s' % cliente,
+            {'cliente': cliente, 'backup': con_backup},
+            lambda t: aprovisionar.eliminar_instancia(t, config, colector, cliente, con_backup),
+            'instancia_eliminar', cliente)
+
     @app.route('/api/aprovisionar/diagnostico')
     @requiere_login
     def api_aprovisionar_diagnostico():
@@ -369,7 +454,7 @@ def crear_app(config=None):
         if not _aprovisionamiento_activo():
             return jsonify({'error': 'Creación de instancias desactivada'}), 403
         cuerpo = request.get_json(silent=True) or {}
-        faltan = [c for c in ('tipo', 'cliente', 'base', 'puerto') if not cuerpo.get(c)]
+        faltan = [c for c in ('tipo', 'cliente', 'base') if not cuerpo.get(c)]
         if faltan:
             return jsonify({'error': 'Faltan datos: %s' % ', '.join(faltan)}), 400
 
@@ -378,13 +463,10 @@ def crear_app(config=None):
             titulo = 'Reanudar / corregir instancia %s (%s)' % (cuerpo.get('cliente'), cuerpo.get('tipo'))
         if cuerpo.get('simular'):
             titulo = '[simulación] ' + titulo
-        tarea = tareas.crear('crear_instancia', titulo, cuerpo,
-                             usuario=session.get('usuario') or 'api')
-        mod_acciones.registrar_evento(config, tarea.creado_por, 'instancia_crear',
-                                      cuerpo.get('cliente'), 0,
-                                      'simulación' if cuerpo.get('simular') else 'tarea %s' % tarea.id)
-        tareas.lanzar(tarea, lambda t: aprovisionar.crear_instancia(t, config, colector))
-        return jsonify({'ok': True, 'tarea': tarea.id}), 202
+        return _lanzar_excluyente(
+            'crear_instancia', titulo, cuerpo,
+            lambda t: aprovisionar.crear_instancia(t, config, colector),
+            'instancia_crear', cuerpo.get('cliente'), simular=bool(cuerpo.get('simular')))
 
     @app.route('/api/tareas')
     @requiere_login
@@ -406,22 +488,26 @@ def crear_app(config=None):
     @app.route('/api/tarea/<ident>/deshacer', methods=['POST'])
     @requiere_login
     def api_tarea_deshacer(ident):
-        if not _aprovisionamiento_activo():
-            return jsonify({'error': 'Creación de instancias desactivada'}), 403
+        rechazo = _solo_administrador()
+        if rechazo:
+            return rechazo
         original = tareas.obtener(ident)
         if not original:
             return jsonify({'error': 'tarea no encontrada'}), 404
         if original.estado in ('corriendo', 'pendiente'):
             return jsonify({'error': 'La tarea todavía está corriendo'}), 400
+        if original.estado == 'ok':
+            return jsonify({'error': 'La tarea terminó bien: para quitar la instancia usa '
+                                     'Eliminar'}), 400
+        if (original.datos or {}).get('deshecha'):
+            return jsonify({'error': 'Esa tarea ya se deshizo'}), 400
         if not original.deshacer:
             return jsonify({'error': 'Esa tarea no creó nada que se pueda deshacer'}), 400
 
-        tarea = tareas.crear('deshacer', 'Deshacer %s' % original.titulo,
-                             {'origen': ident}, usuario=session.get('usuario') or 'api')
-        mod_acciones.registrar_evento(config, tarea.creado_por, 'instancia_deshacer',
-                                      (original.datos or {}).get('cliente'), 0, ident)
-        tareas.lanzar(tarea, lambda t: aprovisionar.deshacer(t, config, colector, original))
-        return jsonify({'ok': True, 'tarea': tarea.id}), 202
+        return _lanzar_excluyente(
+            'deshacer', 'Deshacer %s' % original.titulo, {'origen': ident},
+            lambda t: aprovisionar.deshacer(t, config, colector, original),
+            'instancia_deshacer', (original.datos or {}).get('cliente'))
 
     # ------------------------------------------------------------- excluidos
     def _inventario_excluibles():
