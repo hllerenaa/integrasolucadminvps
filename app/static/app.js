@@ -1651,11 +1651,17 @@
       if (!ok) return;
       var datos = datosAlta();
       datos.simular = !!simular;
-      if (!simular && !window.confirm(datos.reanudar
+      if (!simular && datos.recrear_base) {
+        datos.confirmar_base = window.prompt('ATENCIÓN: la base ' + datos.base + ' se BORRA y se vuelve ' +
+          'a restaurar desde el template. Antes se hace una copia verificada.\n\n' +
+          'Escribe el nombre de la base para confirmar:');
+        if ((datos.confirmar_base || '').trim().toLowerCase() !== datos.base) {
+          if (datos.confirmar_base !== null) aviso('El nombre no coincide: no se hizo nada.');
+          return;
+        }
+      } else if (!simular && !window.confirm(datos.reanudar
           ? 'Se va a reanudar / corregir la instancia "' + datos.cliente + '": se reutiliza lo que ya ' +
-            'existe, se reescriben credenciales.json, el servicio y el vhost y se reinicia.' +
-            (datos.recrear_base ? '\n\nATENCIÓN: la base ' + datos.base + ' se BORRA y se vuelve a ' +
-              'restaurar desde el backup del template.' : '') + ' ¿Continuar?'
+            'existe, se reescriben credenciales.json, el servicio y el vhost y se reinicia. ¿Continuar?'
           : 'Se va a crear la instancia "' + datos.cliente +
             '": carpeta /home/' + datos.cliente + ', base ' + datos.base +
             ', servicio y vhost. ¿Continuar?')) return;
@@ -2219,8 +2225,10 @@
           '<button class="boton mini cert-accion" type="button" data-nombre="' + esc(c.nombre) +
             '" data-accion="' + (pausada ? 'reanudar' : 'pausar') + '">' +
             (pausada ? 'Reanudar' : 'Pausar') + '</button> ' +
-          '<button class="boton mini peligro cert-accion" type="button" style="color:#fff" ' +
-            'data-nombre="' + esc(c.nombre) + '" data-accion="eliminar">Eliminar</button>';
+          (cap.gestionar_excluidos
+            ? '<button class="boton mini peligro cert-accion" type="button" style="color:#fff" ' +
+              'data-nombre="' + esc(c.nombre) + '" data-accion="eliminar">Eliminar</button>'
+            : '');
       }
       return '<tr><td><strong>' + esc(c.nombre) + '</strong>' +
         (c.emisor ? '<div class="sub">' + esc(c.emisor) + '</div>' : '') + '</td>' +
@@ -2243,8 +2251,8 @@
     var cuerpo = { nombre: nombre, accion: accion, forzar: !!forzar };
     if (accion === 'eliminar' && !forzar) {
       if (!window.confirm('¿Eliminar el certificado "' + nombre + '"?\n\n' +
-          'Se borran sus archivos y su configuración de renovación. Si algún vhost lo usa, ' +
-          'el servidor web no arrancará hasta corregirlo o emitir uno nuevo.')) return;
+          'Se borran sus archivos y su configuración de renovación. Si algún sitio lo usa, ' +
+          'no se eliminará.')) return;
     } else if (accion === 'pausar' &&
                !window.confirm('Pausar la renovación automática de "' + nombre +
                  '"? El certificado sigue funcionando hasta que venza, pero certbot dejará ' +

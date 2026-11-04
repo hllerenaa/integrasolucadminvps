@@ -337,6 +337,21 @@ def _previo(config, tipo, cliente, base):
     return previo
 
 
+def _base_ajena(config, cliente, base, previo):
+    """Por qué esa base no se puede reutilizar ni borrar al reanudar (None si es propia).
+
+    Tiene que constar que es de la instancia: anotada en el registro o en su
+    credenciales.json. Si no, un nombre mal puesto borraría la base de un cliente.
+    """
+    motivo = _bases_protegidas(config, cliente).get(base)
+    if motivo:
+        return motivo
+    entrada = registro_obtener(config, cliente) or {}
+    if base in (entrada.get('base'), previo.get('db_credenciales')):
+        return None
+    return 'no consta que sea suya: ni en el registro del panel ni en su credenciales.json'
+
+
 def _es_propia(previo, ruta):
     """True si la ruta (WorkingDirectory) cae dentro de la carpeta de esta instancia."""
     if not ruta:
@@ -434,7 +449,10 @@ def validar(config, colector, datos):
                 detalle=None if conecta else detalle)
         if conecta:
             existe = _existe_base(config, tipo, base) if RE_DB.match(base or '') else None
-            if existe and reanudar:
+            ajena = _base_ajena(config, cliente, base, previo) if existe and reanudar else None
+            if ajena:
+                revisar(False, 'La base «%s» no es de esta instancia' % base, detalle=ajena)
+            elif existe and reanudar:
                 incompleta, resumen = _base_incompleta(credenciales_tpl, base,
                                                        plantilla.get('db_origen'))
                 if datos.get('recrear_base'):
@@ -925,6 +943,23 @@ def crear_instancia(tarea, config, colector):
     recrear = bool(base_existia and datos.get('recrear_base'))
     restaurar = recrear or not tablas_existentes
 
+    # Borrar una base no se recupera: confirmación explícita y copia verificada,
+    # antes de tocar nada más.
+    if recrear:
+        indice = tarea.paso('Copia de seguridad de la base %s antes de recrearla' % base)
+        if simular:
+            tarea.paso_ok(indice, 'Simulación: no se hace la copia')
+        else:
+            if (datos.get('confirmar_base') or '').strip().lower() != base:
+                tarea.paso_error(indice, 'Falta confirmar el nombre de la base')
+                raise TareaError('Para recrear la base hay que confirmar su nombre')
+            resultado = mod_backups.respaldar_base(tarea, config, credenciales_tpl, base,
+                                                   cliente, indice)
+            if not resultado.get('ok'):
+                raise TareaError('No se pudo hacer la copia (%s): la base no se borró'
+                                 % resultado.get('error'))
+            datos['backup'] = resultado.get('archivo')
+
     # Sólo entra al registro lo que nace aquí: reanudar sobre una carpeta que ya
     # existía nunca vuelve «eliminable» una instancia anterior al registro.
     if not simular:
@@ -1300,18 +1335,24 @@ def _quitar_logs(tarea, cliente):
                 tarea.log('  No se pudo borrar %s: %s' % (archivo, ex), 'aviso')
 
 
-def _quitar_servicio(tarea, cliente):
+def _quitar_servicio(tarea, cliente, con_servicio=True, con_socket=True):
     """Primero el socket: si no, la siguiente petición volvería a levantar el servicio."""
-    for unidad in ('%s.socket' % cliente, '%s.service' % cliente):
+    unidades = []
+    if con_socket:
+        unidades.append('%s.socket' % cliente)
+    if con_servicio:
+        unidades.append('%s.service' % cliente)
+    for unidad in unidades:
         archivo = os.path.join(DIR_UNIDADES, unidad)
         if os.path.isfile(archivo):
             tarea.ejecutar(['systemctl', 'disable', '--now', unidad], critico=False)
             os.remove(archivo)
             tarea.log('  Eliminado %s' % archivo)
     tarea.ejecutar(['systemctl', 'daemon-reload'], critico=False)
-    tarea.ejecutar(['systemctl', 'reset-failed', '%s.service' % cliente], critico=False)
+    if con_servicio:
+        tarea.ejecutar(['systemctl', 'reset-failed', '%s.service' % cliente], critico=False)
     ruta = _ruta_socket(cliente)
-    if os.path.exists(ruta):
+    if con_socket and os.path.exists(ruta):
         os.remove(ruta)
 
 
@@ -1373,15 +1414,6 @@ def _bases_protegidas(config, cliente):
                 if nombre:
                     protegidas[nombre] = 'la usa la instancia %s' % dueno
     return protegidas
-
-
-def _certificado_ajeno(config, nombre, cliente, carpeta):
-    """Vhost de otra instancia que usa ese certificado, si hay alguno."""
-    marca = '/live/%s/' % nombre
-    for vhost in webserver.cargar_vhosts(config):
-        if marca in (vhost.get('certificado') or '') and not _vhost_propio(vhost, cliente, carpeta):
-            return vhost.get('nombre') or vhost.get('archivo') or '?'
-    return None
 
 
 # -------------------------------------------------------------------- eliminar
@@ -1450,11 +1482,12 @@ def plan_eliminacion(config, cliente):
 
     certificado = entrada.get('certificado')
     if certificado:
-        ajeno = _certificado_ajeno(config, certificado, cliente, carpeta)
+        en_uso = certificados.en_uso(certificado, config,
+                                     {i['detalle'] for i in borrar if i['recurso'] == 'vhost'})
         if not RE_DOMINIO.match(certificado):
             anotar(conservar, 'certificado', certificado, 'nombre no válido')
-        elif ajeno:
-            anotar(conservar, 'certificado', certificado, 'lo usa %s' % ajeno)
+        elif en_uso:
+            anotar(conservar, 'certificado', certificado, 'lo usa %s' % en_uso)
         elif os.path.isdir(os.path.join(certificados.RUTA_LIVE, certificado)):
             anotar(borrar, 'certificado', certificado)
 
@@ -1524,6 +1557,11 @@ def eliminar_instancia(tarea, config, colector, cliente, con_backup=True):
 
     for item in de_tipo('certificado'):
         indice = tarea.paso('Eliminar el certificado %s' % item['valor'])
+        # Se comprueba otra vez: el vhost pudo no quitarse o alguien pudo editar otro.
+        en_uso = certificados.en_uso(item['valor'], config)
+        if en_uso:
+            tarea.paso_error(indice, 'Se conserva: lo usa %s' % en_uso)
+            continue
         resultado = certificados.eliminar(item['valor'], config, forzar=True)
         if resultado.get('ok'):
             tarea.paso_ok(indice)
@@ -1532,7 +1570,8 @@ def eliminar_instancia(tarea, config, colector, cliente, con_backup=True):
 
     if de_tipo('servicio') or de_tipo('socket'):
         indice = tarea.paso('Quitar el socket y el servicio')
-        _quitar_servicio(tarea, cliente)
+        _quitar_servicio(tarea, cliente, con_servicio=bool(de_tipo('servicio')),
+                         con_socket=bool(de_tipo('socket')))
         tarea.paso_ok(indice)
 
     if plan['con_base']:
@@ -1577,7 +1616,6 @@ def deshacer(tarea, config, colector, tarea_destino):
     datos_destino = tarea_destino.datos or {}
     tipo_sistema = datos_destino.get('tipo')
     cliente = datos_destino.get('cliente')
-    carpeta = os.path.join(_base_dir(config), cliente or '')
     fallos = []
     vhost_quitado = False
     for accion in acciones:
@@ -1594,9 +1632,9 @@ def deshacer(tarea, config, colector, tarea_destino):
                 _recargar_apache(tarea)
                 vhost_quitado = False
             indice = tarea.paso('Eliminar el certificado %s' % valor)
-            ajeno = _certificado_ajeno(config, valor, cliente or '', carpeta)
-            if ajeno or not RE_DOMINIO.match(valor):
-                tarea.paso_error(indice, 'Se conserva: %s' % (ajeno or 'nombre no válido'))
+            en_uso = certificados.en_uso(valor, config)
+            if en_uso or not RE_DOMINIO.match(valor):
+                tarea.paso_error(indice, 'Se conserva: %s' % (en_uso or 'nombre no válido'))
                 fallos.append('certificado %s' % valor)
                 continue
             resultado = certificados.eliminar(valor, config, forzar=True)

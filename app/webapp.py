@@ -457,6 +457,15 @@ def crear_app(config=None):
         faltan = [c for c in ('tipo', 'cliente', 'base') if not cuerpo.get(c)]
         if faltan:
             return jsonify({'error': 'Faltan datos: %s' % ', '.join(faltan)}), 400
+        if cuerpo.get('recrear_base'):
+            rechazo = _solo_administrador()
+            if rechazo:
+                return rechazo
+            base = str(cuerpo.get('base')).strip().lower()
+            confirmada = str(cuerpo.get('confirmar_base') or '').strip().lower()
+            if not cuerpo.get('simular') and confirmada != base:
+                return jsonify({'ok': False, 'error': 'Para recrear la base hay que confirmar '
+                                                      'su nombre'}), 400
 
         titulo = 'Crear instancia %s (%s)' % (cuerpo.get('cliente'), cuerpo.get('tipo'))
         if cuerpo.get('reanudar'):
@@ -659,6 +668,8 @@ def crear_app(config=None):
         nombre = cuerpo.get('nombre')
         forzar = bool(cuerpo.get('forzar'))
         simular = bool(cuerpo.get('simular'))
+        if nombre and not mod_certificados.nombre_valido(nombre):
+            return jsonify({'ok': False, 'error': 'Nombre de certificado no válido'}), 400
 
         titulo = 'Renovar %s' % (nombre or 'todos los certificados')
         if simular:
@@ -685,12 +696,17 @@ def crear_app(config=None):
         accion = (cuerpo.get('accion') or '').strip()
         if not nombre:
             return jsonify({'ok': False, 'error': 'Falta el nombre del certificado'}), 400
+        if not mod_certificados.nombre_valido(nombre):
+            return jsonify({'ok': False, 'error': 'Nombre de certificado no válido'}), 400
 
         if accion == 'pausar':
             resultado = mod_certificados.pausar_renovacion(nombre, config)
         elif accion == 'reanudar':
             resultado = mod_certificados.reanudar_renovacion(nombre, config)
         elif accion == 'eliminar':
+            if not permisos()['gestionar_excluidos']:
+                return jsonify({'ok': False, 'error': 'Sólo un administrador del panel puede '
+                                                      'eliminar certificados'}), 403
             resultado = mod_certificados.eliminar(nombre, config,
                                                   forzar=bool(cuerpo.get('forzar')))
         else:

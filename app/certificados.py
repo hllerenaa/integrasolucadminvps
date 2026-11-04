@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 
+from . import webserver
 from .utils import ejecutar, revisar_dns
 
 RUTA_LIVE = '/etc/letsencrypt/live'
@@ -23,6 +24,19 @@ _RE_DOMINIOS = re.compile(r'^\s*Domains:\s*(.+)$', re.M)
 _RE_VENCE = re.compile(r'^\s*Expiry Date:\s*(\S+ \S+)', re.M)
 _RE_RUTA = re.compile(r'^\s*Certificate Path:\s*(.+)$', re.M)
 RE_DOMINIO = re.compile(r'^(?=.{4,253}$)[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$')
+# Más amplio que un dominio: certbot admite nombres propios (--cert-name) y sufijos -0001.
+RE_NOMBRE_CERT = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,252}\Z')
+
+
+def nombre_valido(nombre):
+    """El nombre acaba en rutas que se borran como root y en argumentos de certbot."""
+    return isinstance(nombre, str) and bool(RE_NOMBRE_CERT.match(nombre))
+
+
+def _dentro_de(ruta, raices):
+    """True si la ruta real (resolviendo enlaces) queda dentro de alguna de las raíces."""
+    real = os.path.realpath(ruta)
+    return any(real.startswith(os.path.realpath(raiz) + os.sep) for raiz in raices)
 
 
 def _fechas_openssl(ruta):
@@ -56,6 +70,23 @@ def _parsear(texto):
     return None
 
 
+def en_uso(nombre, config=None, se_borran=()):
+    """Vhost que usa ese certificado, si hay alguno.
+
+    Sin el certificado, Apache no pasa configtest y no arranca en el siguiente
+    reinicio, y se caen todos los sitios del servidor. También cuentan los sitios
+    desactivados: basta volver a activarlos para romper la configuración.
+    `se_borran` son los archivos de vhost que se quitan antes que el certificado.
+    """
+    marca = '/live/%s/' % nombre
+    for vhost in webserver.cargar_vhosts(config):
+        if vhost.get('archivo') in se_borran:
+            continue
+        if marca in (vhost.get('certificado') or '') or marca in (vhost.get('contenido') or ''):
+            return vhost.get('nombre') or vhost.get('archivo') or '?'
+    return None
+
+
 def _dir_renovacion(config=None):
     return (config or {}).get('certbot_renewal_dir') or RUTA_RENOVACION
 
@@ -78,6 +109,8 @@ def estado_renovacion(nombre, config=None):
 
 def pausar_renovacion(nombre, config=None):
     """Desactiva la renovación automática sin tocar el certificado."""
+    if not nombre_valido(nombre):
+        return {'ok': False, 'error': 'Nombre de certificado no válido'}
     datos = estado_renovacion(nombre, config)
     if datos['renovacion'] == 'pausada':
         return {'ok': True, 'renovacion': 'pausada', 'mensaje': 'Ya estaba pausada'}
@@ -94,6 +127,8 @@ def pausar_renovacion(nombre, config=None):
 
 def reanudar_renovacion(nombre, config=None):
     """Vuelve a activar la renovación automática."""
+    if not nombre_valido(nombre):
+        return {'ok': False, 'error': 'Nombre de certificado no válido'}
     datos = estado_renovacion(nombre, config)
     if datos['renovacion'] == 'activa':
         return {'ok': True, 'renovacion': 'activa', 'mensaje': 'Ya estaba activa'}
@@ -126,6 +161,13 @@ def eliminar(nombre, config=None, forzar=False):
     restos en disco), se informa qué quedó; con forzar=True se borran esos
     restos a mano.
     """
+    if not nombre_valido(nombre):
+        return {'ok': False, 'error': 'Nombre de certificado no válido'}
+    usado_por = en_uso(nombre, config)
+    if usado_por:
+        return {'ok': False, 'en_uso': usado_por,
+                'error': 'No se elimina: lo usa %s. Quita o corrige ese sitio primero; si no, '
+                         'Apache no arrancaría.' % usado_por}
     codigo, salida, error = ejecutar(
         ['certbot', 'delete', '--cert-name', nombre, '--non-interactive'], timeout=300)
     mensaje = (salida or error or '').strip()
@@ -133,6 +175,11 @@ def eliminar(nombre, config=None, forzar=False):
     restos = _restos(nombre, config)
     borrados = []
     if restos and forzar:
+        raices = (os.path.dirname(RUTA_LIVE), _dir_renovacion(config))
+        ajenos = [r for r in restos if not _dentro_de(r, raices)]
+        if ajenos:
+            return {'ok': False, 'error': 'Rutas fuera de Let\'s Encrypt, no se borran: %s'
+                                          % ', '.join(ajenos), 'salida': mensaje, 'restos': restos}
         for resto in restos:
             try:
                 if os.path.isdir(resto):
@@ -158,9 +205,7 @@ def eliminar(nombre, config=None, forzar=False):
     return {'ok': True,
             'mensaje': 'Certificado %s eliminado%s'
                        % (nombre, ' (restos borrados a mano)' if borrados else ''),
-            'salida': mensaje,
-            'aviso': 'Revisa el vhost: si apuntaba a ese certificado, Apache/nginx no arrancará '
-                     'hasta corregirlo o emitir uno nuevo.'}
+            'salida': mensaje}
 
 
 def _bloques_certbot(salida):

@@ -261,7 +261,8 @@ venv/bin/python run.py --quitar-usuario mochoa
   corre en segundo plano con log en vivo y recarga el servidor web al terminar.
   También se puede **pausar la renovación automática** de un certificado
   (reversible: se renombra su archivo en `/etc/letsencrypt/renewal`) o
-  **eliminarlo**; tras `certbot delete` se comprueba que realmente desapareció
+  **eliminarlo** (sólo administradores, y se rechaza si algún sitio lo usa, aunque
+  esté desactivado); tras `certbot delete` se comprueba que realmente desapareció
   y, si quedan restos en disco, se ofrece borrarlos.
 - Activar o desactivar el **sitio web**: `a2ensite`/`a2dissite` en Apache o el
   enlace en `sites-enabled` en nginx. Si `a2dissite` falla (por ejemplo cuando
@@ -350,8 +351,13 @@ Botón **+ Nueva instancia**. Reproduce lo que hacen `new_instance_inventario.sh
    servicio pertenecen a otra base/ruta, la validación lo bloquea igual.
    Si la base existe pero quedó a medio restaurar (menos tablas o menos de la
    mitad del tamaño de la base origen), la validación lo marca y ofrece
-   **Recrear la base desde el backup del template**: detiene el servicio, cierra
+   **Recrear la base desde el backup del template** (sólo administradores, hay que
+   escribir el nombre de la base y antes se hace una copia verificada; si la copia
+   falla, no se borra): detiene el servicio, cierra
    las conexiones, borra la base y la restaura con un `pg_dump` nuevo del origen.
+   Al reanudar, la base tiene que constar como de esa instancia, en el registro o
+   en su `credenciales.json`. La base de otra instancia, la de origen de un template
+   o una sin dueño conocido se rechazan, tanto para recrearla como para reutilizarla.
 
 Si `dominio_base` no está en config.json, el formulario lo deduce del dominio
 más usado por las instancias; un dominio sin punto (p. ej. `icecream`) se rechaza.
@@ -396,7 +402,8 @@ base, carpeta y logs del vhost, y comprueba que no quedó nada.
 
 Se conserva, y se explica por qué, lo que no sea claramente de esa instancia: una
 base usada por otra instancia o que sea origen de un template, un certificado que
-use otro sitio, o un servicio con otra `WorkingDirectory`. Si queda algo, la
+siga usando cualquier vhost que no se borre (Apache no arrancaría sin él), o un
+servicio o socket que no sean suyos. Si queda algo, la
 instancia sigue en la lista para reintentar.
 
 Configuración en `config.json` → `aprovisionamiento`: rutas de los templates y su
