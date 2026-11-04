@@ -175,6 +175,24 @@ a:hover{text-decoration:underline}
 .rev-ok{color:var(--verde)}
 .rev-error{color:var(--rojo);font-weight:600}
 .rev-aviso{color:var(--ambar)}
+.campo-estado{display:block;min-height:16px;margin-top:4px;font-size:11.5px;line-height:1.35;overflow-wrap:anywhere}
+.campo-ok{color:var(--verde)}
+.campo-aviso{color:var(--ambar)}
+.campo-error{color:var(--rojo);font-weight:600}
+.campo-revisando{color:var(--suave)}
+.formulario input.campo-invalido{border-color:var(--rojo)}
+.boton:disabled{opacity:.5;cursor:not-allowed}
+.tabla-creadas{overflow-x:auto}
+.tabla-creadas table{width:100%;border-collapse:collapse;font-size:13px}
+.tabla-creadas th,.tabla-creadas td{padding:8px 10px;border-bottom:1px solid var(--borde);text-align:left}
+.tabla-creadas th{font-size:12px;color:var(--suave);font-weight:600}
+.acciones-creada{white-space:nowrap;text-align:right}
+.modal-caja.modal-angosta{max-width:560px}
+.lista-eliminar{margin:6px 0 12px;padding-left:20px;font-size:13px;overflow-wrap:anywhere}
+.eliminar-confirmar{display:block;margin-top:12px;font-size:13px}
+.eliminar-confirmar input{display:block;width:100%;padding:8px 10px;margin-top:4px;border:1px solid var(--borde);
+  border-radius:7px;font:inherit}
+.eliminar-pie{margin-top:14px;text-align:right}
 
 /* --------------------------------------------------------- log de tareas */
 .paso{padding:4px 0;font-size:13px}

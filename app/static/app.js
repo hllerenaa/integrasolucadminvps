@@ -829,7 +829,12 @@
 
   function botonesAccion(inst) {
     var cap = estado.capacidades || {};
-    if (!cap.acciones) return '<p class="tenue">Acciones desactivadas en config.json</p>';
+    // Sólo llegan aquí las instancias creadas desde el panel, y sólo para administradores.
+    var eliminar = (cap.eliminables || []).indexOf(inst.cliente) >= 0
+      ? '<button class="boton peligro" type="button" id="btn-eliminar-detalle" data-eliminar="' +
+        esc(inst.cliente) + '">Eliminar instancia</button>'
+      : '';
+    if (!cap.acciones) return '<p class="tenue">Acciones desactivadas en config.json</p>' + eliminar;
     var s = inst.servicio_estado || {}, a = inst.apache || {}, html = '';
     if (cap.acciones_servicios && s.existe) {
       html += s.activo
@@ -846,7 +851,7 @@
         ? '<button class="boton peligro accion" type="button" data-accion="apache_desactivar">Desactivar sitio en ' + nombreServidor + '</button> '
         : '<button class="boton accion" type="button" data-accion="apache_activar">Activar sitio en ' + nombreServidor + '</button> ';
     }
-    return html || '<p class="tenue">Sin acciones disponibles para esta instancia</p>';
+    return (html || (eliminar ? '' : '<p class="tenue">Sin acciones disponibles para esta instancia</p>')) + eliminar;
   }
 
   function abrirDetalle(id) {
@@ -1253,15 +1258,7 @@
   function pintarFormularioAlta() {
     var d = opcionesAlta;
     var tipos = Object.keys(d.templates || {});
-    var modelos = function (tipo) {
-      return (d.modelos || []).filter(function (m) { return !tipo || m.tipo === tipo; });
-    };
-    var opcionesModelo = function (clave) {
-      return '<option value="">Usar la plantilla del panel</option>' +
-        (d.modelos || []).map(function (m) {
-          return '<option value="' + esc(m.id) + '">' + esc(m.cliente) + ' (' + esc(m.tipo) + ')</option>';
-        }).join('');
-    };
+    estadoCampos = {};
     $('#nueva-cuerpo').innerHTML =
       '<div class="bloque"><h3>Datos de la instancia</h3>' +
         '<div class="formulario">' +
@@ -1269,19 +1266,16 @@
             return '<option value="' + esc(t) + '"' + (d.templates[t].existe ? '' : ' disabled') + '>' +
               esc(t) + (d.templates[t].existe ? '' : ' (template no encontrado)') + '</option>';
           }).join('') + '</select></label>' +
-          '<label>Nombre de la instancia<input id="f-cliente" placeholder="ej: gigis" autocomplete="off"></label>' +
-          '<label>Base de datos<input id="f-base" placeholder="db_gigis" autocomplete="off"></label>' +
+          '<label>Nombre de la instancia<input id="f-cliente" placeholder="ej: gigis" autocomplete="off">' +
+            '<small class="campo-estado" id="estado-cliente"></small></label>' +
+          '<label>Base de datos<input id="f-base" placeholder="db_gigis" autocomplete="off">' +
+            '<small class="campo-estado" id="estado-base"></small></label>' +
           '<label>Dominio<input id="f-dominio" placeholder="gigis' +
-            (d.dominio_base ? '.' + esc(d.dominio_base) : '') + '" autocomplete="off"></label>' +
-          '<label>Puerto gunicorn<input id="f-puerto" type="number" value="' +
-            esc(d.puerto_sugerido || '') + '"></label>' +
-          '<label>Modelo del .service<select id="f-modelo-servicio">' + opcionesModelo() + '</select></label>' +
-          '<label>Modelo del vhost<select id="f-modelo-vhost">' + opcionesModelo() + '</select></label>' +
+            (d.dominio_base ? '.' + esc(d.dominio_base) : '') + '" autocomplete="off">' +
+            '<small class="campo-estado" id="estado-dominio"></small></label>' +
         '</div>' +
         '<div class="opciones">' +
-          '<label class="check"><input type="checkbox" id="f-actualizar"' +
-            (d.actualizar_template ? ' checked' : '') + '> Actualizar el template desde git antes de copiar</label>' +
-          '<label class="check"><input type="checkbox" id="f-servicio" checked> Crear e iniciar el servicio systemd</label>' +
+          '<label class="check"><input type="checkbox" id="f-servicio" checked> Crear e iniciar el socket y el servicio systemd</label>' +
           '<label class="check"><input type="checkbox" id="f-vhost" checked> Crear y activar el vhost de Apache</label>' +
           '<label class="check"><input type="checkbox" id="f-certbot"' +
             (d.certbot ? ' checked' : '') + '> Emitir certificado con certbot</label>' +
@@ -1314,8 +1308,213 @@
     ['f-base', 'f-dominio'].forEach(function (id) {
       $('#' + id).addEventListener('input', function () { this.dataset.tocado = '1'; });
     });
+    var dominio = $('#f-dominio');
+    // Al pegar una URL queda sólo el dominio; al escribir se limpia si trae ruta o esquema.
+    dominio.addEventListener('paste', function () {
+      setTimeout(function () { normalizarCampoDominio(); validarCampoAlta('dominio'); }, 0);
+    });
+    dominio.addEventListener('blur', function () { normalizarCampoDominio(); validarCampoAlta('dominio'); });
+    dominio.addEventListener('input', function () {
+      if (/[\/:]/.test(dominio.value) && /^[a-z]+:\/\/|\/./i.test(dominio.value)) normalizarCampoDominio();
+    });
+    CAMPOS_ALTA.forEach(function (campo) {
+      $('#f-' + campo).addEventListener('input', function () { validarCampoAlta(campo); });
+    });
+    // El nombre también rellena la base y el dominio, y afecta a su revisión.
+    cliente.addEventListener('input', function () {
+      if (!$('#f-base').dataset.tocado) validarCampoAlta('base');
+      if (!$('#f-dominio').dataset.tocado) validarCampoAlta('dominio');
+    });
+    ['#f-tipo', '#f-reanudar'].forEach(function (sel) {
+      $(sel).addEventListener('change', revalidarCamposAlta);
+    });
     cliente.focus();
     restaurarBorradorAlta();
+    actualizarBotonesAlta();
+    if (cliente.value) revalidarCamposAlta();
+  }
+
+  // ----------------------------------------- validación mientras se escribe
+  var CAMPOS_ALTA = ['cliente', 'base', 'dominio'];
+  var estadoCampos = {}, turnoCampo = {}, temporizadorCampo = {};
+
+  // De «https://admin.x.net:443/nueva?a=1» deja «admin.x.net». Igual que en el servidor.
+  function limpiarDominio(texto) {
+    var valor = String(texto || '').trim().toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//, '');
+    valor = valor.split(/[\/?#\s]/)[0];
+    valor = valor.substring(valor.lastIndexOf('@') + 1).split(':')[0];
+    return valor.replace(/^\.+|\.+$/g, '');
+  }
+
+  function pintarEstadoCampo(campo, nivel, mensaje) {
+    estadoCampos[campo] = nivel;
+    var caja = $('#estado-' + campo);
+    var input = $('#f-' + campo);
+    if (caja) {
+      var icono = { ok: '✔ ', aviso: '! ', error: '✖ ' }[nivel] || '';
+      caja.className = 'campo-estado' + (nivel ? ' campo-' + nivel : '');
+      caja.textContent = mensaje ? icono + mensaje : '';
+    }
+    if (input) input.classList.toggle('campo-invalido', nivel === 'error');
+    actualizarBotonesAlta();
+  }
+
+  function actualizarBotonesAlta() {
+    var bloqueado = CAMPOS_ALTA.some(function (c) { return estadoCampos[c] === 'error'; }) ||
+      !($('#f-cliente') && $('#f-cliente').value.trim()) || !($('#f-base') && $('#f-base').value.trim());
+    ['#btn-crear', '#btn-simular'].forEach(function (sel) { if ($(sel)) $(sel).disabled = bloqueado; });
+  }
+
+  function validarCampoAlta(campo) {
+    var input = $('#f-' + campo);
+    if (!input) return;
+    clearTimeout(temporizadorCampo[campo]);
+    // Una respuesta lenta de un valor anterior no debe pisar la del valor actual.
+    var turno = turnoCampo[campo] = (turnoCampo[campo] || 0) + 1;
+    var valor = (input.value || '').trim().toLowerCase();
+    if (!valor && campo !== 'dominio') return pintarEstadoCampo(campo, '', '');
+    pintarEstadoCampo(campo, 'revisando', 'Revisando…');
+    temporizadorCampo[campo] = setTimeout(function () {
+      var datos = datosAlta();
+      fetch('/api/aprovisionar/validar-campo', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ campo: campo, valor: valor, tipo: datos.tipo,
+                               cliente: datos.cliente, reanudar: datos.reanudar })
+      }).then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (turno === turnoCampo[campo]) pintarEstadoCampo(campo, d.nivel, d.mensaje);
+        })
+        .catch(function () {
+          if (turno === turnoCampo[campo]) pintarEstadoCampo(campo, 'aviso', 'No se pudo comprobar');
+        });
+    }, 400);
+  }
+
+  function revalidarCamposAlta() { CAMPOS_ALTA.forEach(validarCampoAlta); }
+
+  function normalizarCampoDominio() {
+    var input = $('#f-dominio');
+    var limpio = limpiarDominio(input.value);
+    if (limpio !== input.value) input.value = limpio;
+  }
+
+  // ----------------------------------------------- instancias creadas por el panel
+  function verCreadas() {
+    var caja = $('#creadas-cuerpo');
+    if (!caja) return;
+    fetch('/api/aprovisionar/instancias', { credentials: 'same-origin' })
+      .then(function (r) { return r.json().then(function (d) { return { estado: r.status, d: d }; }); })
+      .then(function (res) {
+        if (res.estado === 403) {
+          caja.innerHTML = '<p class="tenue">Sólo un administrador del panel puede ver y eliminar estas instancias.</p>';
+          return;
+        }
+        var lista = res.d.instancias || [];
+        if (!lista.length) {
+          caja.innerHTML = '<p class="tenue">Todavía no hay instancias creadas desde el panel.</p>';
+          return;
+        }
+        caja.innerHTML = '<div class="tabla-creadas"><table><thead><tr><th>Instancia</th><th>Dominio</th>' +
+          '<th>Base</th><th>Estado</th><th>Creada</th><th></th></tr></thead><tbody>' +
+          lista.map(function (i) {
+            var enCurso = i.tarea_estado === 'corriendo' || i.tarea_estado === 'pendiente';
+            var estadoFila = enCurso
+              ? '<span class="badge ambar">creándose</span>'
+              : (i.tarea_estado === 'error' || i.tarea_estado === 'interrumpida')
+                ? '<span class="badge rojo">a medias</span>'
+                : i.ssl_pendiente
+                  ? '<span class="badge ambar">sin HTTPS</span>'
+                  : i.socket_activo
+                    ? '<span class="badge verde">activa</span>'
+                    : '<span class="badge gris">sin respuesta</span>';
+            return '<tr><td><strong>' + esc(i.cliente) + '</strong><div class="sub">' + esc(i.tipo || '') + '</div></td>' +
+              '<td>' + esc(i.dominio || '—') + '</td><td>' + esc(i.base || '—') + '</td>' +
+              '<td>' + estadoFila + '</td><td>' + esc(i.creado || '') + '</td><td class="acciones-creada">' +
+              (i.tarea ? '<button class="boton mini" type="button" data-tarea="' + esc(i.tarea) + '">Ver tarea</button> ' : '') +
+              (i.ssl_pendiente && !enCurso
+                ? '<button class="boton mini" type="button" id="btn-ssl-' + esc(i.cliente) +
+                  '" data-reintentar-ssl="' + esc(i.cliente) + '">Reintentar SSL</button> ' : '') +
+              (enCurso ? '' : '<button class="boton mini peligro" type="button" id="btn-eliminar-' + esc(i.cliente) +
+                '" data-eliminar="' + esc(i.cliente) + '">Eliminar</button>') +
+              '</td></tr>';
+          }).join('') + '</tbody></table></div>';
+      })
+      .catch(function (e) { caja.innerHTML = '<div class="aviso-error">' + esc(e.message) + '</div>'; });
+  }
+
+  function reintentarSsl(cliente) {
+    fetch('/api/aprovisionar/ssl', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cliente: cliente })
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) { aviso(d.error || 'No se pudo iniciar'); return; }
+        verTarea(d.tarea);
+      })
+      .catch(function (e) { aviso(e.message); });
+  }
+
+  function abrirEliminar(cliente) {
+    fetch('/api/aprovisionar/eliminacion/' + encodeURIComponent(cliente), { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (plan) {
+        if (!plan.ok) { aviso(plan.error || 'No se puede eliminar'); return; }
+        var fila = function (i) {
+          return '<li><strong>' + esc(i.recurso) + '</strong> ' + esc(i.valor) +
+            (i.detalle ? ' <span class="tenue">— ' + esc(i.detalle) + '</span>' : '') + '</li>';
+        };
+        var modal = $('#modal-eliminar');
+        if (!modal) {
+          modal = document.createElement('div');
+          modal.id = 'modal-eliminar';
+          modal.className = 'modal';
+          document.body.appendChild(modal);
+        }
+        modal.classList.remove('oculto');
+        modal.innerHTML = '<div class="modal-caja modal-angosta"><div class="modal-cabecera">' +
+          '<h2>Eliminar «' + esc(cliente) + '»</h2>' +
+          '<button class="cerrar" id="eliminar-cerrar" type="button">&times;</button></div>' +
+          '<div class="modal-cuerpo">' +
+          (plan.borrar.length
+            ? '<p>Se borrará:</p><ul class="lista-eliminar">' + plan.borrar.map(fila).join('') + '</ul>'
+            : '<p class="tenue">No queda nada que el panel pueda borrar.</p>') +
+          (plan.conservar.length
+            ? '<div class="aviso-error">No se borrará:<ul class="lista-eliminar">' +
+              plan.conservar.map(fila).join('') + '</ul></div>'
+            : '') +
+          (plan.con_base
+            ? '<label class="check"><input type="checkbox" id="eliminar-backup" checked> ' +
+              'Hacer una copia verificada de la base antes de borrar</label>' : '') +
+          '<p class="tenue">La copia cubre solo la base: los archivos de <code>media/</code> se borran con la carpeta.</p>' +
+          '<label class="eliminar-confirmar">Escribe <strong>' + esc(cliente) + '</strong> para confirmar' +
+          '<input id="eliminar-nombre" autocomplete="off"></label>' +
+          '<div class="eliminar-pie"><button class="boton peligro" type="button" id="btn-confirmar-eliminar" ' +
+          'data-cliente="' + esc(cliente) + '" disabled>Eliminar definitivamente</button></div></div></div>';
+        var nombre = $('#eliminar-nombre');
+        nombre.addEventListener('input', function () {
+          $('#btn-confirmar-eliminar').disabled = nombre.value !== cliente;
+        });
+        nombre.focus();
+      })
+      .catch(function (e) { aviso(e.message); });
+  }
+
+  function confirmarEliminar(cliente) {
+    var casilla = $('#eliminar-backup');
+    fetch('/api/aprovisionar/eliminar/' + encodeURIComponent(cliente), {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmacion: $('#eliminar-nombre').value,
+                             backup: casilla ? casilla.checked : true })
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) { aviso(d.error || 'No se pudo eliminar'); return; }
+        $('#modal-eliminar').classList.add('oculto');
+        verTarea(d.tarea);
+      })
+      .catch(function (e) { aviso(e.message); });
   }
 
   // ------------------------------------------------- reconexión sin pulsar F5
@@ -1336,11 +1535,10 @@
     borrarSesion('borrador-alta');
     var poner = function (sel, v) { if ($(sel) && v !== undefined && v !== null) $(sel).value = v; };
     poner('#f-tipo', b.tipo); poner('#f-cliente', b.cliente); poner('#f-base', b.base);
-    poner('#f-dominio', b.dominio); poner('#f-puerto', b.puerto);
-    poner('#f-modelo-servicio', b.modelo_servicio || ''); poner('#f-modelo-vhost', b.modelo_vhost || '');
+    poner('#f-dominio', b.dominio);
     if (b.base) $('#f-base').dataset.tocado = '1';
     if (b.dominio) $('#f-dominio').dataset.tocado = '1';
-    [['#f-actualizar', 'actualizar_template'], ['#f-servicio', 'crear_servicio'], ['#f-vhost', 'crear_vhost'],
+    [['#f-servicio', 'crear_servicio'], ['#f-vhost', 'crear_vhost'],
      ['#f-certbot', 'certbot'], ['#f-debug', 'debug'], ['#f-reanudar', 'reanudar'],
      ['#f-recrear-base', 'recrear_base']]
       .forEach(function (par) { if ($(par[0]) && par[1] in b) $(par[0]).checked = !!b[par[1]]; });
@@ -1383,11 +1581,7 @@
       tipo: $('#f-tipo').value,
       cliente: ($('#f-cliente').value || '').trim().toLowerCase(),
       base: ($('#f-base').value || '').trim().toLowerCase(),
-      dominio: ($('#f-dominio').value || '').trim().toLowerCase(),
-      puerto: parseInt($('#f-puerto').value, 10),
-      modelo_servicio: $('#f-modelo-servicio').value,
-      modelo_vhost: $('#f-modelo-vhost').value,
-      actualizar_template: $('#f-actualizar').checked,
+      dominio: limpiarDominio($('#f-dominio').value),
       crear_servicio: $('#f-servicio').checked,
       crear_vhost: $('#f-vhost').checked,
       certbot: $('#f-certbot').checked,
@@ -1531,7 +1725,12 @@
               (d.estado === 'interrumpida'
                 ? '<div class="aviso-error" style="margin-top:10px">' + esc(d.error || 'La tarea quedó a medias') + '</div>'
                 : '') +
-              (d.estado !== 'ok' && (d.deshacer || []).length
+              (d.estado === 'ok' && d.datos && d.datos.ssl_pendiente && !d.datos.simular
+                ? '<div class="aviso" style="margin-top:10px">La instancia quedó en HTTP porque no se ' +
+                  'pudo emitir el certificado. <button class="boton mini" type="button" id="btn-ssl-tarea" ' +
+                  'data-reintentar-ssl="' + esc(d.datos.cliente) + '">Reintentar SSL</button></div>'
+                : '') +
+              (d.estado !== 'ok' && (d.deshacer || []).length && !(d.datos && d.datos.deshecha)
                 ? '<div class="aviso-error" style="margin-top:10px">La tarea falló después de crear cosas. ' +
                   'Puedes revertir lo creado: ' +
                   (d.deshacer || []).map(function (x) { return esc(x.tipo) + ' ' + esc(x.valor); }).join(', ') +
@@ -1594,6 +1793,7 @@
     if (MODO === 'backups') { verBackups(); return verBases(); }
     if (MODO === 'certificados') return verCertificados('#contenido');
     if (MODO === 'principal' || MODO === 'excluidos') return cargar();
+    if (MODO === 'nueva') verCreadas();
     return cargarCapacidades();
   }
 
@@ -1667,16 +1867,16 @@
         if (!$('#f-cliente')) return;
         var poner = function (sel, valor) { if ($(sel) && valor !== undefined && valor !== null) $(sel).value = valor; };
         poner('#f-tipo', d.tipo); poner('#f-cliente', d.cliente); poner('#f-base', d.base);
-        poner('#f-dominio', d.dominio); poner('#f-puerto', d.puerto);
-        poner('#f-modelo-servicio', d.modelo_servicio || ''); poner('#f-modelo-vhost', d.modelo_vhost || '');
+        poner('#f-dominio', d.dominio);
         $('#f-base').dataset.tocado = '1'; $('#f-dominio').dataset.tocado = '1';
-        [['#f-actualizar', 'actualizar_template'], ['#f-servicio', 'crear_servicio'],
+        [['#f-servicio', 'crear_servicio'],
          ['#f-vhost', 'crear_vhost'], ['#f-certbot', 'certbot'], ['#f-debug', 'debug']]
           .forEach(function (par) { if (par[1] in d) $(par[0]).checked = !!d[par[1]]; });
         $('#f-reanudar').checked = true;
         if (tareaPoll) { clearInterval(tareaPoll); tareaPoll = null; }
         $('#modal-tarea').classList.add('oculto');
         $('#f-dominio').focus();
+        revalidarCamposAlta();
         validarAlta();
       })
       .catch(function (e) { aviso(e.message); });
@@ -1684,7 +1884,7 @@
 
   function deshacerTarea(id) {
     if (!window.confirm('Se va a revertir lo que creó esa tarea (carpeta, base de datos, ' +
-                        'servicio y vhost). Esta acción borra datos. ¿Continuar?')) return;
+                        'servicio, vhost y certificado). Esta acción borra datos. ¿Continuar?')) return;
     fetch('/api/tarea/' + encodeURIComponent(id) + '/deshacer',
           { method: 'POST', credentials: 'same-origin' })
       .then(function (r) { return r.json(); })
@@ -3667,6 +3867,10 @@
         if (el.id === 'btn-simular') return crearInstancia(true);
         if (el.id === 'btn-crear') return crearInstancia(false);
         if (el.id === 'btn-deshacer') return deshacerTarea(el.getAttribute('data-id'));
+        if (el.hasAttribute && el.hasAttribute('data-eliminar')) return abrirEliminar(el.getAttribute('data-eliminar'));
+        if (el.hasAttribute && el.hasAttribute('data-reintentar-ssl')) return reintentarSsl(el.getAttribute('data-reintentar-ssl'));
+        if (el.id === 'eliminar-cerrar' || el.id === 'modal-eliminar') return $('#modal-eliminar').classList.add('oculto');
+        if (el.id === 'btn-confirmar-eliminar') return confirmarEliminar(el.getAttribute('data-cliente'));
         if (el.id === 'btn-reanudar') { $('#f-reanudar').checked = true; return validarAlta(); }
         if (el.id === 'btn-recrear-base') {
           $('#f-reanudar').checked = true; $('#f-recrear-base').checked = true; return validarAlta();
@@ -3808,7 +4012,7 @@
       if (e.key === 'Escape') {
         if (document.querySelector('.cabecera')) document.querySelector('.cabecera').classList.remove('abierta');
         if ($('#modal-alertas') && !$('#modal-alertas').classList.contains('oculto')) cerrarModalAlertas(true);
-        ['#modal', '#modal-campo', '#modal-nueva', '#modal-tarea', '#panel-notif', '#modal-cobro'].forEach(function (sel) {
+        ['#modal', '#modal-campo', '#modal-nueva', '#modal-tarea', '#modal-eliminar', '#panel-notif', '#modal-cobro'].forEach(function (sel) {
           if ($(sel)) $(sel).classList.add('oculto');
         });
         if (tareaPoll) { clearInterval(tareaPoll); tareaPoll = null; }
@@ -3840,7 +4044,7 @@
       return;
     }
     if (MODO === 'nueva') {
-      cargarCapacidades().then(function () { abrirAsistente(true); });
+      cargarCapacidades().then(function () { abrirAsistente(true); verCreadas(); });
       return;
     }
     var buscado = (location.search.match(/[?&]q=([^&]+)/) || [])[1];

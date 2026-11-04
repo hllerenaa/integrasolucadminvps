@@ -17,16 +17,24 @@
 
 <section class="seccion">
   <h2>Crear una instancia nueva</h2>
-  <p class="tenue">Reproduce new_instance_inventario.sh / new_instance_restaurante.sh y además
-     deja hecho el servicio systemd, el vhost y (opcional) el certificado.
+  <p class="tenue">Sigue el flujo de new_instance_inventario.sh / new_instance_restaurante.sh y además
+     deja hecho el socket y el servicio systemd, un solo .conf de Apache y (opcional) el certificado.
+     Cada instancia usa su propio socket, así que no hay que elegir un puerto.
      Usa <strong>Simular</strong> la primera vez: valida todo y muestra los comandos sin ejecutar nada.</p>
   <div id="nueva-cuerpo"><p class="tenue">Cargando opciones…</p></div>
 </section>
 
 <section class="seccion">
+  <h2>Creadas desde el panel</h2>
+  <p class="tenue">Solo estas se pueden eliminar desde aquí, también si quedaron a medias. Las creadas
+     con el .sh o antes de esta versión no aparecen.</p>
+  <div id="creadas-cuerpo"><p class="tenue">Cargando…</p></div>
+</section>
+
+<section class="seccion">
   <h2>Diagnóstico del entorno</h2>
   <p class="tenue">Revisa que el servidor tenga todo lo que usa el asistente (herramientas, venv con Django,
-     templates y su git, PostgreSQL y permiso para crear bases, carpetas con escritura, espacio y puertos),
+     templates y su git, PostgreSQL y permiso para crear bases, carpetas con escritura, espacio y módulos de Apache),
      sin crear nada.
      <button class="boton mini" type="button" id="btn-diagnostico">Diagnosticar ahora</button></p>
   <div id="diagnostico-cuerpo"></div>
