@@ -338,13 +338,15 @@ Botón **+ Nueva instancia**. Reproduce lo que hacen `new_instance_inventario.sh
    escuchando, la aplicación responde por HTTP en local (con el dominio como
    `Host`), la base accesible con el nuevo `credenciales.json` y la URL pública.
 5. Si algo falla a mitad, la tarea muestra un botón **Deshacer** que elimina
-   sólo lo que ella creó (carpeta, base, unidad y vhost). Nunca se ejecuta solo.
+   sólo lo que ella creó (vhost, certificado, socket, servicio, base y carpeta).
+   Nunca se ejecuta solo y sólo lo puede usar un administrador. Una tarea que
+   terminó bien no se deshace: para eso está **Eliminar** (abajo).
 6. **Reanudar / corregir**: si un intento anterior falló o quedó mal (p. ej. con
    el dominio equivocado), marca esa casilla (o usa **Reintentar** en la tarea
    fallida). Se reutilizan la carpeta, la base y el servicio de esa misma
-   instancia, se reescriben `credenciales.json`, el `.service` y el vhost, se
-   reinicia el servicio y sólo se crea lo que falta. Un vhost SSL viejo con otro
-   dominio se desactiva y se guarda como `.bak-<tarea>`. Si la carpeta o el
+   instancia, se reescriben `credenciales.json`, el `.socket`, el `.service` y el vhost, se
+   reinicia el servicio y sólo se crea lo que falta. Un vhost anterior con otro
+   nombre se desactiva y se guarda como `.bak-<tarea>`. Si la carpeta o el
    servicio pertenecen a otra base/ruta, la validación lo bloquea igual.
    Si la base existe pero quedó a medio restaurar (menos tablas o menos de la
    mitad del tamaño de la base origen), la validación lo marca y ofrece
@@ -357,10 +359,42 @@ más usado por las instancias; un dominio sin punto (p. ej. `icecream`) se recha
 El botón **Tareas** lista las ejecuciones con su log. Cada alta queda además en
 el historial de acciones.
 
+### Socket, un solo `.conf` y certificado
+
+Cada instancia usa `/run/<cliente>.sock` con `<cliente>.socket` y
+`<cliente>.service`, igual que las de producción: no hay puertos que elegir. El
+sitio es un único `/etc/apache2/sites-available/<dominio>.conf`:
+
+1. Se escribe en HTTP y se activa, porque certbot lo necesita para validar el dominio.
+2. Se ejecuta `certbot certonly --apache`, que emite sin tocar los `.conf`, de modo
+   que no aparece `-le-ssl.conf`. Un `--deploy-hook` recarga Apache en cada renovación.
+3. El mismo archivo se reescribe con la redirección a HTTPS y el bloque 443. Si
+   `apache2ctl configtest` lo rechaza, se restaura la versión HTTP.
+4. `USE_SSL` pasa a `true` y se reinicia el servicio.
+
+Si el certificado falla (por ejemplo, porque el DNS aún no apunta aquí), la
+instancia sigue en HTTP con `USE_SSL=false` y se ofrece **Reintentar SSL**.
+
+### Eliminar una instancia
+
+La sección **Creadas desde el panel** de `/nueva` y el detalle de la instancia
+ofrecen **Eliminar**, sólo a administradores y sólo para lo anotado en
+`var/aprovisionadas.json`. Las instancias creadas con el `.sh` o antes de esta
+versión no se pueden eliminar desde aquí.
+
+El modal muestra qué se borrará y pide escribir el nombre. Por defecto hace antes
+una copia verificada de la base en `backups.destino`; si falla, no se borra nada.
+La copia no incluye `media/`. Después quita vhost, certificado, socket, servicio,
+base, carpeta y logs del vhost, y comprueba que no quedó nada.
+
+Se conserva, y se explica por qué, lo que no sea claramente de esa instancia: una
+base usada por otra instancia o que sea origen de un template, un certificado que
+use otro sitio, o un servicio con otra `WorkingDirectory`. Si queda algo, la
+instancia sigue en la lista para reintentar.
+
 Configuración en `config.json` → `aprovisionamiento`: rutas de los templates y su
-base origen, `venv`, rango de puertos, `dominio_base`, instancias modelo para
-`.service` y vhost, y `certbot` (`enabled`, `email`). Con `"enabled": false` se
-desactiva la creación completa.
+base origen, `venv`, `dominio_base` y `certbot` (`enabled`, `email`). Con
+`"enabled": false` se desactiva la creación completa.
 
 ## Instalación
 
@@ -496,7 +530,7 @@ prefieres ahorrar tiempo en cada refresco.
 | `acciones` | `enabled`, `servicios`, `apache`, `datos`, `certbot`: permite o bloquea cada tipo de acción |
 | `recolectar_ocultas` | `false` no recolecta los sistemas de `excluidos.txt` |
 | `credenciales` | `ver`, `editar`, `mostrar_secretos`: controla el acceso a `credenciales.json` |
-| `aprovisionamiento` | Creación de instancias: templates, `venv`, puertos, `dominio_base`, modelos y `certbot` |
+| `aprovisionamiento` | Creación de instancias: templates, `venv`, `dominio_base` y `certbot` |
 | `auth` | `username` + `password_hash` (o `password`) y `api_token` opcional |
 | `session_cookie_secure` | `true` cuando el panel va detrás de HTTPS (lo pone `admin_dominio.sh`) |
 
@@ -551,11 +585,16 @@ inaccesibles o certificados vencidos: sirve para cron o alertas.
 | `GET /api/diagnostico/vhosts?id=<instancia>` | Qué sitios web leyó el panel y el puntaje de cada candidato |
 | `POST /api/certificados/renovar` | Renueva (`{"nombre","forzar","simular"}`) en segundo plano |
 | `POST /api/instancia/<id>/api-cedula` | Activa o desactiva la búsqueda por cédula (`{"activar"}`) |
-| `GET /api/aprovisionar/opciones` | Datos para el asistente (templates, puerto libre, modelos) |
+| `GET /api/aprovisionar/opciones` | Datos para el asistente (templates, dominio base) |
 | `POST /api/aprovisionar/validar` | Valida un alta sin ejecutarla |
+| `POST /api/aprovisionar/validar-campo` | Revisa un campo del formulario (`cliente`, `base` o `dominio`) |
+| `GET /api/aprovisionar/instancias` | Instancias creadas desde el panel (administradores) |
+| `POST /api/aprovisionar/ssl` | Reintenta sólo el certificado (`{"cliente": ...}`, administradores) |
+| `GET /api/aprovisionar/eliminacion/<cliente>` | Qué se borraría y qué se conservaría (administradores) |
+| `POST /api/aprovisionar/eliminar/<cliente>` | Elimina (`{"confirmacion": "<cliente>", "backup": true}`, administradores) |
 | `POST /api/aprovisionar/crear` | Lanza la creación (`{"simular": true}` para el modo simulación) |
 | `GET /api/tareas`, `GET /api/tarea/<id>` | Tareas en segundo plano y su log (`?desde=N`) |
-| `POST /api/tarea/<id>/deshacer` | Revierte lo que creó una tarea fallida |
+| `POST /api/tarea/<id>/deshacer` | Revierte lo que creó una tarea fallida (administradores) |
 | `GET /api/acciones` | Historial de acciones (requiere `ver_excluidos`) |
 | `GET /api/cron` | Tareas programadas del servidor (crontabs y timers de systemd), sólo lectura |
 | `GET/POST /export.xlsx`, `/export.csv` | Exportaciones (aceptan `?tipo=` y `?q=`; por POST, `{"ids": [...]}` para exportar sólo esas filas y en ese orden) |
