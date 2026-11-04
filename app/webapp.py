@@ -411,7 +411,7 @@ def crear_app(config=None):
         original = tareas.obtener(ident)
         if not original:
             return jsonify({'error': 'tarea no encontrada'}), 404
-        if original.estado == 'corriendo':
+        if original.estado in ('corriendo', 'pendiente'):
             return jsonify({'error': 'La tarea todavía está corriendo'}), 400
         if not original.deshacer:
             return jsonify({'error': 'Esa tarea no creó nada que se pueda deshacer'}), 400
@@ -1148,6 +1148,12 @@ def crear_app(config=None):
                                         mimetype='application/javascript', max_age=0)
         respuesta.headers['Service-Worker-Allowed'] = '/'
         respuesta.headers['Cache-Control'] = 'no-cache'
+        return respuesta
+
+    @app.route('/api/version')
+    def api_version():
+        respuesta = jsonify({'version': __version__})
+        respuesta.headers['Cache-Control'] = 'no-store'
         return respuesta
 
     @app.route('/healthz')
