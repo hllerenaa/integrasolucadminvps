@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -128,6 +129,35 @@ class Tarea(object):
             }
 
 
+class TareaGuardada(object):
+    """Una tarea de antes del último reinicio del panel, leída del disco.
+
+    Sirve para seguir viendo su log (y deshacerla o reintentarla). Si quedó
+    «corriendo» es que el reinicio la cortó a mitad: se marca «interrumpida».
+    """
+
+    def __init__(self, datos):
+        self._d = dict(datos)
+        if self._d.get('estado') in ('pendiente', 'corriendo'):
+            self._d['estado'] = 'interrumpida'
+            self._d['error'] = ('El panel se reinició mientras corría la tarea: quedó a medias. '
+                                'Usa «Reintentar (reanudar)» para terminarla.')
+        self.id = self._d.get('id')
+        self.tipo = self._d.get('tipo')
+        self.titulo = self._d.get('titulo')
+        self.estado = self._d.get('estado')
+        self.datos = self._d.get('datos') or {}
+        self.deshacer = self._d.get('deshacer') or []
+        self.creado_por = self._d.get('creado_por')
+
+    def as_dict(self, desde=0):
+        datos = dict(self._d)
+        lineas = datos.get('lineas') or []
+        datos['total_lineas'] = len(lineas)
+        datos['lineas'] = lineas[desde:]
+        return datos
+
+
 class TareaError(Exception):
     def __init__(self, mensaje, detalle=None):
         super(TareaError, self).__init__(mensaje)
@@ -159,7 +189,16 @@ class GestorTareas(object):
         return tarea
 
     def obtener(self, ident):
-        return self._tareas.get(ident)
+        tarea = self._tareas.get(ident)
+        if tarea is None and re.match(r'^[0-9_]{15}-[0-9a-f]{6}$', ident or ''):
+            # Tras reiniciar el panel la tarea ya no está en memoria: se lee del disco.
+            ruta = os.path.join(self.config.var_dir, 'tareas', '%s.json' % ident)
+            try:
+                with open(ruta, 'r', encoding='utf-8') as fh:
+                    tarea = TareaGuardada(json.load(fh))
+            except (OSError, ValueError):
+                tarea = None
+        return tarea
 
     def listar(self):
         with self._lock:
