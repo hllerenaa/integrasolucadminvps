@@ -473,6 +473,17 @@
         if (!fac.disponible) return '<span class="tenue">—</span>';
         return porAnio(fac.por_anio, 4, true);
       } },
+    { id: 'cobro', titulo: 'Cobro', grupo: 'actividad',
+      valor: function (i) {
+        var c = i.cobro || {};
+        // Primero lo que más debe, luego lo que vence antes.
+        return (ORDEN_COBRO[c.estado] === undefined ? 9 : ORDEN_COBRO[c.estado]) * 100000 +
+               (c.estado === 'vencido' ? 50000 - (c.dias_vencido || 0) : 50000 + ((c.proximo || {}).dias || 0));
+      },
+      render: function (i) {
+        return '<a class="enlace-cobro" href="/cobros?q=' + encodeURIComponent(i.cliente) + '">' +
+          celdaCobro(i.cobro) + '</a>';
+      } },
     { id: 'primera_venta', titulo: 'Primera venta', grupo: 'actividad', requiere: 'bd',
       valor: function (i) { return (i.resumen || {}).primera_venta || ''; },
       render: function (i) { return guion((i.resumen || {}).primera_venta); } },
@@ -529,6 +540,40 @@
     }).join('') + '<th></th>';
   }
 
+  // Cada tarjeta cuenta con el mismo criterio con que filtra: «27 activos»
+  // + «7 no activos» son siempre las 34 instancias.
+  function atiende(i) { return !!(i.resumen || {}).atiende; }
+  var FILTROS_SERVICIO = {
+    'activo': atiende,
+    'no-activo': function (i) { return !atiende(i); },
+    'inactivo': function (i) {
+      var se = i.servicio_estado || {};
+      return !atiende(i) && se.existe && se.estado !== 'failed';
+    },
+    'fallido': function (i) { return !atiende(i) && (i.servicio_estado || {}).estado === 'failed'; },
+    'sin-unidad': function (i) { return !atiende(i) && !(i.servicio_estado || {}).existe; },
+    'socket': function (i) { return !!((i.socket || {}).activo && !(i.servicio_estado || {}).activo); }
+  };
+  var FILTROS_ESTADO = {
+    'servicio-inactivo': function (i) { return !atiende(i); },
+    'sitio-activo': function (i) { return !!(i.apache || {}).habilitado; },
+    'sitio-desactivado': function (i) { return !(i.apache || {}).habilitado; },
+    'ssl-vigente': function (i) { return (i.ssl || {}).estado === 'vigente'; },
+    'ssl-no-vigente': function (i) { return (i.ssl || {}).estado !== 'vigente'; },
+    'url-ok': function (i) { return !!(i.url_estado || {}).responde; },
+    'url-caida': function (i) { return !(i.url_estado || {}).responde; },
+    'db-ok': function (i) { return !!(i.resumen || {}).db_ok; },
+    'db-caida': function (i) { return !(i.resumen || {}).db_ok; },
+    'cobro-vencido': function (i) { return (i.cobro || {}).estado === 'vencido'; },
+    'cobro-deuda': function (i) { return ['vencido', 'en-gracia'].indexOf((i.cobro || {}).estado) !== -1; },
+    'cobro-por-vencer': function (i) { return (i.cobro || {}).estado === 'por-vencer'; },
+    'cobro-al-dia': function (i) { return (i.cobro || {}).estado === 'al-dia'; },
+    'cobro-sin-deuda': function (i) {
+      return !!(i.cobro || {}).plan && ['vencido', 'en-gracia'].indexOf(i.cobro.estado) === -1;
+    },
+    'cobro-sin-plan': function (i) { return !(i.cobro || {}).plan; }
+  };
+
   function filtrar(lista) {
     var txt = ($('#filtro-texto').value || '').toLowerCase().trim();
     var tipo = $('#filtro-tipo').value;
@@ -542,15 +587,7 @@
       if (tipo && i.tipo !== tipo) return false;
       if (ocultos === 'si' && !i.oculta) return false;
       if (ocultos === 'no' && i.oculta) return false;
-      if (serv) {
-        var se = (i.servicio_estado || {});
-        var sk = (i.socket || {});
-        if (serv === 'activo' && !se.activo) return false;
-        if (serv === 'inactivo' && (se.activo || se.estado === 'failed' || !se.existe)) return false;
-        if (serv === 'fallido' && se.estado !== 'failed') return false;
-        if (serv === 'sin-unidad' && se.existe) return false;
-        if (serv === 'socket' && !(sk.activo && !se.activo)) return false;
-      }
+      if (serv && !(FILTROS_SERVICIO[serv] || function () { return true; })(i)) return false;
       if (api === 'si' && !r.api_cedula) return false;
       if (api === 'no' && r.api_cedula !== false) return false;
       if (api === 'nd' && r.api_cedula_disponible) return false;
@@ -560,12 +597,9 @@
       }
       if (est === 'oculta' && !i.oculta) return false;
       if (est === 'visible' && i.oculta) return false;
-      if (est === 'servicio-inactivo' && r.servicio_activo) return false;
-      if (est === 'db-caida' && r.db_ok !== false) return false;
-      if (est === 'sitio-desactivado' && r.apache_habilitado !== false) return false;
+      if (FILTROS_ESTADO[est] && !FILTROS_ESTADO[est](i)) return false;
       if (est === 'ssl-problema' &&
           ['vencido', 'por-vencer', 'autofirmado'].indexOf(r.ssl_estado) === -1) return false;
-      if (est === 'url-caida' && r.url_responde !== false) return false;
       if (est === 'dominio-viejo' && !r.dominio_desactualizado) return false;
       if (est === 'dominio-compartido' && !r.dominio_compartido) return false;
       if (est === 'sin-ruc-proveedor' &&
@@ -641,15 +675,20 @@
           .concat(r.ocultas ? [r.ocultas + ' oculta' + (r.ocultas === 1 ? '' : 's')] : [])
           .join(' · ') },
       { rotulo: 'Servicios activos', valor: (r.servicios_activos || 0) + '/' + (r.total || 0),
-        clase: r.servicios_inactivos ? 'mal' : 'ok', filtroServicio: 'inactivo' },
-      { rotulo: 'Sitios Apache', valor: (r.sitios_habilitados || 0) + '/' + (r.total || 0),
-        filtro: 'sitio-desactivado' },
+        clase: r.servicios_inactivos ? 'mal' : 'ok',
+        chips: parChips('servicio', 'activo', 'no-activo', r.servicios_activos, r.total,
+                        'activos', 'no activos') },
+      { rotulo: 'Sitios web', valor: (r.sitios_habilitados || 0) + '/' + (r.total || 0),
+        chips: parChips('estado', 'sitio-activo', 'sitio-desactivado', r.sitios_habilitados, r.total,
+                        'habilitados', 'deshabilitados') },
       { rotulo: 'SSL vigentes', valor: (r.ssl_vigentes || 0) + '/' + (r.total || 0),
-        clase: r.ssl_alerta ? 'mal' : 'ok', filtro: 'ssl-problema',
-        extra: r.ssl_alerta ? r.ssl_alerta + ' con problema' : '' }
+        clase: r.ssl_alerta ? 'mal' : 'ok',
+        chips: parChips('estado', 'ssl-vigente', 'ssl-no-vigente', r.ssl_vigentes, r.total,
+                        'vigentes', 'no vigentes') }
     ];
     if (cap.url) t.push({ rotulo: 'URLs respondiendo', valor: (r.urls_ok || 0) + '/' + (r.total || 0),
-      clase: (r.urls_ok === r.total) ? 'ok' : 'mal', filtro: 'url-caida' });
+      clase: (r.urls_ok === r.total) ? 'ok' : 'mal',
+      chips: parChips('estado', 'url-ok', 'url-caida', r.urls_ok, r.total, 'responden', 'no responden') });
     if (r.dominios_desactualizados) t.push({ rotulo: 'Dominios desactualizados',
       valor: r.dominios_desactualizados, clase: 'mal', filtro: 'dominio-viejo',
       extra: 'credenciales.json vs Apache' });
@@ -675,8 +714,18 @@
     }
     if (cap.bd) {
       t.push({ rotulo: 'Bases activas', valor: (r.db_activas || 0) + '/' + (r.total || 0),
-        clase: r.db_caidas ? 'mal' : 'ok', filtro: 'db-caida' });
+        clase: r.db_caidas ? 'mal' : 'ok',
+        chips: parChips('estado', 'db-ok', 'db-caida', r.db_activas, r.total, 'accesibles', 'caídas') });
       t.push({ rotulo: 'Tamaño total BD', valor: r.db_tamano || '-' });
+    }
+    var conPlan = (estado.datos || []).filter(function (i) { return (i.cobro || {}).plan; });
+    if (conPlan.length) {
+      var deben = conPlan.filter(FILTROS_ESTADO['cobro-deuda']);
+      var monto = deben.reduce(function (a, i) { return a + ((i.cobro || {}).total_vencido || 0); }, 0);
+      t.push({ rotulo: 'Cobros', valor: deben.length ? dinero(monto) + ' vencido' : 'al día',
+        clase: deben.length ? 'mal' : 'ok',
+        chips: parChips('estado', 'cobro-sin-deuda', 'cobro-deuda', conPlan.length - deben.length,
+                        conPlan.length, 'sin deuda', 'deben') });
     }
     var web = estado.servidoresWeb || {};
     var demonios = Object.keys(web);
@@ -706,6 +755,12 @@
                         (r.ocupa_tamano ? ' · instancias ' + r.ocupa_tamano : '')) : '' });
 
     $('#tarjetas').innerHTML = t.map(function (x) {
+      if (x.chips) {
+        return '<div class="tarjeta tarjeta-doble ' + (x.clase || '') + '">' +
+          '<div class="rotulo">' + esc(x.rotulo) + '</div>' +
+          '<div class="valor">' + esc(x.valor) + '</div>' +
+          '<div class="chips-tarjeta">' + x.chips + '</div></div>';
+      }
       var extraAttr = x.filtro ? ' clicable" data-filtro="' + x.filtro
                     : (x.filtroApi ? ' clicable" data-filtro-api="' + x.filtroApi
                     : (x.filtroUso ? ' clicable" data-filtro-uso="' + x.filtroUso
@@ -715,6 +770,32 @@
         '<div class="valor">' + esc(x.valor) + '</div>' +
         (x.extra ? '<div class="rotulo">' + esc(x.extra) + '</div>' : '') + '</div>';
     }).join('');
+  }
+
+  // Dos botones por tarjeta: los que están bien y los que no, cada uno filtra.
+  function parChips(control, filtroSi, filtroNo, cuantosSi, total, textoSi, textoNo) {
+    var si = cuantosSi || 0, no = Math.max(0, (total || 0) - si);
+    var actual = control === 'servicio' ? ($('#filtro-servicio') || {}).value : ($('#filtro-estado') || {}).value;
+    var chip = function (filtro, n, texto, clase) {
+      return '<button type="button" class="chip-filtro ' + clase + (actual === filtro ? ' elegido' : '') +
+        '" data-control="' + control + '" data-valor="' + filtro + '"' +
+        (n ? '' : ' disabled') + ' title="Mostrar sólo estas instancias">' +
+        (clase === 'si' ? '✔ ' : '✖ ') + n + ' ' + esc(texto) + '</button>';
+    };
+    return chip(filtroSi, si, textoSi, 'si') + chip(filtroNo, no, textoNo, 'no');
+  }
+
+  function aplicarChip(boton) {
+    var control = boton.getAttribute('data-control'), valor = boton.getAttribute('data-valor');
+    var sel = control === 'servicio' ? $('#filtro-servicio') : $('#filtro-estado');
+    if (!sel) return;
+    var yaElegido = boton.classList.contains('elegido');
+    // Un filtro por vez desde las tarjetas; otro clic en el mismo lo quita.
+    if ($('#filtro-servicio')) $('#filtro-servicio').value = '';
+    $('#filtro-estado').value = '';
+    sel.value = yaElegido ? '' : valor;
+    pintarTarjetas();
+    pintarTabla();
   }
 
   function pintarControles() {
@@ -1205,6 +1286,13 @@
           '<label class="check"><input type="checkbox" id="f-certbot"' +
             (d.certbot ? ' checked' : '') + '> Emitir certificado con certbot</label>' +
           '<label class="check"><input type="checkbox" id="f-debug"> DEBUG = true en credenciales.json</label>' +
+          '<label class="check" title="Para un intento anterior que falló o quedó mal (p. ej. dominio equivocado): ' +
+            'reutiliza la carpeta, la base y el servicio de esa misma instancia y sólo crea lo que falta">' +
+            '<input type="checkbox" id="f-reanudar"> Reanudar / corregir un intento anterior</label>' +
+          '<label class="check" title="Sólo con «Reanudar»: borra la base existente y la vuelve a crear ' +
+            'con el backup (pg_dump) de la base origen del template">' +
+            '<input type="checkbox" id="f-recrear-base"> Recrear la base desde el backup del template ' +
+            '(borra la actual)</label>' +
         '</div>' +
         '<div id="resultado-validacion"></div>' +
         '<div style="margin-top:12px;text-align:right">' +
@@ -1227,6 +1315,67 @@
       $('#' + id).addEventListener('input', function () { this.dataset.tocado = '1'; });
     });
     cliente.focus();
+    restaurarBorradorAlta();
+  }
+
+  // ------------------------------------------------- reconexión sin pulsar F5
+  function guardarSesion(clave, valor) {
+    try { sessionStorage.setItem('panel-' + clave, JSON.stringify(valor)); } catch (e) {}
+  }
+  function leerSesion(clave) {
+    try { return JSON.parse(sessionStorage.getItem('panel-' + clave) || 'null'); } catch (e) { return null; }
+  }
+  function borrarSesion(clave) {
+    try { sessionStorage.removeItem('panel-' + clave); } catch (e) {}
+  }
+
+  // El formulario de alta sobrevive a la recarga automática por versión nueva.
+  function restaurarBorradorAlta() {
+    var b = leerSesion('borrador-alta');
+    if (!b) return;
+    borrarSesion('borrador-alta');
+    var poner = function (sel, v) { if ($(sel) && v !== undefined && v !== null) $(sel).value = v; };
+    poner('#f-tipo', b.tipo); poner('#f-cliente', b.cliente); poner('#f-base', b.base);
+    poner('#f-dominio', b.dominio); poner('#f-puerto', b.puerto);
+    poner('#f-modelo-servicio', b.modelo_servicio || ''); poner('#f-modelo-vhost', b.modelo_vhost || '');
+    if (b.base) $('#f-base').dataset.tocado = '1';
+    if (b.dominio) $('#f-dominio').dataset.tocado = '1';
+    [['#f-actualizar', 'actualizar_template'], ['#f-servicio', 'crear_servicio'], ['#f-vhost', 'crear_vhost'],
+     ['#f-certbot', 'certbot'], ['#f-debug', 'debug'], ['#f-reanudar', 'reanudar'],
+     ['#f-recrear-base', 'recrear_base']]
+      .forEach(function (par) { if ($(par[0]) && par[1] in b) $(par[0]).checked = !!b[par[1]]; });
+  }
+
+  // Cada 10 s se pregunta la versión al servidor. Si el panel se reinició con
+  // una versión nueva (update.sh) se recarga solo, guardando el formulario y la
+  // tarea abierta; si sólo estuvo caído, se avisa y se vuelve a cargar al volver.
+  var latido = { caido: false };
+  function vigilarServidor() {
+    fetch('/api/version', { credentials: 'same-origin', cache: 'no-store' })
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function (d) {
+        if (window.PANEL_VERSION && d.version && d.version !== window.PANEL_VERSION) {
+          if ($('#f-cliente') && ($('#f-cliente').value || '').trim()) guardarSesion('borrador-alta', datosAlta());
+          window.location.reload();
+          return;
+        }
+        if (latido.caido) {
+          latido.caido = false;
+          if ($('#aviso-caido')) $('#aviso-caido').remove();
+          if (!tareaPoll) refrescarPaginaTrasTarea({});
+        }
+      })
+      .catch(function () {
+        if (latido.caido) return;
+        latido.caido = true;
+        if ($('#avisos') && !$('#aviso-caido')) {
+          var nota = document.createElement('div');
+          nota.id = 'aviso-caido';
+          nota.className = 'aviso';
+          nota.textContent = 'Sin conexión con el panel (¿se está reiniciando?). Se reconecta solo…';
+          $('#avisos').appendChild(nota);
+        }
+      });
   }
 
   function datosAlta() {
@@ -1242,7 +1391,9 @@
       crear_servicio: $('#f-servicio').checked,
       crear_vhost: $('#f-vhost').checked,
       certbot: $('#f-certbot').checked,
-      debug: $('#f-debug').checked
+      debug: $('#f-debug').checked,
+      reanudar: $('#f-reanudar').checked,
+      recrear_base: $('#f-reanudar').checked && $('#f-recrear-base').checked
     };
   }
 
@@ -1255,7 +1406,20 @@
       body: JSON.stringify(datosAlta())
     }).then(function (r) { return r.json(); })
       .then(function (d) {
-        caja.innerHTML = listaRevisiones(d.revisiones);
+        var previo = !$('#f-reanudar').checked && (d.revisiones || []).some(function (r) {
+          return r.critico && /Reanudar/.test(r.detalle || '');
+        });
+        caja.innerHTML = listaRevisiones(d.revisiones) + (previo
+          ? '<div class="aviso-error" style="margin-top:8px">Ya existe parte de «' +
+            esc(datosAlta().cliente) + '» de un intento anterior. Puedes reanudarlo: se reutiliza lo ' +
+            'creado y se corrige el resto (credenciales, dominio, servicio y vhost). ' +
+            '<button class="boton mini" type="button" id="btn-reanudar">Reanudar / corregir</button></div>'
+          : '') + (!$('#f-recrear-base').checked && (d.revisiones || []).some(function (r) {
+            return r.critico && /Recrear la base/.test(r.detalle || '');
+          })
+          ? '<div class="aviso-error" style="margin-top:8px">La base quedó a medio restaurar. ' +
+            '<button class="boton mini" type="button" id="btn-recrear-base">Recrear la base desde el backup</button></div>'
+          : '');
         return d.ok;
       });
   }
@@ -1293,9 +1457,14 @@
       if (!ok) return;
       var datos = datosAlta();
       datos.simular = !!simular;
-      if (!simular && !window.confirm('Se va a crear la instancia "' + datos.cliente +
-          '": carpeta /home/' + datos.cliente + ', base ' + datos.base +
-          ', servicio y vhost. ¿Continuar?')) return;
+      if (!simular && !window.confirm(datos.reanudar
+          ? 'Se va a reanudar / corregir la instancia "' + datos.cliente + '": se reutiliza lo que ya ' +
+            'existe, se reescriben credenciales.json, el servicio y el vhost y se reinicia.' +
+            (datos.recrear_base ? '\n\nATENCIÓN: la base ' + datos.base + ' se BORRA y se vuelve a ' +
+              'restaurar desde el backup del template.' : '') + ' ¿Continuar?'
+          : 'Se va a crear la instancia "' + datos.cliente +
+            '": carpeta /home/' + datos.cliente + ', base ' + datos.base +
+            ', servicio y vhost. ¿Continuar?')) return;
       fetch('/api/aprovisionar/crear', {
         method: 'POST', credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
@@ -1313,6 +1482,8 @@
   // ------------------------------------------------------------------ tareas
   function verTarea(id) {
     tareaActual = id; tareaLineas = 0;
+    guardarSesion('tarea-abierta', id);
+    var fallos = 0;
     $('#tarea-titulo').textContent = 'Tarea en curso';
     $('#tarea-cuerpo').innerHTML = '<div id="tarea-pasos"></div>' +
       '<pre class="log" id="tarea-log"></pre><div id="tarea-pie"></div>';
@@ -1321,11 +1492,24 @@
     var tick = function () {
       fetch('/api/tarea/' + encodeURIComponent(id) + '?desde=' + tareaLineas,
             { credentials: 'same-origin' })
-        .then(function (r) { return r.json(); })
+        .then(function (r) {
+          if (r.status === 404) return { noEncontrada: true };
+          if (r.status === 401) { window.location.href = '/login'; return null; }
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        })
         .then(function (d) {
-          if (d.error) { clearInterval(tareaPoll); return; }
+          if (!d) return;
+          if (d.noEncontrada) {
+            clearInterval(tareaPoll); tareaPoll = null;
+            $('#tarea-pie').innerHTML = '<div class="aviso-error" style="margin-top:10px">La tarea ya no ' +
+              'está en el panel.</div>';
+            return;
+          }
+          if (fallos) { fallos = 0; if ($('#tarea-reconectando')) $('#tarea-reconectando').remove(); }
+          var final = d.estado === 'ok' || d.estado === 'error' || d.estado === 'interrumpida';
           $('#tarea-titulo').innerHTML = esc(d.titulo) + ' ' +
-            badge(d.estado === 'ok' ? 'verde' : (d.estado === 'error' ? 'rojo' : 'ambar'), d.estado);
+            badge(d.estado === 'ok' ? 'verde' : (final ? 'rojo' : 'ambar'), d.estado);
           $('#tarea-pasos').innerHTML = (d.pasos || []).map(function (p) {
             var icono = p.estado === 'ok' ? '✔' : (p.estado === 'error' ? '✖' : '…');
             return '<div class="paso paso-' + esc(p.estado) + '">' + icono + ' ' + esc(p.nombre) +
@@ -1340,15 +1524,25 @@
           });
           tareaLineas = d.total_lineas;
           log.scrollTop = log.scrollHeight;
-          if (d.estado === 'ok' || d.estado === 'error') {
+          if (final) {
             clearInterval(tareaPoll); tareaPoll = null;
+            borrarSesion('tarea-abierta');
             $('#tarea-pie').innerHTML =
-              (d.estado === 'error' && (d.deshacer || []).length
+              (d.estado === 'interrumpida'
+                ? '<div class="aviso-error" style="margin-top:10px">' + esc(d.error || 'La tarea quedó a medias') + '</div>'
+                : '') +
+              (d.estado !== 'ok' && (d.deshacer || []).length
                 ? '<div class="aviso-error" style="margin-top:10px">La tarea falló después de crear cosas. ' +
                   'Puedes revertir lo creado: ' +
                   (d.deshacer || []).map(function (x) { return esc(x.tipo) + ' ' + esc(x.valor); }).join(', ') +
                   '<button class="boton peligro" type="button" id="btn-deshacer" data-id="' + esc(d.id) +
                   '" style="margin-left:10px">Deshacer</button></div>'
+                : '') +
+              (d.estado !== 'ok' && d.tipo === 'crear_instancia' && $('#f-cliente')
+                ? '<div class="aviso" style="margin-top:10px">Corrige el dato que falló y vuelve a ' +
+                  'intentarlo sin empezar de cero: ' +
+                  '<button class="boton mini" type="button" id="btn-reintentar" data-id="' + esc(d.id) +
+                  '">Reintentar (reanudar)</button></div>'
                 : '') +
               enlacesDescarga(d) +
               (d.estado === 'ok' && d.datos && d.datos.instancia_id
@@ -1363,7 +1557,19 @@
             refrescarPaginaTrasTarea(d);
           }
         })
-        .catch(function () {});
+        .catch(function () {
+          // Apache recargando (vhost, certbot) o el panel reiniciándose: se sigue
+          // intentando solo, sin tener que pulsar F5.
+          fallos++;
+          if (fallos >= 2 && !$('#tarea-reconectando') && $('#tarea-pie')) {
+            var nota = document.createElement('div');
+            nota.id = 'tarea-reconectando';
+            nota.className = 'aviso';
+            nota.style.marginTop = '10px';
+            nota.textContent = 'Reconectando con el panel (el servidor web se está reiniciando)…';
+            $('#tarea-pie').appendChild(nota);
+          }
+        });
     };
     tick();
     tareaPoll = setInterval(tick, 1500);
@@ -1449,6 +1655,31 @@
     ]).then(function (respuestas) {
       $('#tarea-cuerpo').innerHTML = tablaCron(respuestas[0]) + tablaTareas(respuestas[1]);
     }).catch(function (e) { aviso(e.message); });
+  }
+
+  // Carga en el formulario los datos de una creación que falló, con «reanudar»
+  // marcado, para corregir lo necesario (p. ej. el dominio) y volver a lanzarla.
+  function reintentarTarea(id) {
+    fetch('/api/tarea/' + encodeURIComponent(id) + '?desde=1000000000', { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (t) {
+        var d = t.datos || {};
+        if (!$('#f-cliente')) return;
+        var poner = function (sel, valor) { if ($(sel) && valor !== undefined && valor !== null) $(sel).value = valor; };
+        poner('#f-tipo', d.tipo); poner('#f-cliente', d.cliente); poner('#f-base', d.base);
+        poner('#f-dominio', d.dominio); poner('#f-puerto', d.puerto);
+        poner('#f-modelo-servicio', d.modelo_servicio || ''); poner('#f-modelo-vhost', d.modelo_vhost || '');
+        $('#f-base').dataset.tocado = '1'; $('#f-dominio').dataset.tocado = '1';
+        [['#f-actualizar', 'actualizar_template'], ['#f-servicio', 'crear_servicio'],
+         ['#f-vhost', 'crear_vhost'], ['#f-certbot', 'certbot'], ['#f-debug', 'debug']]
+          .forEach(function (par) { if (par[1] in d) $(par[0]).checked = !!d[par[1]]; });
+        $('#f-reanudar').checked = true;
+        if (tareaPoll) { clearInterval(tareaPoll); tareaPoll = null; }
+        $('#modal-tarea').classList.add('oculto');
+        $('#f-dominio').focus();
+        validarAlta();
+      })
+      .catch(function (e) { aviso(e.message); });
   }
 
   function deshacerTarea(id) {
@@ -2473,6 +2704,266 @@
     });
   }
 
+  // ------------------------------------------------------------------ cobros
+  var cobrosDatos = null, cobroActual = null;
+  var ORDEN_COBRO = { 'vencido': 0, 'en-gracia': 1, 'por-vencer': 2, 'al-dia': 3, 'sin-plan': 4 };
+  var ETIQUETA_COBRO = { 'vencido': ['rojo', 'vencido'], 'en-gracia': ['ambar', 'en gracia'],
+                         'por-vencer': ['ambar', 'por vencer'], 'al-dia': ['verde', 'al día'],
+                         'sin-plan': ['gris', 'sin plan'], 'pagado': ['verde', 'pagado'],
+                         'pendiente': ['gris', 'pendiente'] };
+
+  function hoyISO() {
+    var d = new Date();
+    return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+  }
+
+  // «vence en 3 días», «venció hace 12 días», «vence hoy»
+  function textoDias(dias) {
+    if (dias === null || dias === undefined) return '';
+    if (dias === 0) return 'vence hoy';
+    if (dias > 0) return 'vence en ' + dias + (dias === 1 ? ' día' : ' días');
+    return 'venció hace ' + (-dias) + (dias === -1 ? ' día' : ' días');
+  }
+
+  function badgeCobro(estadoCobro, texto) {
+    var e = ETIQUETA_COBRO[estadoCobro] || ['gris', estadoCobro];
+    return badge(e[0], texto || e[1]);
+  }
+
+  // Resumen de una celda (listado de instancias y tabla de cobros).
+  function celdaCobro(c) {
+    c = c || {};
+    if (!c.plan) return '<span class="tenue">sin plan</span>';
+    var p = c.proximo;
+    if (c.estado === 'vencido') {
+      return badgeCobro('vencido', 'debe ' + dinero(c.total_vencido)) +
+        '<div class="sub">' + c.vencidos + ' periodo' + (c.vencidos === 1 ? '' : 's') +
+        ' · hace ' + c.dias_vencido + ' días</div>';
+    }
+    return badgeCobro(c.estado) + (p ? '<div class="sub">' + esc(p.nombre) + ' · ' + esc(textoDias(p.dias)) + '</div>' : '');
+  }
+
+  function cargarCobros() {
+    return fetch('/api/cobros', { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) { cobrosDatos = d; pintarCobros(); })
+      .catch(function (e) { aviso('No se pudieron leer los cobros: ' + e.message); });
+  }
+
+  function pintarCobros() {
+    var d = cobrosDatos;
+    if (!d) return;
+    var t = d.totales || {};
+    var tarjeta = function (rotulo, valor, extra, clase, filtro) {
+      return '<div class="tarjeta ' + (clase || '') + (filtro !== undefined ? ' clicable' : '') + '"' +
+        (filtro !== undefined ? ' data-filtro-cobro="' + filtro + '"' : '') + '>' +
+        '<div class="rotulo">' + esc(rotulo) + '</div><div class="valor">' + esc(valor) + '</div>' +
+        (extra ? '<div class="rotulo">' + esc(extra) + '</div>' : '') + '</div>';
+    };
+    $('#tarjetas-cobros').innerHTML = [
+      tarjeta('Con plan de cobro', (t.con_plan || 0) + '/' + (d.instancias || []).length,
+              (t.sin_plan || 0) + ' sin plan', '', 'sin-plan'),
+      tarjeta('Vencidos', t.vencidos || 0, 'deben ' + dinero(t.total_vencido), t.vencidos ? 'mal' : 'ok', 'vencido'),
+      tarjeta('En días de gracia', t.en_gracia || 0, 'ya pasó el corte', t.en_gracia ? 'mal' : 'ok', 'en-gracia'),
+      tarjeta('Por vencer', t.por_vencer || 0, 'dentro de los días de aviso', '', 'por-vencer'),
+      tarjeta('Al día', t.al_dia || 0, '', 'ok', 'al-dia'),
+      tarjeta('Total vencido', dinero(t.total_vencido), 'sin cobrar', t.total_vencido ? 'mal' : 'ok'),
+      tarjeta('A cobrar en 30 días', dinero(t.cobrar_30_dias), 'periodos que vencen pronto'),
+      tarjeta('Ingreso mensual', dinero(t.mensual_esperado), 'anuales prorrateados')
+    ].join('');
+
+    var txt = ($('#filtro-cobros').value || '').toLowerCase().trim();
+    var fEstado = $('#filtro-cobro-estado').value, fPlan = $('#filtro-cobro-plan').value;
+    var filas = (d.instancias || []).filter(function (f) {
+      var c = f.cobro || {};
+      if (fEstado === 'con-deuda' && ['vencido', 'en-gracia'].indexOf(c.estado) === -1) return false;
+      if (fEstado && fEstado !== 'con-deuda' && c.estado !== fEstado) return false;
+      if (fPlan && c.plan !== fPlan) return false;
+      if (txt && [f.cliente, f.empresa, f.dominio].join(' ').toLowerCase().indexOf(txt) === -1) return false;
+      return true;
+    }).sort(function (a, b) {
+      var ca = a.cobro || {}, cb = b.cobro || {};
+      var oa = ORDEN_COBRO[ca.estado], ob = ORDEN_COBRO[cb.estado];
+      if (oa !== ob) return oa - ob;
+      if (ca.estado === 'vencido') return (cb.dias_vencido || 0) - (ca.dias_vencido || 0);
+      var da = (ca.proximo || {}).dias, db = (cb.proximo || {}).dias;
+      if (da !== db && da !== undefined && db !== undefined) return da - db;
+      return (a.cliente || '').localeCompare(b.cliente || '');
+    });
+
+    var editable = d.editable;
+    $('#cuerpo-cobros').innerHTML = filas.map(function (f) {
+      var c = f.cobro || {}, p = c.proximo;
+      return '<tr data-cobro="' + esc(f.id) + '">' +
+        '<td class="cliente">' + esc(f.cliente) + ' <span class="chip ' + esc(f.tipo) + '">' + esc(f.tipo) + '</span>' +
+          (f.oculta ? ' <span class="badge gris">oculta</span>' : '') +
+          (f.servicio_activo ? '' : ' ' + badge('rojo', 'servicio no activo')) +
+          '<div class="sub">' + esc(f.empresa || f.dominio || '') + '</div></td>' +
+        '<td>' + (c.plan ? '<strong>' + esc(c.plan) + '</strong> · ' + dinero(c.monto) +
+            '<div class="sub">corte: ' + esc(c.corte) + (c.dias_gracia ? ' · ' + c.dias_gracia + ' días de gracia' : '') + '</div>'
+          : '<span class="tenue">—</span>') + '</td>' +
+        '<td>' + (p ? esc(p.nombre) + '<div class="sub">' + esc(p.vence) + ' · ' + esc(textoDias(p.dias)) + '</div>'
+                    : (c.plan ? '<span class="tenue">todo pagado</span>' : '—')) + '</td>' +
+        '<td>' + badgeCobro(c.estado) + '</td>' +
+        '<td class="num">' + (c.vencidos ? '<strong class="texto-rojo">' + dinero(c.total_vencido) + '</strong>' +
+            '<div class="sub">' + c.vencidos + ' periodo' + (c.vencidos === 1 ? '' : 's') + ' · ' +
+            c.dias_vencido + ' días</div>' : (c.plan ? '$0.00' : '—')) + '</td>' +
+        '<td>' + guion(c.pagado_hasta) + '</td>' +
+        '<td>' + (c.ultimo_pago ? esc(c.ultimo_pago.fecha) + '<div class="sub">' + dinero(c.ultimo_pago.monto) + '</div>'
+                                : '<span class="tenue">—</span>') + '</td>' +
+        '<td style="white-space:nowrap">' +
+          (c.plan ? '<button class="boton mini cobro-pagos" type="button" data-id="' + esc(f.id) + '">' +
+                      (editable ? 'Registrar pagos' : 'Ver pagos') + '</button> ' : '') +
+          (editable ? '<button class="boton mini cobro-plan" type="button" data-id="' + esc(f.id) + '">' +
+                      (c.plan ? 'Plan' : 'Configurar cobro') + '</button>' : '') + '</td></tr>';
+    }).join('') || '<tr><td class="vacio" colspan="8">Sin instancias que coincidan</td></tr>';
+    $('#contador-cobros').textContent = filas.length + ' de ' + (d.instancias || []).length + ' instancias';
+  }
+
+  function abrirCobro(id, vista) {
+    return fetch('/api/cobros/' + encodeURIComponent(id), { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) { aviso(d.error || 'No se pudo abrir'); return; }
+        cobroActual = d;
+        $('#modal-cobro').classList.remove('oculto');
+        if (vista === 'plan' || !d.cobro.plan) pintarPlanCobro(); else pintarPagosCobro();
+      })
+      .catch(function (e) { aviso(e.message); });
+  }
+
+  function pintarPlanCobro() {
+    var d = cobroActual, c = d.cobro || {};
+    $('#cobro-titulo').textContent = 'Plan de cobro · ' + d.cliente;
+    var plan = c.plan || '';
+    $('#cobro-cuerpo').innerHTML =
+      '<div class="formulario">' +
+        '<label>Plan<select id="cp-plan">' +
+          [['', 'Sin plan (no se cobra)'], ['mensual', 'Mensual'], ['anual', 'Anual']].map(function (o) {
+            return '<option value="' + o[0] + '"' + (plan === o[0] ? ' selected' : '') + '>' + o[1] + '</option>';
+          }).join('') + '</select></label>' +
+        '<label>Monto por periodo (USD)<input id="cp-monto" type="number" step="0.01" min="0" value="' +
+          esc(c.monto || '') + '"></label>' +
+        '<label>Primera fecha de corte<input id="cp-fecha" type="date" value="' + esc(c.primera_fecha || hoyISO()) + '">' +
+          '<span class="ayuda">Mensual: vence ese mismo día cada mes (si el mes es más corto, el último día). ' +
+          'Anual: esa misma fecha cada año. Los periodos se cuentan desde aquí.</span></label>' +
+        '<label>Días de gracia<input id="cp-gracia" type="number" min="0" value="' + esc(c.dias_gracia || 0) + '">' +
+          '<span class="ayuda">Días después del corte antes de contarlo como vencido.</span></label>' +
+        '<label>Avisar cuántos días antes<input id="cp-aviso" type="number" min="0" value="' +
+          esc(c.dias_aviso !== undefined ? c.dias_aviso : 5) + '"></label>' +
+        '<label>Notas<input id="cp-notas" value="' + esc(c.notas || '') + '" placeholder="Ej.: paga por transferencia"></label>' +
+      '</div>' +
+      '<div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">' +
+        (c.plan ? '<button class="boton mini" type="button" id="cp-ver-pagos">Ver pagos</button>' : '') +
+        '<button class="boton" type="button" id="cp-guardar">Guardar plan</button></div>';
+  }
+
+  function guardarPlanCobro(boton) {
+    var datos = {
+      plan: $('#cp-plan').value, monto: $('#cp-monto').value, primera_fecha: $('#cp-fecha').value,
+      dias_gracia: parseInt($('#cp-gracia').value, 10) || 0, dias_aviso: parseInt($('#cp-aviso').value, 10) || 0,
+      notas: $('#cp-notas').value
+    };
+    boton.disabled = true;
+    fetch('/api/cobros/' + encodeURIComponent(cobroActual.id) + '/plan', {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(datos)
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) { aviso(d.error || 'No se pudo guardar'); return; }
+        cobroActual.cobro = d.cobro;
+        aviso('Plan de cobro guardado', 'aviso-ok');
+        cargarCobros();
+        if (d.cobro.plan) pintarPagosCobro(); else $('#modal-cobro').classList.add('oculto');
+      })
+      .catch(function (e) { aviso(e.message); })
+      .then(function () { boton.disabled = false; });
+  }
+
+  function pintarPagosCobro() {
+    var d = cobroActual, c = d.cobro || {}, editable = d.editable;
+    $('#cobro-titulo').textContent = 'Pagos · ' + d.cliente;
+    var periodos = (c.periodos || []).slice().reverse();      // lo más reciente arriba
+    var sinPagar = (c.periodos || []).filter(function (p) { return p.estado === 'vencido' || p.estado === 'en-gracia'; });
+    $('#cobro-cuerpo').innerHTML =
+      '<div class="resumen-cobro">' + celdaCobro(c) +
+        '<span class="tenue"> · ' + esc(c.plan) + ' ' + dinero(c.monto) + ' · corte ' + esc(c.corte) +
+        ' · pagado: ' + c.pagados + ' periodo' + (c.pagados === 1 ? '' : 's') + ' (' + dinero(c.total_pagado) + ')' +
+        (c.notas ? ' · ' + esc(c.notas) : '') + '</span></div>' +
+      (editable
+        ? '<div class="barra" style="padding:10px 0">' +
+            '<label class="check">Fecha de pago <input type="date" id="cobro-fecha" value="' + hoyISO() + '"></label>' +
+            '<input type="text" id="cobro-nota" placeholder="Nota (transferencia, efectivo, factura…)" style="flex:1;min-width:160px">' +
+            (sinPagar.length ? '<button class="boton mini" type="button" id="cobro-pagar-todo">✔ Pagó todo lo vencido (' +
+              sinPagar.length + ' · ' + dinero(sinPagar.reduce(function (a, p) { return a + p.monto; }, 0)) + ')</button>' : '') +
+            '<button class="boton mini" type="button" id="cobro-editar-plan">Plan</button>' +
+          '</div>'
+        : '') +
+      '<div class="lista-periodos">' + periodos.map(function (p) {
+        var pago = p.pago || {};
+        return '<div class="periodo-cobro estado-' + esc(p.estado) + '">' +
+          '<div class="periodo-info"><strong>' + esc(p.nombre) + '</strong>' +
+            '<span class="sub">corte ' + esc(p.vence) + (p.pagado ? '' : ' · ' + esc(textoDias(p.dias))) + '</span></div>' +
+          '<div class="periodo-estado">' + badgeCobro(p.estado) +
+            (p.pagado ? '<div class="sub">el ' + esc(pago.fecha) + ' · ' + dinero(pago.monto) +
+               (pago.nota ? ' · ' + esc(pago.nota) : '') + (pago.usuario ? ' · ' + esc(pago.usuario) : '') + '</div>'
+             : '<div class="sub">' + dinero(p.monto) + '</div>') + '</div>' +
+          (editable
+            ? '<div class="periodo-acciones">' +
+                (p.pagado
+                  ? '<button class="boton mini cobro-marcar" type="button" data-periodo="' + esc(p.periodo) +
+                      '" data-pagado="0">✖ No pagó</button>'
+                  : '<input type="number" step="0.01" min="0" class="monto-periodo" value="' + esc(p.monto) +
+                      '" title="Monto pagado"> <button class="boton mini boton-si cobro-marcar" type="button" data-periodo="' +
+                      esc(p.periodo) + '" data-pagado="1">✔ Sí pagó</button>') +
+              '</div>'
+            : '') +
+          '</div>';
+      }).join('') + '</div>' +
+      '<p class="tenue" style="margin-top:10px">Se muestran los periodos desde la primera fecha de corte y los ' +
+        'dos siguientes, para registrar pagos adelantados.</p>';
+  }
+
+  function marcarPeriodo(boton) {
+    var periodo = boton.getAttribute('data-periodo');
+    var pagado = boton.getAttribute('data-pagado') === '1';
+    var fila = boton.closest('.periodo-cobro');
+    var montoInput = fila && fila.querySelector('.monto-periodo');
+    if (!pagado && !window.confirm('¿Quitar el pago registrado de ' + periodo + '?')) return Promise.resolve();
+    boton.disabled = true;
+    return enviarPago(periodo, pagado, montoInput ? montoInput.value : null)
+      .then(function (d) {
+        if (!d.ok) { aviso(d.error || 'No se pudo registrar'); boton.disabled = false; return; }
+        cobroActual.cobro = d.cobro;
+        pintarPagosCobro();
+        cargarCobros();
+      });
+  }
+
+  function enviarPago(periodo, pagado, monto) {
+    return fetch('/api/cobros/' + encodeURIComponent(cobroActual.id) + '/pago', {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ periodo: periodo, pagado: pagado, monto: monto,
+                             fecha: $('#cobro-fecha') ? $('#cobro-fecha').value : null,
+                             nota: $('#cobro-nota') ? $('#cobro-nota').value : '' })
+    }).then(function (r) { return r.json(); })
+      .catch(function (e) { return { ok: false, error: e.message }; });
+  }
+
+  function pagarTodoVencido(boton) {
+    var pendientes = (cobroActual.cobro.periodos || []).filter(function (p) {
+      return p.estado === 'vencido' || p.estado === 'en-gracia'; });
+    if (!pendientes.length || !window.confirm('¿Registrar como pagados ' + pendientes.length + ' periodo(s)?')) return;
+    boton.disabled = true;
+    var cadena = Promise.resolve();
+    pendientes.forEach(function (p) {
+      cadena = cadena.then(function () {
+        return enviarPago(p.periodo, true, p.monto).then(function (d) { if (d.ok) cobroActual.cobro = d.cobro; });
+      });
+    });
+    cadena.then(function () { pintarPagosCobro(); cargarCobros(); aviso('Pagos registrados', 'aviso-ok'); });
+  }
+
   // ---------------------------------------------------------- notificaciones
   var notif = { datos: null, ultimaVista: null, poll: null, instalar: null, primera: true };
   var ICONO_NIVEL = { error: '🔴', aviso: '🟠', ok: '🟢', info: '🔵' };
@@ -2523,10 +3014,120 @@
           }
         }
         notif.primera = false;
+        actualizarAlertas(d.alertas_actuales);
         pintarPanelNotif();
         if (MODO === 'notificaciones') pintarPaginaNotif();
       })
       .catch(function () {});
+  }
+
+  // ------------------------------------------------------- modal de alertas
+  // Se abre solo cuando aparece algo caído que este navegador no había visto;
+  // «Entendido» lo guarda y el botón rojo de la cabecera lo vuelve a abrir.
+  var CLAVE_VISTAS = 'panel-alertas-vistas';
+
+  function alertasVistas() {
+    try { return JSON.parse(localStorage.getItem(CLAVE_VISTAS) || '{}') || {}; } catch (e) { return {}; }
+  }
+  function guardarVistas(v) {
+    try { localStorage.setItem(CLAVE_VISTAS, JSON.stringify(v)); } catch (e) { /* modo privado */ }
+  }
+  // Una alerta que se resolvió y vuelve a aparecer es nueva: se identifica
+  // por su clave y el momento en que empezó.
+  function firmaAlerta(a) { return a.clave + '@' + (a.desde || ''); }
+
+  function asegurarModalAlertas() {
+    if ($('#modal-alertas')) return;
+    var modal = document.createElement('div');
+    modal.className = 'modal oculto';
+    modal.id = 'modal-alertas';
+    modal.innerHTML =
+      '<div class="modal-caja modal-alertas-caja" role="alertdialog" aria-labelledby="alertas-titulo">' +
+        '<div class="modal-cabecera modal-alertas-cabecera">' +
+          '<h2 id="alertas-titulo"></h2>' +
+          '<button class="cerrar" id="alertas-cerrar" type="button" aria-label="Cerrar">&times;</button>' +
+        '</div>' +
+        '<div class="modal-cuerpo" id="alertas-cuerpo"></div>' +
+        '<div class="modal-alertas-pie">' +
+          '<a class="boton mini" href="/notificaciones">Ver notificaciones</a>' +
+          '<button class="boton" type="button" id="alertas-entendido">Entendido</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(modal);
+
+    var der = document.querySelector('.cabecera-der');
+    if (der && !$('#btn-alertas')) {
+      var boton = document.createElement('button');
+      boton.id = 'btn-alertas';
+      boton.type = 'button';
+      boton.className = 'boton boton-alertas oculto';
+      boton.title = 'Alertas activas';
+      der.insertBefore(boton, der.firstChild);
+    }
+  }
+
+  function actualizarAlertas(lista) {
+    if (lista === null || lista === undefined) return;     // aún sin datos del servidor
+    asegurarModalAlertas();
+    notif.alertas = lista;
+    var errores = lista.filter(function (a) { return a.nivel === 'error'; }).length;
+    var boton = $('#btn-alertas');
+    if (boton) {
+      boton.classList.toggle('oculto', !lista.length);
+      boton.classList.toggle('solo-avisos', !errores);
+      boton.innerHTML = '⚠ ' + lista.length + '<span class="texto-alertas"> ' +
+        (lista.length === 1 ? 'alerta' : 'alertas') + '</span>';
+    }
+    var vistas = alertasVistas(), vigentes = {}, nuevas = 0;
+    lista.forEach(function (a) {
+      var f = firmaAlerta(a);
+      if (vistas[f]) vigentes[f] = 1; else nuevas++;
+    });
+    guardarVistas(vigentes);      // se olvidan las resueltas
+    if ($('#modal-alertas') && !$('#modal-alertas').classList.contains('oculto')) {
+      pintarModalAlertas();       // abierto: se actualiza en vivo
+    } else if (nuevas) {
+      abrirModalAlertas();
+    }
+  }
+
+  function pintarModalAlertas() {
+    var lista = notif.alertas || [];
+    var errores = lista.filter(function (a) { return a.nivel === 'error'; }).length;
+    $('#alertas-titulo').textContent = lista.length
+      ? (errores ? '⚠ ' : '') + lista.length + (lista.length === 1 ? ' alerta activa' : ' alertas activas')
+      : 'Sin alertas';
+    $('#modal-alertas').classList.toggle('con-errores', errores > 0);
+    var vistas = alertasVistas();
+    $('#alertas-cuerpo').innerHTML = lista.length
+      ? '<p class="tenue" style="margin:0 0 10px">Esto está fallando ahora mismo. Se revisa cada minuto ' +
+          'mientras el panel está abierto.</p>' +
+        '<div class="lista-alertas">' + lista.map(function (a) {
+          return '<a class="item-alerta nivel-' + esc(a.nivel) + '" href="' + esc(a.ruta || '/') + '">' +
+            '<span class="icono-notif">' + (ICONO_NIVEL[a.nivel] || '🔵') + '</span>' +
+            '<span class="texto-notif"><strong>' + esc(a.titulo) +
+              (vistas[firmaAlerta(a)] ? '' : ' <span class="badge rojo">nueva</span>') + '</strong>' +
+              '<span class="sub">' + esc(a.mensaje || '') + '</span>' +
+              '<span class="fecha-notif">Desde ' + esc(hace(a.desde)) + '</span></span>' +
+            '<span class="ver-alerta">Ver ›</span></a>';
+        }).join('') + '</div>'
+      : '<p class="aviso aviso-ok" style="margin:0">🟢 Todo volvió a la normalidad.</p>';
+  }
+
+  function abrirModalAlertas() {
+    asegurarModalAlertas();
+    pintarModalAlertas();
+    $('#modal-alertas').classList.remove('oculto');
+  }
+
+  function cerrarModalAlertas(entendido) {
+    if (!$('#modal-alertas')) return;
+    if (entendido) {
+      var vistas = alertasVistas();
+      (notif.alertas || []).forEach(function (a) { vistas[firmaAlerta(a)] = 1; });
+      guardarVistas(vistas);
+    }
+    $('#modal-alertas').classList.add('oculto');
   }
 
   function pintarPanelNotif() {
@@ -2793,6 +3394,7 @@
         casilla('Apache / nginx caído', 'r-web', r.servidor_web_caido) +
         casilla('Sin renovación automática de certificados', 'r-auto', r.renovacion_automatica) +
         casilla('Backups atrasados', 'r-backup', r.backup_atrasado) +
+        casilla('Pagos de clientes vencidos', 'r-cobro', r.cobro_vencido) +
         casilla('Fin de tareas (backups, altas, certbot)', 'r-tareas', r.tareas) +
         campo('Certificado que vence en (días) o menos', 'r-ssl', r.ssl_dias, 'number', '0 = no avisar.') +
         campo('Disco lleno a partir del %', 'r-disco', r.disco_pct, 'number', '0 = no avisar.') +
@@ -2854,6 +3456,7 @@
         servicio_caido: $('#r-servicio').checked, url_caida: $('#r-url').checked,
         base_caida: $('#r-base').checked, servidor_web_caido: $('#r-web').checked,
         renovacion_automatica: $('#r-auto').checked, backup_atrasado: $('#r-backup').checked,
+        cobro_vencido: $('#r-cobro').checked,
         tareas: $('#r-tareas').checked, ssl_dias: valorNum('r-ssl'), disco_pct: valorNum('r-disco'),
         ram_pct: valorNum('r-ram')
       },
@@ -2964,6 +3567,10 @@
           el = contenedor;
         }
         if (el.id === 'btn-campana') return alternarPanelNotif();
+        if (el.id === 'btn-alertas') return abrirModalAlertas();
+        if (el.id === 'alertas-entendido') return cerrarModalAlertas(true);
+        if (el.id === 'alertas-cerrar' || el.id === 'modal-alertas') return cerrarModalAlertas(true);
+        if (el.closest && el.closest('.item-alerta')) { cerrarModalAlertas(true); return; }
         if (!el.closest('.campana') && $('#panel-notif') && !$('#panel-notif').classList.contains('oculto')) {
           alternarPanelNotif(true);
         }
@@ -3052,6 +3659,7 @@
         if (el.id === 'nueva-cerrar' || el.id === 'modal-nueva') return $('#modal-nueva').classList.add('oculto');
         if (el.id === 'tarea-cerrar' || el.id === 'modal-tarea') {
           if (tareaPoll) { clearInterval(tareaPoll); tareaPoll = null; }
+          borrarSesion('tarea-abierta');
           return $('#modal-tarea').classList.add('oculto');
         }
         if (el.id === 'btn-validar') return validarAlta();
@@ -3059,6 +3667,11 @@
         if (el.id === 'btn-simular') return crearInstancia(true);
         if (el.id === 'btn-crear') return crearInstancia(false);
         if (el.id === 'btn-deshacer') return deshacerTarea(el.getAttribute('data-id'));
+        if (el.id === 'btn-reanudar') { $('#f-reanudar').checked = true; return validarAlta(); }
+        if (el.id === 'btn-recrear-base') {
+          $('#f-reanudar').checked = true; $('#f-recrear-base').checked = true; return validarAlta();
+        }
+        if (el.id === 'btn-reintentar') return reintentarTarea(el.getAttribute('data-id'));
         if (el.hasAttribute && el.hasAttribute('data-tarea')) return verTarea(el.getAttribute('data-tarea'));
         if (el.id === 'btn-ver-nueva') {
           $('#modal-tarea').classList.add('oculto');
@@ -3108,6 +3721,21 @@
           return ejecutarAccion(el.closest('.acciones').getAttribute('data-id'),
                                 el.getAttribute('data-accion'), el);
         }
+        if (el.classList.contains('chip-filtro')) return aplicarChip(el);
+        if (el.classList.contains('cobro-pagos')) return abrirCobro(el.getAttribute('data-id'), 'pagos');
+        if (el.classList.contains('cobro-plan')) return abrirCobro(el.getAttribute('data-id'), 'plan');
+        if (el.classList.contains('cobro-marcar')) return marcarPeriodo(el);
+        if (el.id === 'cp-guardar') return guardarPlanCobro(el);
+        if (el.id === 'cp-ver-pagos') return pintarPagosCobro();
+        if (el.id === 'cobro-editar-plan') return pintarPlanCobro();
+        if (el.id === 'cobro-pagar-todo') return pagarTodoVencido(el);
+        if (el.id === 'btn-cobros-recargar') return cargarCobros();
+        if (el.id === 'cobro-cerrar' || el.id === 'modal-cobro') return $('#modal-cobro').classList.add('oculto');
+        var tarjetaCobro = el.closest('.tarjeta[data-filtro-cobro]');
+        if (tarjetaCobro) {
+          $('#filtro-cobro-estado').value = tarjetaCobro.getAttribute('data-filtro-cobro');
+          return pintarCobros();
+        }
         var tarjeta = el.closest('.tarjeta.clicable');
         if (tarjeta) {
           if (tarjeta.getAttribute('data-filtro-api') && $('#filtro-api')) {
@@ -3147,11 +3775,13 @@
       if (el.id === 'auto-refresco') return programarAuto();
       if (el.id === 'orden') { estado.orden = el.value; return pintarTabla(); }
       if (['filtro-api', 'filtro-uso', 'filtro-servicio',
-           'filtro-ocultos'].indexOf(el.id) !== -1) return pintarTabla();
+           'filtro-ocultos'].indexOf(el.id) !== -1) { pintarTarjetas(); return pintarTabla(); }
+      if (el.id === 'filtro-estado') { pintarTarjetas(); return pintarTabla(); }
       if (el.id === 'filtro-backup-estado') return pintarBackups();
       if (el.id === 'solo-sin-uso') return pintarBases();
       if (el.id === 'consumo-auto') return programarConsumo();
       if (el.id === 'filtro-notif-nivel') return pintarPaginaNotif();
+      if (el.id === 'filtro-cobro-estado' || el.id === 'filtro-cobro-plan') return pintarCobros();
       if (el.id === 'orden-consumo-inst') return pintarConsumoInstancias();
       if (el.id === 'filtro-servicio-cat') return pintarServicios();
       if (el.id === 'procesos-por') return pintarProcesos();
@@ -3171,12 +3801,14 @@
       if (['filtro-backups', 'filtro-backup-estado'].indexOf(e.target.id) !== -1) pintarBackups();
       if (e.target.id === 'filtro-cert') { estadoCert.filtro = e.target.value; pintarFilasCert(); }
       if (e.target.id === 'filtro-consumo-inst') pintarConsumoInstancias();
+      if (e.target.id === 'filtro-cobros') pintarCobros();
     });
 
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape') {
         if (document.querySelector('.cabecera')) document.querySelector('.cabecera').classList.remove('abierta');
-        ['#modal', '#modal-campo', '#modal-nueva', '#modal-tarea', '#panel-notif'].forEach(function (sel) {
+        if ($('#modal-alertas') && !$('#modal-alertas').classList.contains('oculto')) cerrarModalAlertas(true);
+        ['#modal', '#modal-campo', '#modal-nueva', '#modal-tarea', '#panel-notif', '#modal-cobro'].forEach(function (sel) {
           if ($(sel)) $(sel).classList.add('oculto');
         });
         if (tareaPoll) { clearInterval(tareaPoll); tareaPoll = null; }
@@ -3186,6 +3818,13 @@
     iniciarNotificaciones();
     if (MODO === 'notificaciones') {
       cargarCapacidades();
+      return;
+    }
+    if (MODO === 'cobros') {
+      var q = (location.search.match(/[?&]q=([^&]+)/) || [])[1];
+      if (q) $('#filtro-cobros').value = decodeURIComponent(q.replace(/\+/g, ' '));
+      cargarCapacidades();
+      cargarCobros();
       return;
     }
     if (MODO === 'certificados') {
@@ -3204,6 +3843,8 @@
       cargarCapacidades().then(function () { abrirAsistente(true); });
       return;
     }
+    var buscado = (location.search.match(/[?&]q=([^&]+)/) || [])[1];
+    if (buscado && $('#filtro-texto')) $('#filtro-texto').value = decodeURIComponent(buscado.replace(/\+/g, ' '));
     prepararScroll();
     cargar();
     programarAuto();
@@ -3221,9 +3862,17 @@
       .catch(function () {});
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', iniciar);
-  } else {
+  function arrancar() {
     iniciar();
+    setInterval(vigilarServidor, 10000);
+    // Si la página se recargó con una tarea abierta, se vuelve a mostrar su log.
+    var abierta = leerSesion('tarea-abierta');
+    if (abierta && $('#modal-tarea')) setTimeout(function () { verTarea(abierta); }, 300);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', arrancar);
+  } else {
+    arrancar();
   }
 })();

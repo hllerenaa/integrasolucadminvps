@@ -47,6 +47,14 @@ fi
 
 ANTES="$(git rev-parse --short HEAD 2>/dev/null)"
 
+# Sin rama (tras un «git checkout <commit>» para volver atrás) git pull no
+# sabe qué traer: reintentar no sirve, se explica cómo volver a main.
+if ! git symbolic-ref -q HEAD >/dev/null; then
+    error "El repositorio no está en ninguna rama (está fijo en ${ANTES}).
+      Para volver a la versión actual:  cd ${PANEL_DIR} && git checkout main
+      y ejecuta de nuevo este script."
+fi
+
 # --- git pull con reintentos --------------------------------------------------
 header "Paso 1/4: git pull"
 INTENTO=1; ESPERA=2; OK=0
