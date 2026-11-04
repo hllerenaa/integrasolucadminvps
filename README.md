@@ -361,10 +361,10 @@ el historial de acciones.
 
 ### Diferencia entre inventario y restaurante
 
-Los pasos son los mismos; solo cambia la actualización del template, como en cada
-`.sh`: inventario hace `fetch`, `reset --hard` y `clean -fd`; restaurante hace
-`fetch`, `reset --hard` y `pull`, sin limpiar. Se ajusta con `git_pull` y
-`git_clean` en cada entrada de `aprovisionamiento.templates`.
+Los pasos son los mismos; solo cambia la actualización del template: inventario
+hace `fetch`, `reset --hard` y `clean -fd`; restaurante hace `fetch`, `reset --hard`,
+`clean -fd` y `pull`. Se ajusta con `git_pull` (y `git_clean`, que por defecto es
+`true`) en cada entrada de `aprovisionamiento.templates`.
 
 ### Socket, un solo `.conf` y certificado
 

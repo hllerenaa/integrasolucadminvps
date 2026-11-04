@@ -206,8 +206,8 @@ class FlujoGit(unittest.TestCase):
     def test_inventario_como_su_script(self):
         self.assertEqual(self.pasos('inventario'), ['fetch', 'reset', 'clean'])
 
-    def test_restaurante_como_su_script(self):
-        self.assertEqual(self.pasos('restaurante'), ['fetch', 'reset', 'pull'])
+    def test_restaurante_limpia_antes_del_pull(self):
+        self.assertEqual(self.pasos('restaurante'), ['fetch', 'reset', 'clean', 'pull'])
 
     def test_origenes_de_cada_script(self):
         plantillas = config_app.DEFAULTS['aprovisionamiento']['templates']

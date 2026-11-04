@@ -55,7 +55,7 @@ DEFAULTS = {
                            'db_origen': 'inventario_template', 'rama': 'master'},
             'restaurante': {'ruta': '/home/template_restaurante/pryrestaurante',
                             'db_origen': 'template_restaurante', 'rama': 'master',
-                            'git_pull': True, 'git_clean': False},
+                            'git_pull': True},
         },
         'backups_dir': '',
         'base_dir': '',

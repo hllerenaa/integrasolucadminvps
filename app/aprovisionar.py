@@ -851,17 +851,17 @@ def _configurar_ssl(tarea, config, cliente, dominio, destino, con_servicio=True,
 def comandos_git_template(plantilla):
     """Comandos git del paso 1, como los hace el .sh de cada sistema: [(comando, crítico)].
 
-    new_instance_inventario.sh termina con git clean; new_instance_restaurante.sh
-    no limpia y hace git pull después del reset.
+    Restaurante hace pull tras el reset; el clean va antes, para que el pull
+    no choque con archivos sin seguimiento.
     """
     ruta = plantilla['ruta']
     rama = plantilla.get('rama') or 'master'
     comandos = [(['git', '-C', ruta, 'fetch', 'origin'], True),
                 (['git', '-C', ruta, 'reset', '--hard', 'origin/%s' % rama], True)]
-    if plantilla.get('git_pull', False):
-        comandos.append((['git', '-C', ruta, 'pull'], True))
     if plantilla.get('git_clean', True):
         comandos.append((['git', '-C', ruta, 'clean', '-fd'], False))
+    if plantilla.get('git_pull', False):
+        comandos.append((['git', '-C', ruta, 'pull'], True))
     return comandos
 
 
